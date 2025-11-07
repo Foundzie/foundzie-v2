@@ -1,77 +1,44 @@
-"use client";
+export const metadata = {
+  title: "Foundzie Admin – Dashboard",
+};
 
-import { useEffect, useState } from "react";
+const stats = [
+  { label: "Users Online", value: 34 },
+  { label: "Active Sessions", value: 13 },
+  { label: "SOS Alerts", value: "1 Active", highlight: true },
+];
 
-export default function Dashboard() {
-  const [stats, setStats] = useState({
-    usersOnline: 32,
-    activeSessions: 12,
-    sosAlerts: 0,
-  });
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setStats({
-        usersOnline: 32 + Math.floor(Math.random() * 4),
-        activeSessions: 12 + Math.floor(Math.random() * 3),
-        sosAlerts: Math.floor(Math.random() * 2),
-      });
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, []);
-
+export default function AdminDashboard() {
   return (
-    <div>
-      <h1 style={{ fontSize: "22px", fontWeight: 700, marginBottom: "16px" }}>
-        Live Dashboard
-      </h1>
-      <p style={{ color: "#6b7280", marginBottom: "24px" }}>
-        Real-time overview of system activity.
-      </p>
+    <div className="min-h-screen bg-[#f5f5f5]">
+      <div className="mx-auto max-w-5xl px-6 py-10">
+        <h1 className="text-2xl font-semibold mb-6">Foundzie Admin</h1>
+        <p className="text-sm text-gray-500 mb-8">
+          Real-time overview of system activity.
+        </p>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-          gap: "16px",
-        }}
-      >
-        <div style={cardStyle}>
-          <h2 style={titleStyle}>Users Online</h2>
-          <p style={valueStyle}>{stats.usersOnline}</p>
-        </div>
-        <div style={cardStyle}>
-          <h2 style={titleStyle}>Active Sessions</h2>
-          <p style={valueStyle}>{stats.activeSessions}</p>
-        </div>
-        <div style={cardStyle}>
-          <h2 style={titleStyle}>SOS Alerts</h2>
-          <p style={{ ...valueStyle, color: stats.sosAlerts > 0 ? "#dc2626" : "#16a34a" }}>
-            {stats.sosAlerts > 0 ? `${stats.sosAlerts} Active` : "None"}
-          </p>
+        <div className="grid gap-4 md:grid-cols-3">
+          {stats.map((item) => (
+            <div
+              key={item.label}
+              className={`rounded-lg bg-white p-6 shadow-sm border ${
+                item.highlight ? "border-red-200" : "border-gray-100"
+              }`}
+            >
+              <div className="text-xs uppercase tracking-wide text-gray-400">
+                {item.label}
+              </div>
+              <div
+                className={`mt-3 text-3xl font-semibold ${
+                  item.highlight ? "text-red-500" : "text-gray-900"
+                }`}
+              >
+                {item.value}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
   );
 }
-
-const cardStyle = {
-  background: "white",
-  borderRadius: "12px",
-  padding: "16px",
-  border: "1px solid #e5e7eb",
-  textAlign: "center",
-};
-
-const titleStyle = {
-  fontSize: "14px",
-  color: "#6b7280",
-  marginBottom: "6px",
-};
-
-const valueStyle = {
-  fontSize: "24px",
-  fontWeight: 700,
-  color: "#111827",
-};
