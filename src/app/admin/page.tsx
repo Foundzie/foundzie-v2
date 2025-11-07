@@ -1,97 +1,101 @@
 // src/app/admin/page.tsx
-import { mockPlaces } from '@/app/data/places';
-import { mockNotifications } from '@/app/data/notifications';
+import Link from "next/link";
+import { mockPlaces } from "@/app/data/places";
+import { mockNotifications } from "@/app/data/notifications";
 
-export default function AdminPage() {
-  const totalPlaces = mockPlaces.length;
-  const totalNotifications = mockNotifications.length;
-  // fake number for now
-  const totalUsers = 128;
-
+export default function AdminDashboardPage() {
   return (
     <main className="min-h-screen bg-gray-50">
-      {/* Top bar */}
+      {/* Header */}
       <header className="w-full bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Foundzie Admin</h1>
           <p className="text-xs text-gray-500">
-            Internal view of shared data (places, notifications)
+            Internal view of shared data (places, notifications).
           </p>
         </div>
         <span className="text-[10px] px-2 py-1 rounded-full bg-purple-100 text-purple-700">
-          MVP
+          admin
         </span>
       </header>
 
-      {/* Stats */}
-      <section className="px-6 py-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">Places</p>
-          <p className="text-2xl font-bold text-gray-900">{totalPlaces}</p>
-          <p className="text-[10px] text-gray-400">From src/app/data/places.ts</p>
-        </div>
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">Notifications</p>
-          <p className="text-2xl font-bold text-gray-900">{totalNotifications}</p>
-          <p className="text-[10px] text-gray-400">From src/app/data/notifications.ts</p>
-        </div>
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">Users</p>
-          <p className="text-2xl font-bold text-gray-900">{totalUsers}</p>
-          <p className="text-[10px] text-gray-400">Static for now</p>
+      {/* Top cards */}
+      <section className="px-6 py-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Places card */}
+        <Link
+          href="/admin/places"
+          className="bg-white border border-gray-200 rounded-lg p-4 hover:border-purple-200 hover:shadow-sm transition"
+        >
+          <p className="text-[10px] text-gray-400 mb-1">
+            from src/app/data/places.ts
+          </p>
+          <h2 className="text-2xl font-semibold text-gray-900">
+            {mockPlaces.length}
+          </h2>
+          <p className="text-xs text-gray-500">Places</p>
+        </Link>
+
+        {/* Notifications card */}
+        <Link
+          href="/admin/notifications"
+          className="bg-white border border-gray-200 rounded-lg p-4 hover:border-purple-200 hover:shadow-sm transition"
+        >
+          <p className="text-[10px] text-gray-400 mb-1">
+            from src/app/data/notifications.ts
+          </p>
+          <h2 className="text-2xl font-semibold text-gray-900">
+            {mockNotifications.length}
+          </h2>
+          <p className="text-xs text-gray-500">Notifications</p>
+        </Link>
+
+        {/* Users card (placeholder) */}
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <p className="text-[10px] text-gray-400 mb-1">static for now</p>
+          <h2 className="text-2xl font-semibold text-gray-900">128</h2>
+          <p className="text-xs text-gray-500">Users</p>
         </div>
       </section>
 
-      {/* 2 columns */}
-      <section className="px-6 pb-10 grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Notifications */}
-        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      {/* Latest notifications + places preview */}
+      <section className="px-6 pb-8 grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Latest notifications */}
+        <div className="bg-white border border-gray-200 rounded-lg">
           <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-900">Latest notifications</h2>
-            <span className="text-[10px] text-gray-400">
-              {mockNotifications.length} total
-            </span>
+            <p className="text-sm font-medium text-gray-900">Latest notifications</p>
+            <Link href="/admin/notifications" className="text-[10px] text-purple-600">
+              view all
+            </Link>
           </div>
           <ul className="divide-y divide-gray-100">
-            {mockNotifications.map((n) => (
-              <li key={n.id} className="px-4 py-3 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-medium text-gray-900">{n.title}</p>
-                  <p className="text-[11px] text-gray-500">{n.message}</p>
-                </div>
-                <span className="text-[10px] text-gray-400">{n.time}</span>
+            {mockNotifications.slice(0, 3).map((n) => (
+              <li key={n.id} className="px-4 py-3">
+                <p className="text-xs font-semibold text-gray-900">{n.title}</p>
+                <p className="text-[11px] text-gray-500">{n.message}</p>
+                <p className="text-[10px] text-gray-400 mt-1">{n.time}</p>
               </li>
             ))}
           </ul>
         </div>
 
-        {/* Places */}
-        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+        {/* Places preview */}
+        <div className="bg-white border border-gray-200 rounded-lg">
           <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-900">Places</h2>
-            <span className="text-[10px] text-gray-400">
-              {mockPlaces.length} total
-            </span>
+            <p className="text-sm font-medium text-gray-900">Places</p>
+            <Link href="/admin/places" className="text-[10px] text-purple-600">
+              view all
+            </Link>
           </div>
           <ul className="divide-y divide-gray-100">
-            {mockPlaces.map((place) => (
-              <li key={place.id} className="px-4 py-3 flex items-center justify-between gap-3">
+            {mockPlaces.map((p) => (
+              <li key={p.id} className="px-4 py-3 flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-medium text-gray-900">
-                    {place.name}
-                    {place.trending && (
-                      <span className="ml-2 text-[9px] bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded-full">
-                        trending
-                      </span>
-                    )}
-                  </p>
-                  <p className="text-[11px] text-gray-500">
-                    {place.category} • {place.distance} mi • {place.rating}★
+                  <p className="text-xs font-semibold text-gray-900">{p.name}</p>
+                  <p className="text-[10px] text-gray-400">
+                    {p.category} • {p.distance} mi • {p.rating}★
                   </p>
                 </div>
-                <span className="text-[10px] text-gray-400">
-                  {place.busy ?? '—'}
-                </span>
+                <p className="text-[10px] text-gray-400">{p.busy}</p>
               </li>
             ))}
           </ul>
