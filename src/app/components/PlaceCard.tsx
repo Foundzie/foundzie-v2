@@ -10,7 +10,7 @@ interface Place {
   distance: number;
   rating: number;
   reviews: number;
-  image: string;
+  image?: string;
   trending?: boolean;
   description: string;
 }
@@ -26,7 +26,9 @@ export default function PlaceCard({ place }: PlaceCardProps) {
     <div className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition">
       <div className="flex gap-3">
         {/* Icon */}
-        <div className="text-3xl flex-shrink-0">{place.image}</div>
+        <div className="text-3xl flex-shrink-0">
+  {place.image ?? '📍'}
+</div>
 
         {/* Content */}
         <div className="flex-1 min-w-0">
