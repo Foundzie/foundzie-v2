@@ -4,7 +4,7 @@ import { useState } from 'react';
 import BottomNav from '../../components/BottomNav';
 import PlaceCard from '../../components/PlaceCard';
 import { MapPin, Navigation, Sliders } from 'lucide-react';
-
+import { mockPlaces } from "@/app/data/places";
 const nearbyPlaces = [
   {
     id: 1,
@@ -76,7 +76,7 @@ const nearbyPlaces = [
 export default function NearbyPage() {
   const [sortBy, setSortBy] = useState<'distance' | 'rating'>('distance');
 
-  const sorted = [...nearbyPlaces].sort((a, b) => {
+  const sorted = [...mockPlaces].sort((a, b) => {
     if (sortBy === 'distance') return a.distance - b.distance;
     return b.rating - a.rating;
   });

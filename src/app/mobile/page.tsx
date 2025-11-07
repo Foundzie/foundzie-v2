@@ -4,53 +4,8 @@ import { useState } from 'react';
 import BottomNav from '../components/BottomNav';
 import PlaceCard from '../components/PlaceCard';
 import { MapPin, Bell, Search, Zap } from 'lucide-react';
+import { mockPlaces } from "@/app/data/places";
 
-const mockPlaces = [
-  {
-    id: 1,
-    name: 'Sunny Café',
-    category: 'Coffee',
-    distance: 0.3,
-    rating: 4.8,
-    reviews: 124,
-    image: '☕',
-    trending: true,
-    description: 'Cozy spot with great vibes',
-  },
-  {
-    id: 2,
-    name: 'Central Park',
-    category: 'Parks',
-    distance: 0.5,
-    rating: 4.9,
-    reviews: 892,
-    image: '🌳',
-    trending: true,
-    description: 'Perfect for weekend walks',
-  },
-  {
-    id: 3,
-    name: 'Tech Hub',
-    category: 'Workspace',
-    distance: 0.8,
-    rating: 4.6,
-    reviews: 45,
-    image: '💻',
-    trending: false,
-    description: 'Quiet place to work',
-  },
-  {
-    id: 4,
-    name: 'Bistro 41',
-    category: 'Restaurant',
-    distance: 1.2,
-    rating: 4.7,
-    reviews: 203,
-    image: '🍽️',
-    trending: false,
-    description: 'Amazing brunch menu',
-  },
-];
 
 export default function MobileHome() {
   const [notificationCount] = useState(3);

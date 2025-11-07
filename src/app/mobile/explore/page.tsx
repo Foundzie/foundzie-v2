@@ -4,6 +4,7 @@ import { useState } from 'react';
 import BottomNav from '../../components/BottomNav';
 import PlaceCard from '../../components/PlaceCard';
 import { Search, Filter, ChevronRight } from 'lucide-react';
+import { mockPlaces } from "@/app/data/places";
 
 const categories = [
   { id: 1, name: 'Coffee', icon: '☕', count: 24 },
@@ -76,7 +77,7 @@ export default function ExplorePage() {
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const filteredPlaces = allPlaces.filter((place) => {
+  const filteredPlaces = mockPlaces.filter((place) => {
     const matchesCategory = !selectedCategory || place.category === categories.find(c => c.id === selectedCategory)?.name;
     const matchesSearch = place.name.toLowerCase().includes(searchQuery.toLowerCase());
     return matchesCategory && matchesSearch;
