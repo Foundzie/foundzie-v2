@@ -7,9 +7,9 @@ export interface Place {
   distance: number;
   rating: number;
   reviews: number;
-  image: string; // <- image is required
-  trending?: boolean;
   description: string;
+  image?: string; // optional so card won't crash / Vercel won't complain
+  trending?: boolean;
   openUntil?: string;
   busy?: 'Quiet' | 'Moderate' | 'Busy';
 }
@@ -22,9 +22,9 @@ export const mockPlaces: Place[] = [
     distance: 0.3,
     rating: 4.8,
     reviews: 124,
+    description: 'Cozy spot with great vibes',
     image: '☕',
     trending: true,
-    description: 'Cozy spot with great vibes',
     openUntil: '9:00 PM',
     busy: 'Moderate',
   },
@@ -35,9 +35,9 @@ export const mockPlaces: Place[] = [
     distance: 0.5,
     rating: 4.9,
     reviews: 892,
+    description: 'Perfect for weekend walks',
     image: '🌳',
     trending: true,
-    description: 'Perfect for weekend walks',
     openUntil: 'Always open',
     busy: 'Quiet',
   },
@@ -48,9 +48,8 @@ export const mockPlaces: Place[] = [
     distance: 0.8,
     rating: 4.6,
     reviews: 45,
-    image: '💻',
     description: 'Quiet place to work',
-    openUntil: '10:00 PM',
+    image: '💻',
     busy: 'Quiet',
   },
   {
@@ -60,8 +59,8 @@ export const mockPlaces: Place[] = [
     distance: 1.2,
     rating: 4.7,
     reviews: 203,
-    image: '🍽️',
     description: 'Amazing brunch menu',
+    image: '🍽️',
     openUntil: '11:00 PM',
     busy: 'Busy',
   },
@@ -72,8 +71,8 @@ export const mockPlaces: Place[] = [
     distance: 1.5,
     rating: 4.5,
     reviews: 156,
-    image: '🛍️',
     description: 'Local artisan goods',
+    image: '🛍️',
     openUntil: '10:00 PM',
     busy: 'Moderate',
   },
@@ -84,9 +83,10 @@ export const mockPlaces: Place[] = [
     distance: 2.1,
     rating: 4.3,
     reviews: 88,
-    image: '🎟️',
     description: 'Family-friendly weekend events',
-    openUntil: '8:00 PM',
+    image: '🎟️',
     busy: 'Moderate',
   },
 ];
+
+export default mockPlaces;

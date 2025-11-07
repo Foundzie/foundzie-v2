@@ -1,20 +1,9 @@
+// src/app/components/PlaceCard.tsx
 'use client';
 
 import { Heart, MapPin, Star } from 'lucide-react';
 import { useState } from 'react';
-
-interface Place {
-  id: number;
-  name: string;
-  category: string;
-  distance: number;
-  rating: number;
-  reviews: number;
-  // 👇 this is the important part — make image optional
-  image?: string;
-  trending?: boolean;
-  description: string;
-}
+import type { Place } from '@/app/data/places'; // 👈 use the SAME Place
 
 interface PlaceCardProps {
   place: Place;
@@ -26,9 +15,8 @@ export default function PlaceCard({ place }: PlaceCardProps) {
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition">
       <div className="flex gap-3">
-        {/* Icon */}
+        {/* Icon / image */}
         <div className="text-3xl flex-shrink-0">
-          {/* if image is missing, show a fallback */}
           {place.image ?? '📍'}
         </div>
 
@@ -48,6 +36,7 @@ export default function PlaceCard({ place }: PlaceCardProps) {
               </div>
               <p className="text-xs text-gray-500">{place.category}</p>
             </div>
+
             <button
               onClick={() => setIsSaved(!isSaved)}
               className="flex-shrink-0 p-1 hover:bg-gray-100 rounded transition"
@@ -63,7 +52,9 @@ export default function PlaceCard({ place }: PlaceCardProps) {
           </div>
 
           {/* Description */}
-          <p className="text-xs text-gray-600 mb-2">{place.description}</p>
+          <p className="text-xs text-gray-600 mb-2">
+            {place.description}
+          </p>
 
           {/* Rating & Distance */}
           <div className="flex items-center justify-between">
@@ -74,8 +65,11 @@ export default function PlaceCard({ place }: PlaceCardProps) {
                   {place.rating}
                 </span>
               </div>
-              <span className="text-xs text-gray-500">({place.reviews})</span>
+              <span className="text-xs text-gray-500">
+                ({place.reviews})
+              </span>
             </div>
+
             <div className="flex items-center gap-1 text-xs text-purple-600 font-semibold">
               <MapPin className="w-3 h-3" />
               {place.distance} mi
