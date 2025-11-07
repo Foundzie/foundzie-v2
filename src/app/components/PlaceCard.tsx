@@ -2,18 +2,7 @@
 
 import { Heart, MapPin, Star } from 'lucide-react';
 import { useState } from 'react';
-
-interface Place {
-  id: number;
-  name: string;
-  category: string;
-  distance: number;
-  rating: number;
-  reviews: number;
-  image?: string;
-  trending?: boolean;
-  description: string;
-}
+import type { Place } from '@/app/data/places'; // <-- use the same Place as your data
 
 interface PlaceCardProps {
   place: Place;
@@ -22,13 +11,14 @@ interface PlaceCardProps {
 export default function PlaceCard({ place }: PlaceCardProps) {
   const [isSaved, setIsSaved] = useState(false);
 
+  // if the place has no image, use a default one
+  const icon = place.image ?? '📍';
+
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition">
       <div className="flex gap-3">
         {/* Icon */}
-        <div className="text-3xl flex-shrink-0">
-  {place.image ?? '📍'}
-</div>
+        <div className="text-3xl flex-shrink-0">{icon}</div>
 
         {/* Content */}
         <div className="flex-1 min-w-0">
