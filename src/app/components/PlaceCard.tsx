@@ -2,7 +2,19 @@
 
 import { Heart, MapPin, Star } from 'lucide-react';
 import { useState } from 'react';
-import type { Place } from '@/app/data/places'; // ← use the Place from your data file
+
+interface Place {
+  id: number;
+  name: string;
+  category: string;
+  distance: number;
+  rating: number;
+  reviews: number;
+  // 👇 this is the important part — make image optional
+  image?: string;
+  trending?: boolean;
+  description: string;
+}
 
 interface PlaceCardProps {
   place: Place;
@@ -16,8 +28,8 @@ export default function PlaceCard({ place }: PlaceCardProps) {
       <div className="flex gap-3">
         {/* Icon */}
         <div className="text-3xl flex-shrink-0">
-          {/* image might be missing, so fall back */}
-          {place.image ? place.image : '📍'}
+          {/* if image is missing, show a fallback */}
+          {place.image ?? '📍'}
         </div>
 
         {/* Content */}
@@ -36,7 +48,6 @@ export default function PlaceCard({ place }: PlaceCardProps) {
               </div>
               <p className="text-xs text-gray-500">{place.category}</p>
             </div>
-
             <button
               onClick={() => setIsSaved(!isSaved)}
               className="flex-shrink-0 p-1 hover:bg-gray-100 rounded transition"
