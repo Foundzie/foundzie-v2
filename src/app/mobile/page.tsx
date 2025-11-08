@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
-import savedPlaceIds from "@/app/data/saved";
+import { savedPlaceIds } from "@/app/data/saved";
 
 // a Place is whatever shape our mockPlaces have
 type Place = (typeof mockPlaces)[number];
