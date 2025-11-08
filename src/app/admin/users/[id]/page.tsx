@@ -1,92 +1,102 @@
-// @ts-nocheck
 // src/app/admin/users/[id]/page.tsx
-
 import Link from "next/link";
-import mockUsers from "@/app/data/users";
+import {
+  mockUsers,
+  AdminUserRole,
+  AdminUserStatus,
+} from "@/app/data/users";
 
-export default function AdminEditUserPage({ params }: any) {
-  const id =
-    typeof params?.id === "string"
-      ? params.id
-      : Array.isArray(params?.id)
-      ? params.id[0]
-      : "";
+type PageProps = {
+  params: { id: string };
+};
 
-  const user = mockUsers.find((u) => u.id === id);
+export default function AdminEditUserPage({ params }: PageProps) {
+  // params.id will be "1", "2", "3", ...
+  const user = mockUsers.find((u) => u.id === params.id);
 
   if (!user) {
     return (
-      <main className="min-h-screen bg-white px-6 py-6">
-        <Link href="/admin/users" className="text-xs text-gray-400 mb-4 inline-block">
-          ← back to users
+      <main className="p-8 space-y-4">
+        <Link href="/admin/users" className="text-sm text-purple-700">
+          &larr; back to users
         </Link>
-        <h1 className="text-xl font-semibold text-gray-900 mb-2">User not found</h1>
-        <p className="text-sm text-gray-500">No user with id {id} in mock data.</p>
+        <h1 className="text-xl font-semibold">User not found</h1>
+        <p className="text-gray-500">
+          No user with id {params.id} in mock data.
+        </p>
       </main>
     );
   }
 
+  const roles: AdminUserRole[] = ["admin", "editor", "viewer"];
+  const statuses: AdminUserStatus[] = ["active", "invited", "disabled"];
+
   return (
-    <main className="min-h-screen bg-white px-6 py-6">
-      <Link href="/admin/users" className="text-xs text-gray-400 mb-4 inline-block">
-        ← back to users
+    <main className="p-8">
+      <Link href="/admin/users" className="text-sm text-purple-700">
+        &larr; back to users
       </Link>
 
-      <h1 className="text-xl font-semibold text-gray-900 mb-2">
-        Edit user: {user.name}
-      </h1>
-      <p className="text-sm text-gray-500 mb-6">
-        This matches our mock data in <code>src/app/data/users.ts</code>.
+      <h1 className="mt-6 text-2xl font-semibold">Edit user</h1>
+      <p className="text-gray-500 mb-6">
+        Values shown here come from <code>src/app/data/users.ts</code>
       </p>
 
-      <form className="space-y-4 bg-gray-50 border border-gray-100 rounded-xl p-5 max-w-md">
+      <form className="bg-white rounded-xl border border-gray-200 p-6 max-w-xl space-y-4">
         <div>
-          <label className="block text-xs text-gray-500 mb-1">Name</label>
+          <label className="block text-sm font-medium mb-1">Name</label>
           <input
-            type="text"
             defaultValue={user.name}
-            className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
-            required
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
           />
         </div>
 
         <div>
-          <label className="block text-xs text-gray-500 mb-1">Email</label>
+          <label className="block text-sm font-medium mb-1">Email</label>
           <input
             type="email"
             defaultValue={user.email}
-            className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
-            required
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
           />
         </div>
 
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Role</label>
-          <select
-            defaultValue={user.role}
-            className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm bg-white"
-          >
-            <option value="admin">Admin</option>
-            <option value="editor">Editor</option>
-            <option value="viewer">Viewer</option>
-          </select>
+        <div className="flex gap-4">
+          <div className="flex-1">
+            <label className="block text-sm font-medium mb-1">Role</label>
+            <select
+              defaultValue={user.role}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+            >
+              {roles.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex-1">
+            <label className="block text-sm font-medium mb-1">Status</label>
+            <select
+              defaultValue={user.status}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+            >
+              {statuses.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Status</label>
-          <select
-            defaultValue={user.status}
-            className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm bg-white"
-          >
-            <option value="active">Active</option>
-            <option value="invited">Invited</option>
-            <option value="disabled">Disabled</option>
-          </select>
-        </div>
+        <p className="text-xs text-gray-400">
+          Note: this is a mock form. In a real app we’d PATCH/PUT to an API.
+        </p>
 
         <button
-          type="submit"
-          className="bg-purple-600 text-white text-sm px-4 py-2 rounded-md"
+          type="button"
+          className="inline-flex items-center rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white"
         >
           Save (mock)
         </button>
