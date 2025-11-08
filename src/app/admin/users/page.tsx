@@ -1,15 +1,20 @@
 // src/app/admin/users/page.tsx
-import Link from 'next/link';
-import mockUsers from '@/app/data/users';
+
+import Link from "next/link";
+import mockUsers from "@/app/data/users";
 
 export default function AdminUsersPage() {
   return (
     <main className="min-h-screen bg-white px-6 py-6">
+      <Link href="/admin" className="text-xs text-gray-400 mb-4 inline-block">
+        ← back to admin
+      </Link>
+
       <header className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Users</h1>
           <p className="text-sm text-gray-500">
-            Shared list coming from <code className="text-xs">src/app/data/users.ts</code>
+            Shared list coming from <code>src/app/data/users.ts</code>
           </p>
         </div>
         <Link
@@ -20,27 +25,26 @@ export default function AdminUsersPage() {
         </Link>
       </header>
 
-      <section className="bg-gray-50 border border-gray-100 rounded-xl p-4 space-y-3">
+      <div className="bg-gray-50 border border-gray-100 rounded-xl divide-y divide-gray-100 max-w-lg">
         {mockUsers.map((u) => (
-          <div key={u.id} className="flex items-center justify-between">
+          <div key={u.id} className="flex items-center justify-between px-4 py-4">
             <div>
               <p className="text-sm font-medium text-gray-900">{u.name}</p>
-              <p className="text-xs text-gray-500">{u.email}</p>
-              <p className="text-[10px] text-gray-400">{u.joined}</p>
+              <p className="text-xs text-gray-400">{u.email}</p>
+              <p className="text-xs text-gray-400">Joined {u.joined}</p>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-4">
               <span
-                className={`text-[10px] px-2 py-0.5 rounded-full ${
-                  u.status === 'active'
-                    ? 'bg-green-100 text-green-700'
-                    : u.status === 'invited'
-                    ? 'bg-yellow-100 text-yellow-700'
-                    : 'bg-gray-100 text-gray-500'
-                }`}
+                className={
+                  u.status === "active"
+                    ? "text-xs text-green-500"
+                    : u.status === "invited"
+                    ? "text-xs text-amber-500"
+                    : "text-xs text-gray-400"
+                }
               >
                 {u.status.toUpperCase()}
               </span>
-              <span className="text-[10px] text-gray-400">{u.role}</span>
               <Link
                 href={`/admin/users/${u.id}`}
                 className="text-xs text-purple-600 hover:underline"
@@ -50,11 +54,7 @@ export default function AdminUsersPage() {
             </div>
           </div>
         ))}
-      </section>
-
-      <p className="text-xs text-gray-400 mt-4">
-        ← <Link href="/admin" className="underline">back to admin</Link>
-      </p>
+      </div>
     </main>
   );
 }
