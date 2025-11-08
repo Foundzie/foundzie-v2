@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
-import savedPlaceIds from "@/app/data/saved";
+import { savedPlaceIds } from "@/app/data/saved";
 
 type Place = (typeof mockPlaces)[number];
 
@@ -26,25 +26,22 @@ function PlaceRow({ place }: { place: Place }) {
 }
 
 export default function MobileHomePage() {
-  // which tab is active
   const [activeTab, setActiveTab] = useState<"trending" | "nearby" | "saved">(
     "trending"
   );
-
-  // what user typed
   const [query, setQuery] = useState("");
 
-  // base lists (still mock)
-  const trending = mockPlaces; // pretend these are trending
-  const nearby = mockPlaces; // pretend same list for now
+  // base lists
+  const trending = mockPlaces;
+  const nearby = mockPlaces;
   const saved = mockPlaces.filter((p) => savedPlaceIds.includes(Number(p.id)));
 
-  // pick list by tab
+  // pick list for the current tab
   let listToShow: Place[] = trending;
   if (activeTab === "nearby") listToShow = nearby;
   if (activeTab === "saved") listToShow = saved;
 
-  // apply search on top of that
+  // filter by search
   const filtered = listToShow.filter((place) => {
     if (!query) return true;
     const q = query.toLowerCase();
@@ -113,7 +110,7 @@ export default function MobileHomePage() {
         )}
       </div>
 
-      {/* bottom nav (same as others) */}
+      {/* bottom nav */}
       <nav className="fixed bottom-0 left-0 right-0 bg-[#0f172a] border-t border-slate-800 flex justify-around py-2 text-xs text-slate-300">
         <Link href="/mobile" className="text-white">
           Home
