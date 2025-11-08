@@ -1,116 +1,105 @@
-// src/app/mobile/page.tsx
-'use client';
+"use client";
 
-import { useState } from 'react';
-import BottomNav from '../components/BottomNav';
-import mockPlaces from '@/app/data/places';
-import savedPlaceIds from '@/app/data/saved';
-import Link from 'next/link';
-
-type Tab = 'trending' | 'nearby' | 'saved';
+import Link from "next/link";
+import { mockPlaces } from "@/app/data/places";
+import { mockSavedPlaces } from "@/app/data/saved";
+import { useState } from "react";
 
 export default function MobileHomePage() {
-  const [activeTab, setActiveTab] = useState<Tab>('trending');
+  const [activeTab, setActiveTab] = useState<"trending" | "nearby" | "saved">(
+    "trending"
+  );
 
-  // break the data up
-  const trendingPlaces = mockPlaces.filter((p) => p.trending);
-  const nearbyPlaces = mockPlaces; // for now just show all
-  const savedPlaces = mockPlaces.filter((p) => savedPlaceIds.includes(p.id));
+  const trending = mockPlaces;
+  const nearby = mockPlaces;
+  const saved = mockSavedPlaces;
 
-  // decide which list to show
-  let listToShow = trendingPlaces;
-  if (activeTab === 'nearby') listToShow = nearbyPlaces;
-  if (activeTab === 'saved') listToShow = savedPlaces;
+  const tabs: { id: "trending" | "nearby" | "saved"; label: string }[] = [
+    { id: "trending", label: "Trending" },
+    { id: "nearby", label: "Nearby" },
+    { id: "saved", label: "Saved" },
+  ];
+
+  let listToShow = trending;
+  if (activeTab === "nearby") listToShow = nearby;
+  if (activeTab === "saved") listToShow = saved;
 
   return (
-    <main className="min-h-screen bg-white pb-20">
-      {/* top bar */}
-      <header className="px-4 py-4 border-b border-gray-100 flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-gray-900">Foundzie</h1>
-          <p className="text-xs text-gray-500">What&apos;s near you</p>
+    <main className="min-h-screen bg-[#0f172a] text-white">
+      <header className="p-4 space-y-3">
+        <h1 className="text-2xl font-semibold">Foundzie</h1>
+        <p className="text-sm text-slate-200">What&apos;s near you</p>
+
+        <div className="bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+          <input
+            type="text"
+            placeholder="Search places..."
+            className="bg-transparent outline-none w-full text-sm placeholder:text-slate-400"
+          />
         </div>
-        <Link href="/mobile/notifications" className="text-purple-600 text-sm underline">
-          alerts
-        </Link>
+
+        <div className="flex gap-2 mt-2">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex-1 rounded-md py-2 text-center text-sm transition
+                ${
+                  activeTab === tab.id
+                    ? "bg-purple-600 text-white"
+                    : "bg-slate-900/40 text-slate-200 border border-slate-800"
+                }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </header>
 
-      {/* search */}
-      <div className="px-4 pt-4">
-        <input
-          type="text"
-          placeholder="Search places..."
-          className="w-full border border-gray-200 rounded-full px-4 py-2 text-sm outline-none"
-        />
-      </div>
-
-      {/* tabs */}
-      <div className="px-4 mt-4 flex gap-2">
-        <button
-          onClick={() => setActiveTab('trending')}
-          className={`flex-1 text-center text-sm py-2 rounded-full ${
-            activeTab === 'trending' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-700'
-          }`}
-        >
-          Trending
-        </button>
-        <button
-          onClick={() => setActiveTab('nearby')}
-          className={`flex-1 text-center text-sm py-2 rounded-full ${
-            activeTab === 'nearby' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-700'
-          }`}
-        >
-          Nearby
-        </button>
-        <button
-          onClick={() => setActiveTab('saved')}
-          className={`flex-1 text-center text-sm py-2 rounded-full ${
-            activeTab === 'saved' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-700'
-          }`}
-        >
-          Saved
-        </button>
-      </div>
-
-      {/* list */}
-      <section className="px-4 mt-4 space-y-3">
+      <section className="px-4 pb-16 space-y-2">
         {listToShow.length === 0 ? (
-          <p className="text-xs text-gray-400 py-6 text-center">
-            Nothing here yet.
+          <p className="text-slate-400 text-sm mt-4">
+            Nothing here yet. Save a place from Explore.
           </p>
         ) : (
-          listToShow.map((place) => (
-            <Link
-              key={place.id}
-              href={`/mobile/places/${place.id}`}
-              className="flex items-center justify-between border border-gray-100 rounded-xl px-3 py-3 shadow-sm"
-            >
-              <div>
-                <p className="text-sm font-semibold text-gray-900 flex items-center gap-2">
-                  {place.name}
-                  {place.trending && activeTab !== 'saved' ? (
-                    <span className="text-[10px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
-                      TRENDING
-                    </span>
+          <ul className="space-y-2">
+            {listToShow.map((place: any) => (
+              <li
+                key={place.id}
+                className="bg-slate-900/40 border border-slate-800 rounded-lg px-3 py-3 flex items-center justify-between"
+              >
+                <div>
+                  <p className="text-sm font-medium">{place.name}</p>
+                  <p className="text-xs text-slate-400">
+                    {place.category}{" "}
+                    {place.description ? `· ${place.description}` : null}
+                  </p>
+                  {place.distanceMiles ? (
+                    <p className="text-xs text-slate-500 mt-1">
+                      {place.distanceMiles} mi
+                    </p>
                   ) : null}
-                </p>
-                <p className="text-xs text-gray-500">{place.category}</p>
-                <p className="text-[10px] text-gray-400">
-                  {place.description}
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-xs text-gray-600">{place.distance} mi</p>
-                <p className="text-[10px] text-gray-400">
-                  open until {place.openUntil}
-                </p>
-              </div>
-            </Link>
-          ))
+                </div>
+                <Link
+                    href={`/mobile/places/${place.id}`}
+                    className="text-xs text-purple-300 hover:text-purple-100"
+                  >
+                  View
+                </Link>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 
-      <BottomNav />
+      <footer className="fixed bottom-0 left-0 right-0 bg-slate-950/90 border-t border-slate-800 px-6 py-2 flex justify-between text-xs text-slate-200">
+        <Link href="/mobile" className="text-purple-200">
+          Home
+        </Link>
+        <Link href="/mobile/explore">Explore</Link>
+        <Link href="/mobile/notifications">Alerts</Link>
+        <Link href="/mobile/sos">SOS</Link>
+      </footer>
     </main>
   );
 }
