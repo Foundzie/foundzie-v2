@@ -28,12 +28,11 @@ export default function MobileNotificationsPage() {
                 {n.type}
               </span>
             </div>
+
             <p className="text-sm text-gray-600">{n.message}</p>
-            <p className="text-xs text-gray-400">{n.timeAgo}</p>
+
             {!n.read ? (
-              <span className="text-xs text-green-600 font-medium">
-                unread
-              </span>
+              <span className="text-xs text-green-600 font-medium">unread</span>
             ) : null}
           </li>
         ))}
