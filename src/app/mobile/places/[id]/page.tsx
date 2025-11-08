@@ -1,78 +1,79 @@
+// src/app/mobile/places/[id]/page.tsx
+
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-type Place = (typeof mockPlaces)[number] & {
-  distanceMiles?: number;
-  openUntil?: string;
-};
+type Place = (typeof mockPlaces)[number];
 
-export default function MobilePlaceDetail({ params }: any) {
-  const place = (mockPlaces as Place[]).find((p) => String(p.id) === String(params.id));
+export default function MobilePlaceDetailPage({
+  params,
+}: {
+  params: { id: string };
+}) {
+  // be VERY forgiving about id shapes
+  const place = mockPlaces.find((p) => {
+    const rawId = (p as any).id;
+    // compare as string
+    if (String(rawId) === String(params.id)) return true;
+    // compare as number (in case we get "2" vs 2)
+    if (Number(rawId) === Number(params.id)) return true;
+    return false;
+  });
 
   if (!place) {
     return (
-      <main className="min-h-screen bg-[#0f172a] text-white p-4">
+      <main className="min-h-screen bg-slate-950 text-white p-4">
         <Link href="/mobile" className="text-sm text-slate-300">
           ← back
         </Link>
-        <p className="mt-6 font-semibold">Place not found</p>
+        <p className="mt-6 text-base font-medium">Place not found</p>
+        <p className="mt-2 text-sm text-slate-400">
+          (This just means the ID in the URL didn’t match anything in
+          src/app/data/places.ts.)
+        </p>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-[#0f172a] text-white pb-16">
-      {/* top bar */}
-      <div className="flex items-center justify-between px-4 py-4 border-b border-slate-800">
-        <Link href="/mobile" className="text-sm text-slate-300">
-          back
-        </Link>
-      </div>
+    <main className="min-h-screen bg-slate-950 text-white p-4 space-y-6">
+      <Link href="/mobile" className="text-sm text-slate-300">
+        ← back
+      </Link>
 
-      {/* content */}
-      <div className="px-4 py-6 space-y-6">
-        <div>
-          <h1 className="text-xl font-semibold">{place.name}</h1>
-          <p className="text-sm text-slate-300">{place.category}</p>
-        </div>
+      <header className="space-y-1">
+        <h1 className="text-xl font-semibold">{place.name}</h1>
+        <p className="text-sm text-slate-400">{place.category}</p>
+      </header>
 
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-slate-900/40 rounded-lg p-3">
-            <p className="text-[0.65rem] text-slate-400">Distance</p>
-            <p className="text-base font-medium">
-              {place.distanceMiles ? `${place.distanceMiles} mi` : "—"}
-            </p>
-          </div>
-          <div className="bg-slate-900/40 rounded-lg p-3">
-            <p className="text-[0.65rem] text-slate-400">Rating</p>
-            <p className="text-base font-medium">
-              {place.rating ? `${place.rating} ★` : "—"}
-            </p>
-          </div>
-          <div className="bg-slate-900/40 rounded-lg p-3">
-            <p className="text-[0.65rem] text-slate-400">Reviews</p>
-            <p className="text-base font-medium">
-              {place.reviews ? place.reviews : "—"}
-            </p>
-          </div>
-        </div>
-
-        <div className="bg-slate-900/40 rounded-lg p-4 space-y-2 text-sm">
-          <p className="text-slate-200">
-            {place.description || "Nice place nearby."}
-          </p>
-          <p className="text-slate-400 text-xs">
-            {place.openUntil ? `Open until ${place.openUntil}` : "Hours vary"}
+      <section className="grid grid-cols-3 gap-3">
+        <div className="bg-slate-900 rounded-lg p-3">
+          <p className="text-xs text-slate-400 mb-1">Distance</p>
+          <p className="text-base">
+            {"distanceMiles" in place && place.distanceMiles
+              ? `${place.distanceMiles} mi`
+              : "—"}
           </p>
         </div>
-      </div>
+        <div className="bg-slate-900 rounded-lg p-3">
+          <p className="text-xs text-slate-400 mb-1">Rating</p>
+          <p className="text-base">
+            {"rating" in place && place.rating ? place.rating : "—"} ⭐
+          </p>
+        </div>
+        <div className="bg-slate-900 rounded-lg p-3">
+          <p className="text-xs text-slate-400 mb-1">Open</p>
+          <p className="text-base">
+            {"openUntil" in place && place.openUntil
+              ? `until ${place.openUntil}`
+              : "—"}
+          </p>
+        </div>
+      </section>
 
-      {/* bottom CTA */}
-      <div className="fixed bottom-0 left-0 right-0 px-4 pb-4 bg-[#0f172a]">
-        <button className="w-full bg-fuchsia-500 rounded-lg py-3 text-sm font-medium text-white">
-          Get directions (mock)
-        </button>
-      </div>
+      <button className="w-full bg-fuchsia-500 hover:bg-fuchsia-600 transition rounded-md py-3 text-center text-sm font-medium">
+        Get directions (mock)
+      </button>
     </main>
   );
 }
