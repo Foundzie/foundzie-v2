@@ -1,73 +1,54 @@
 // src/app/admin/places/[id]/page.tsx
-import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-export default function AdminPlacePage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  const place = mockPlaces.find((p) => p.id === params.id);
+type AdminPlacePageProps = {
+  // Vercel/Next is insisting this is a Promise, so we’ll match it
+  params: Promise<{ id: string }>;
+};
+
+export default async function AdminPlacePage({ params }: AdminPlacePageProps) {
+  const { id } = await params;
+
+  const place = mockPlaces.find((p) => p.id === id);
 
   if (!place) {
     return (
-      <main className="min-h-screen bg-gray-50 p-6">
-        <Link href="/admin/places" className="text-xs text-purple-600 hover:underline">
-          ← back
-        </Link>
-        <p className="mt-4 text-sm text-red-600">
-          Place not found. The ID in the URL didn&apos;t match anything in
-          src/app/data/places.ts.
-        </p>
+      <main className="min-h-screen bg-slate-950 text-white p-6">
+        <h1 className="text-2xl font-semibold mb-2">Place not found</h1>
+        <p>This ID doesn’t exist in src/app/data/places.ts.</p>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-gray-900">
-            Admin · {place.name}
-          </h1>
-          <p className="text-xs text-gray-500">ID: {place.id}</p>
-        </div>
-        <Link href="/admin/places" className="text-xs text-purple-600 hover:underline">
-          ← back to list
-        </Link>
-      </header>
+    <main className="min-h-screen bg-slate-950 text-white p-6 space-y-4">
+      <h1 className="text-2xl font-semibold">{place.name}</h1>
+      <p className="text-sm text-slate-300">{place.category}</p>
 
-      <div className="p-6 space-y-3">
-        <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-2">
-          <p className="text-sm">
-            <span className="font-medium">Name:</span> {place.name}
+      <div className="bg-slate-900 rounded-lg p-4 space-y-2">
+        <p className="text-sm">
+          <span className="font-medium">Open until:</span> {place.openUntil}
+        </p>
+        <p className="text-sm">
+          <span className="font-medium">Rating:</span> {place.rating}
+        </p>
+        <p className="text-sm">
+          <span className="font-medium">Reviews:</span> {place.reviews}
+        </p>
+        <p className="text-sm">
+          <span className="font-medium">Trending:</span>{" "}
+          {place.trending ? "Yes" : "No"}
+        </p>
+        <p className="text-sm">
+          <span className="font-medium">Distance:</span>{" "}
+          {place.distanceMiles} mi
+        </p>
+        {place.description ? (
+          <p className="text-sm mt-2">
+            <span className="font-medium">Description:</span>{" "}
+            {place.description}
           </p>
-          <p className="text-sm">
-            <span className="font-medium">Category:</span> {place.category}
-          </p>
-          <p className="text-sm">
-            <span className="font-medium">Distance:</span> {place.distanceMiles} mi
-          </p>
-          <p className="text-sm">
-            <span className="font-medium">Rating:</span> {place.rating} ⭐
-          </p>
-          <p className="text-sm">
-            <span className="font-medium">Reviews:</span> {place.reviews}
-          </p>
-          <p className="text-sm">
-            <span className="font-medium">Open until:</span> {place.openUntil}
-          </p>
-          <p className="text-sm">
-            <span className="font-medium">Trending:</span>{" "}
-            {place.trending ? "Yes" : "No"}
-          </p>
-          {place.description ? (
-            <p className="text-sm">
-              <span className="font-medium">Description:</span>{" "}
-              {place.description}
-            </p>
-          ) : null}
-        </div>
+        ) : null}
       </div>
     </main>
   );
