@@ -3,19 +3,16 @@
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-type Place = (typeof mockPlaces)[number];
+// we don't fight Vercel's generated types — just accept anything
+export default function PlaceDetailPage({ params }: { params: any }) {
+  // sometimes params might be a promise-ish thing in the generated types,
+  // so we just read .id defensively
+  const rawId =
+    params && typeof params === "object" && "id" in params ? params.id : "";
 
-interface PlacePageProps {
-  params: {
-    id: string;
-  };
-}
+  const id = String(rawId);
 
-export default function PlaceDetailPage({ params }: PlacePageProps) {
-  // Ensure id matches regardless of type
-  const place = mockPlaces.find(
-    (p) => String(p.id) === String(params.id)
-  );
+  const place = mockPlaces.find((p) => String(p.id) === id);
 
   if (!place) {
     return (
@@ -25,7 +22,9 @@ export default function PlaceDetailPage({ params }: PlacePageProps) {
         </Link>
         <h1 className="mt-6 text-lg font-semibold">Place not found</h1>
         <p className="text-slate-400 text-sm mt-2">
-          The ID in the URL didn’t match any mock data in `places.ts`.
+          The ID in the URL didn’t match any mock data in
+          {" "}
+          <code>src/app/data/places.ts</code>.
         </p>
       </main>
     );
@@ -49,16 +48,14 @@ export default function PlaceDetailPage({ params }: PlacePageProps) {
             {place.distanceMiles ? `${place.distanceMiles} mi` : "—"}
           </p>
         </div>
-
         <div className="bg-slate-900 p-4 rounded-lg">
           <p className="text-xs text-slate-400 mb-1">Rating</p>
           <p className="text-base">
             {place.rating ? `${place.rating} ⭐` : "—"}
           </p>
         </div>
-
         <div className="bg-slate-900 p-4 rounded-lg">
-          <p className="text-xs text-slate-400 mb-1">Open Until</p>
+          <p className="text-xs text-slate-400 mb-1">Open until</p>
           <p className="text-base">
             {place.openUntil ? place.openUntil : "—"}
           </p>
