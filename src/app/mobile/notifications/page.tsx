@@ -20,20 +20,15 @@ export default function MobileNotificationsPage() {
         {mockNotifications.map((n) => (
           <li
             key={n.id}
-            className="rounded-lg border border-gray-200 p-3 flex flex-col gap-1 bg-white"
+            className="rounded-lg border border-gray-200 p-3 bg-white"
           >
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 mb-1">
               <p className="font-medium">{n.title}</p>
               <span className="text-xs uppercase tracking-wide text-purple-700">
                 {n.type}
               </span>
             </div>
-
             <p className="text-sm text-gray-600">{n.message}</p>
-
-            {!n.read ? (
-              <span className="text-xs text-green-600 font-medium">unread</span>
-            ) : null}
           </li>
         ))}
       </ul>
