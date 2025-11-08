@@ -5,66 +5,54 @@ import { mockPlaces } from "@/app/data/places";
 export default function AdminPlacesPage() {
   return (
     <main className="min-h-screen bg-gray-50">
-      <header className="w-full bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-gray-900">Places</h1>
-          <p className="text-xs text-gray-500">
-            Shared list coming from src/app/data/places.ts
-          </p>
-        </div>
-        <Link
-          href="/admin/places/new"
-          className="bg-purple-600 text-white text-sm px-4 py-2 rounded-md hover:bg-purple-700"
-        >
-          + New
-        </Link>
+      <header className="bg-white border-b border-gray-200 px-6 py-4">
+        <h1 className="text-2xl font-semibold text-gray-900">Places</h1>
+        <p className="text-sm text-gray-500">
+          Listing of mock places from <code>src/app/data/places.ts</code>
+        </p>
       </header>
 
-      <section className="px-6 py-6">
-        <div className="bg-white border border-gray-200 rounded-lg">
-          <ul className="divide-y divide-gray-100">
-            {mockPlaces.map((place) => (
-              <li
-                key={place.id}
-                className="flex items-center justify-between px-4 py-3"
+      <div className="px-6 py-6">
+        <ul className="space-y-3">
+          {mockPlaces.map((place) => (
+            <li
+              key={place.id}
+              className="bg-white border border-gray-200 rounded-lg px-4 py-3 flex items-center justify-between"
+            >
+              <div>
+                <p className="text-sm font-medium text-gray-900">
+                  {place.name}
+                  {place.trending && (
+                    <span className="ml-2 text-[10px] bg-yellow-100 text-yellow-800 px-2 py-[1px] rounded">
+                      trending
+                    </span>
+                  )}
+                </p>
+                <p className="text-xs text-gray-500">
+                  {place.category}
+                  {/* 👇 this was `place.distance` before — that caused the build error */}
+                  {typeof place.distanceMiles === "number"
+                    ? ` • ${place.distanceMiles} mi`
+                    : ""}
+                  {typeof place.rating === "number"
+                    ? ` • ${place.rating}★`
+                    : ""}
+                  {typeof place.reviews === "number"
+                    ? ` • ${place.reviews} reviews`
+                    : ""}
+                  {place.openUntil ? ` • open until ${place.openUntil}` : ""}
+                </p>
+              </div>
+              <Link
+                href={`/admin/places/${place.id}`}
+                className="text-xs text-purple-600 hover:underline"
               >
-                <div>
-                  <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
-                    {place.name}
-                    {place.trending ? (
-                      <span className="text-[10px] uppercase tracking-wide bg-yellow-100 text-yellow-700 px-2 py-[2px] rounded">
-                        trending
-                      </span>
-                    ) : null}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    {place.category} • {place.distance} mi • {place.rating}★ •{" "}
-                    {place.reviews} reviews
-                  </p>
-                  <p className="text-[10px] text-gray-400 mt-1">
-                    open until {place.openUntil} • {place.busy}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Link
-                    href={`/admin/places/${place.id}`}
-                    className="text-xs text-purple-600 hover:underline"
-                  >
-                    Edit
-                  </Link>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <Link
-          href="/admin"
-          className="inline-block mt-4 text-[11px] text-gray-400 hover:text-gray-600"
-        >
-          ← back to admin
-        </Link>
-      </section>
+                edit
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </div>
     </main>
   );
 }
