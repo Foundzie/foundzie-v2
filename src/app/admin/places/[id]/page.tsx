@@ -2,11 +2,12 @@
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-type AdminPlacePageProps = {
+export default function AdminPlacePage({
+  params,
+}: {
   params: { id: string };
-};
-
-export default function AdminPlacePage({ params }: AdminPlacePageProps) {
+}) {
+  // params.id is already a string like "1", "2", ...
   const place = mockPlaces.find((p) => p.id === params.id);
 
   if (!place) {
@@ -27,9 +28,7 @@ export default function AdminPlacePage({ params }: AdminPlacePageProps) {
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Edit place</h1>
-          <p className="text-xs text-gray-500">
-            ID: {place.id} • from src/app/data/places.ts
-          </p>
+          <p className="text-xs text-gray-500">ID: {place.id}</p>
         </div>
         <Link href="/admin/places" className="text-xs text-purple-600 hover:underline">
           ← back to list
@@ -37,7 +36,6 @@ export default function AdminPlacePage({ params }: AdminPlacePageProps) {
       </header>
 
       <div className="p-6 space-y-4">
-        {/* For now: read-only preview. Later: turn into a form. */}
         <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-2">
           <p className="text-sm">
             <span className="font-medium">Name:</span> {place.name}
@@ -68,8 +66,7 @@ export default function AdminPlacePage({ params }: AdminPlacePageProps) {
         </div>
 
         <p className="text-[11px] text-gray-500">
-          Note: we&apos;re still on mock data, so editing won&apos;t persist. When we hook this to a
-          real API / DB, we&apos;ll replace this with a form.
+          This is reading from mock data right now.
         </p>
       </div>
     </main>
