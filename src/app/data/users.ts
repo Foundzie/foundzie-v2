@@ -1,25 +1,24 @@
 // src/app/data/users.ts
 
 export type UserStatus = 'active' | 'invited' | 'disabled';
-export type UserRole = 'admin' | 'editor' | 'viewer';
 
-export interface AdminUser {
+export interface AppUser {
   id: string;
   name: string;
   email: string;
-  role: UserRole;
+  role: 'admin' | 'editor' | 'viewer';
   status: UserStatus;
-  joined: string; // nice-to-have text like "Joined Oct 2025"
+  joined: string; // e.g. "Oct 2025"
 }
 
-const mockUsers: AdminUser[] = [
+export const mockUsers: AppUser[] = [
   {
     id: '1',
     name: 'Kashif Yusuf',
     email: 'kashif@example.com',
     role: 'admin',
     status: 'active',
-    joined: 'Joined Oct 2025',
+    joined: 'Oct 2025',
   },
   {
     id: '2',
@@ -27,7 +26,7 @@ const mockUsers: AdminUser[] = [
     email: 'amina@example.com',
     role: 'editor',
     status: 'active',
-    joined: 'Joined Sep 2025',
+    joined: 'Sep 2025',
   },
   {
     id: '3',
@@ -35,7 +34,7 @@ const mockUsers: AdminUser[] = [
     email: 'diego@example.com',
     role: 'viewer',
     status: 'invited',
-    joined: 'Invited 2 days ago',
+    joined: 'Sep 2025',
   },
   {
     id: '4',
@@ -43,8 +42,9 @@ const mockUsers: AdminUser[] = [
     email: 'sarah@example.com',
     role: 'viewer',
     status: 'active',
-    joined: 'Joined Aug 2025',
+    joined: 'Aug 2025',
   },
 ];
 
+// so you can do both `import { mockUsers } ...` and `import users ...`
 export default mockUsers;
