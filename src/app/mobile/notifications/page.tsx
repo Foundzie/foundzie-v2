@@ -20,7 +20,7 @@ export default function MobileNotificationsPage() {
         {mockNotifications.map((n) => (
           <li
             key={n.id}
-            className="rounded-lg border border-gray-200 p-3 bg-white"
+           className="rounded-lg border border-gray-700 p-3 bg-gray-800 text-gray-100"
           >
             <div className="flex items-center gap-2 mb-1">
               <p className="font-medium">{n.title}</p>
