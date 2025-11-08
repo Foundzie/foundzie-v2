@@ -3,15 +3,24 @@
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-// keep params loose so Vercel's generated type doesn't fight us
 export default function PlaceDetailPage({ params }: { params: any }) {
   const rawId =
     params && typeof params === "object" && "id" in params ? params.id : "";
   const id = String(rawId);
 
-  const place = mockPlaces.find((p) => String(p.id) === id);
+  // 1) try exact ID match first
+  let place = mockPlaces.find((p: any) => String(p.id) === id) as any;
+
+  // 2) if that didn't work, try treating the id as "1 = first item, 2 = second item..."
+  if (!place) {
+    const idx = Number(id) - 1;
+    if (!Number.isNaN(idx) && idx >= 0 && idx < mockPlaces.length) {
+      place = mockPlaces[idx] as any;
+    }
+  }
 
   if (!place) {
+    // still nothing? show the friendly message
     return (
       <main className="min-h-screen bg-slate-950 text-white p-6">
         <Link href="/mobile" className="text-sm text-slate-400">
@@ -19,16 +28,13 @@ export default function PlaceDetailPage({ params }: { params: any }) {
         </Link>
         <h1 className="mt-6 text-lg font-semibold">Place not found</h1>
         <p className="text-slate-400 text-sm mt-2">
-          The ID in the URL didn’t match any mock data in
+          The ID in the URL didn&apos;t match any mock data in
           {" "}
           <code>src/app/data/places.ts</code>.
         </p>
       </main>
     );
   }
-
-  // make TS relax about optional fields in the mock data
-  const placeAny = place as any;
 
   return (
     <main className="min-h-screen bg-slate-950 text-white p-6 space-y-6">
@@ -45,19 +51,19 @@ export default function PlaceDetailPage({ params }: { params: any }) {
         <div className="bg-slate-900 p-4 rounded-lg">
           <p className="text-xs text-slate-400 mb-1">Distance</p>
           <p className="text-base">
-            {placeAny.distanceMiles ? `${placeAny.distanceMiles} mi` : "—"}
+            {place.distanceMiles ? `${place.distanceMiles} mi` : "—"}
           </p>
         </div>
         <div className="bg-slate-900 p-4 rounded-lg">
           <p className="text-xs text-slate-400 mb-1">Rating</p>
           <p className="text-base">
-            {placeAny.rating ? `${placeAny.rating} ⭐` : "—"}
+            {place.rating ? `${place.rating} ⭐` : "—"}
           </p>
         </div>
         <div className="bg-slate-900 p-4 rounded-lg">
           <p className="text-xs text-slate-400 mb-1">Open until</p>
           <p className="text-base">
-            {placeAny.openUntil ? placeAny.openUntil : "—"}
+            {place.openUntil ? place.openUntil : "—"}
           </p>
         </div>
       </div>
