@@ -2,21 +2,20 @@
 import mockPlaces from '@/app/data/places';
 import Link from 'next/link';
 
-interface PlacePageProps {
-  params: {
-    id: string;
-  };
-}
+export default async function PlaceDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  // this matches how your project wants params (as a Promise)
+  const { id } = await params;
 
-export default function PlaceDetailPage({ params }: PlacePageProps) {
-  const place = mockPlaces.find((p) => p.id === Number(params.id));
+  const place = mockPlaces.find((p) => p.id === Number(id));
 
   if (!place) {
     return (
       <main className="min-h-screen bg-white p-6">
-        <p className="text-sm text-gray-500 mb-4">
-          Place not found.
-        </p>
+        <p className="text-sm text-gray-500 mb-4">Place not found.</p>
         <Link href="/mobile/explore" className="text-purple-600 text-sm underline">
           ← back to explore
         </Link>
