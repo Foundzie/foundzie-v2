@@ -38,15 +38,15 @@ export default function MobileExplorePage() {
               <p className="font-medium">{place.name}</p>
               <p className="text-xs text-slate-400">{place.category}</p>
             </div>
-            <div className="text-right text-xs text-slate-400 space-y-1">
-              {place.distanceMiles ? <p>{place.distanceMiles} mi</p> : null}
-              {place.openUntil ? <p>open until {place.openUntil}</p> : null}
+            {/* right side kept simple because TS data doesn’t have distance/openUntil */}
+            <div className="text-right text-xs text-slate-500">
+              View
             </div>
           </Link>
         ))}
       </div>
 
-      {/* bottom nav (same as Home) */}
+      {/* bottom nav */}
       <nav className="fixed bottom-0 left-0 right-0 bg-[#0f172a] border-t border-slate-800 flex justify-around py-2 text-xs text-slate-300">
         <Link href="/mobile">Home</Link>
         <Link href="/mobile/explore" className="text-white">
