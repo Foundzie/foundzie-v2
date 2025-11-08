@@ -1,105 +1,110 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
-import { mockSavedPlaces } from "@/app/data/saved";
-import { useState } from "react";
+import savedPlaceIds from "@/app/data/saved";
+
+// a Place is whatever shape our mockPlaces have
+type Place = (typeof mockPlaces)[number];
 
 export default function MobileHomePage() {
+  // tabs: trending | nearby | saved
   const [activeTab, setActiveTab] = useState<"trending" | "nearby" | "saved">(
     "trending"
   );
 
-  const trending = mockPlaces;
-  const nearby = mockPlaces;
-  const saved = mockSavedPlaces;
+  // 1) base lists
+  const trending: Place[] = mockPlaces; // for now just show all
+  const nearby: Place[] = mockPlaces; // later we can sort by distance
 
-  const tabs: { id: "trending" | "nearby" | "saved"; label: string }[] = [
-    { id: "trending", label: "Trending" },
-    { id: "nearby", label: "Nearby" },
-    { id: "saved", label: "Saved" },
-  ];
+  // 2) turn saved IDs into real Place objects
+  const saved: Place[] = mockPlaces.filter((place) =>
+    savedPlaceIds.includes(Number(place.id))
+  );
 
-  let listToShow = trending;
+  // 3) pick which list to show
+  let listToShow: Place[] = trending;
   if (activeTab === "nearby") listToShow = nearby;
   if (activeTab === "saved") listToShow = saved;
 
   return (
     <main className="min-h-screen bg-[#0f172a] text-white">
-      <header className="p-4 space-y-3">
-        <h1 className="text-2xl font-semibold">Foundzie</h1>
-        <p className="text-sm text-slate-200">What&apos;s near you</p>
+      {/* top bar */}
+      <div className="flex items-center justify-between px-4 py-4">
+        <h1 className="text-lg font-semibold">Foundzie</h1>
+        <Link href="/mobile/notifications" className="text-sm text-purple-200">
+          alerts
+        </Link>
+      </div>
 
-        <div className="bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm">
-          <input
-            type="text"
-            placeholder="Search places..."
-            className="bg-transparent outline-none w-full text-sm placeholder:text-slate-400"
-          />
-        </div>
+      {/* tabs */}
+      <div className="px-4 pb-4 flex gap-2">
+        <button
+          onClick={() => setActiveTab("trending")}
+          className={`px-3 py-1 rounded-full text-sm ${
+            activeTab === "trending"
+              ? "bg-purple-500 text-white"
+              : "bg-slate-700 text-slate-200"
+          }`}
+        >
+          Trending
+        </button>
+        <button
+          onClick={() => setActiveTab("nearby")}
+          className={`px-3 py-1 rounded-full text-sm ${
+            activeTab === "nearby"
+              ? "bg-purple-500 text-white"
+              : "bg-slate-700 text-slate-200"
+          }`}
+        >
+          Nearby
+        </button>
+        <button
+          onClick={() => setActiveTab("saved")}
+          className={`px-3 py-1 rounded-full text-sm ${
+            activeTab === "saved"
+              ? "bg-purple-500 text-white"
+              : "bg-slate-700 text-slate-200"
+          }`}
+        >
+          Saved
+        </button>
+      </div>
 
-        <div className="flex gap-2 mt-2">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 rounded-md py-2 text-center text-sm transition
-                ${
-                  activeTab === tab.id
-                    ? "bg-purple-600 text-white"
-                    : "bg-slate-900/40 text-slate-200 border border-slate-800"
-                }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </header>
-
-      <section className="px-4 pb-16 space-y-2">
+      {/* list */}
+      <div className="bg-slate-900/40 rounded-t-3xl pt-2 pb-10">
         {listToShow.length === 0 ? (
-          <p className="text-slate-400 text-sm mt-4">
-            Nothing here yet. Save a place from Explore.
+          <p className="px-4 py-6 text-sm text-slate-300">
+            Nothing saved yet. Go to Trending and tap a place to save it. (Mock
+            for now.)
           </p>
         ) : (
-          <ul className="space-y-2">
-            {listToShow.map((place: any) => (
-              <li
-                key={place.id}
-                className="bg-slate-900/40 border border-slate-800 rounded-lg px-3 py-3 flex items-center justify-between"
-              >
-                <div>
-                  <p className="text-sm font-medium">{place.name}</p>
-                  <p className="text-xs text-slate-400">
-                    {place.category}{" "}
-                    {place.description ? `· ${place.description}` : null}
-                  </p>
-                  {place.distanceMiles ? (
-                    <p className="text-xs text-slate-500 mt-1">
-                      {place.distanceMiles} mi
-                    </p>
-                  ) : null}
-                </div>
+          <ul className="divide-y divide-slate-800">
+            {listToShow.map((place) => (
+              <li key={place.id}>
                 <Link
                     href={`/mobile/places/${place.id}`}
-                    className="text-xs text-purple-300 hover:text-purple-100"
+                    className="flex items-center justify-between px-4 py-4 gap-3"
                   >
-                  View
+                  <div>
+                    <p className="font-medium">{place.name}</p>
+                    <p className="text-xs text-slate-300">{place.category}</p>
+                  </div>
+                  <div className="text-right text-xs text-slate-400 space-y-1">
+                    {place.distanceMiles ? (
+                      <p>{place.distanceMiles} mi</p>
+                    ) : null}
+                    {place.openUntil ? (
+                      <p>open until {place.openUntil}</p>
+                    ) : null}
+                  </div>
                 </Link>
               </li>
             ))}
           </ul>
         )}
-      </section>
-
-      <footer className="fixed bottom-0 left-0 right-0 bg-slate-950/90 border-t border-slate-800 px-6 py-2 flex justify-between text-xs text-slate-200">
-        <Link href="/mobile" className="text-purple-200">
-          Home
-        </Link>
-        <Link href="/mobile/explore">Explore</Link>
-        <Link href="/mobile/notifications">Alerts</Link>
-        <Link href="/mobile/sos">SOS</Link>
-      </footer>
+      </div>
     </main>
   );
 }
