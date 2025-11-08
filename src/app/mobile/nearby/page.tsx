@@ -1,146 +1,86 @@
+// src/app/mobile/nearby/page.tsx
 'use client';
 
 import { useState } from 'react';
 import BottomNav from '../../components/BottomNav';
-import PlaceCard from '../../components/PlaceCard';
-import { MapPin, Navigation, Sliders } from 'lucide-react';
-import { mockPlaces } from '@/app/data/places';
+import mockPlaces from '@/app/data/places';
+import Link from 'next/link';
 
-// we’ll just reuse the same data you use everywhere
-const nearbyPlaces = mockPlaces;
+const filters = ['All', 'Coffee', 'Parks', 'Restaurants', 'Workspaces', 'Events', 'Shopping'];
 
 export default function NearbyPage() {
-  const [sortBy, setSortBy] = useState<'distance' | 'rating'>('distance');
+  const [activeFilter, setActiveFilter] = useState<string>('All');
 
-  // sort but be careful not to mutate original array
-  const sorted = [...nearbyPlaces].sort((a, b) => {
-    if (sortBy === 'distance') return a.distance - b.distance;
-    return b.rating - a.rating;
-  });
-
-  // ✅ make busy OPTIONAL-safe
-  function getBusyColor(busy?: string): string {
-    const value = busy ?? 'Moderate'; // default if missing
-    switch (value) {
-      case 'Quiet':
-        return 'bg-green-100 text-green-800';
-      case 'Moderate':
-        return 'bg-yellow-100 text-yellow-800';
-      case 'Busy':
-        return 'bg-red-100 text-red-800';
-      default:
-        return 'bg-gray-100 text-gray-800';
-    }
-  }
+  // sort by distance, then filter
+  const nearbyPlaces = mockPlaces
+    .slice() // copy first
+    .sort((a, b) => a.distance - b.distance)
+    .filter((place) => {
+      if (activeFilter === 'All') return true;
+      return place.category === activeFilter;
+    });
 
   return (
     <main className="min-h-screen bg-white pb-20">
       {/* Header */}
-      <header className="sticky top-0 z-40 bg-white border-b border-gray-100 shadow-sm">
-        <div className="px-4 py-3 flex items-center justify-between mb-3">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Nearby</h1>
-            <p className="text-xs text-gray-500">Spots close to you</p>
-          </div>
-          <button className="relative p-2 hover:bg-gray-100 rounded-full transition">
-            <Navigation className="w-5 h-5 text-purple-600" />
-          </button>
-        </div>
-
-        {/* Sort options */}
-        <div className="flex gap-2 px-4 pb-3">
-          <button
-            onClick={() => setSortBy('distance')}
-            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition ${
-              sortBy === 'distance'
-                ? 'bg-purple-100 text-purple-900'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            Closest
-          </button>
-          <button
-            onClick={() => setSortBy('rating')}
-            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition ${
-              sortBy === 'rating'
-                ? 'bg-purple-100 text-purple-900'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            Top rated
-          </button>
-        </div>
-
-        {/* Location */}
-        <div className="px-4 pb-3 bg-purple-50 border-t border-purple-100 flex items-center gap-2 text-sm text-purple-900">
-          <MapPin className="w-4 h-4" />
-          <span>Your location: Chicago, IL</span>
-        </div>
+      <header className="sticky top-0 z-40 bg-white border-b border-gray-100 px-4 py-3">
+        <h1 className="text-2xl font-bold text-gray-900">Nearby</h1>
+        <p className="text-sm text-gray-500">Places close to you, from our shared data.</p>
       </header>
 
-      {/* Places list */}
-      <section className="px-4 py-4">
-        <div className="space-y-3">
-          {sorted.map((place) => (
-            <div
-              key={place.id}
-              className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition"
-            >
-              <div className="flex gap-3">
-                {/* Icon / image */}
-                <div className="text-3xl flex-shrink-0">
-                  {place.image ?? '📍'}
-                </div>
+      {/* Filters */}
+      <section className="px-4 py-3 flex gap-2 overflow-x-auto scrollbar-none">
+        {filters.map((f) => (
+          <button
+            key={f}
+            onClick={() => setActiveFilter(f)}
+            className={`px-3 py-1 rounded-full text-sm border transition ${
+              activeFilter === f
+                ? 'bg-purple-600 text-white border-purple-600'
+                : 'bg-white text-gray-700 border-gray-200'
+            }`}
+          >
+            {f}
+          </button>
+        ))}
+      </section>
 
-                {/* Content */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <div>
-                      <h3 className="font-semibold text-gray-900 text-sm">
-                        {place.name}
-                      </h3>
-                      <p className="text-xs text-gray-500">{place.category}</p>
-                    </div>
-                    <span className="text-xs text-gray-400">
-                      {place.distance.toFixed(1)} mi
-                    </span>
-                  </div>
-
-                  {/* Rating */}
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-semibold text-gray-900">
-                      ⭐ {place.rating}
-                    </span>
-                    <span className="text-xs text-gray-400">
-                      ({place.reviews})
-                    </span>
-                  </div>
-
-                  {/* Status row – ✅ this was crashing Vercel */}
-                  <div className="flex gap-2 flex-wrap">
-                    <span
-                      className={`text-xs font-medium px-2 py-1 rounded-full ${getBusyColor(
-                        place.busy
-                      )}`}
-                    >
-                      {place.busy ?? 'Moderate'}
-                    </span>
-                    {place.openUntil && (
-                      <span className="text-xs text-gray-600 px-2 py-1 bg-gray-100 rounded-full">
-                        Until {place.openUntil}
+      {/* List */}
+      <section className="px-4 space-y-3">
+        {nearbyPlaces.map((place) => (
+          <Link
+            key={place.id}
+            href={`/mobile/places/${place.id}`}
+            className="block border border-gray-100 rounded-xl p-4 shadow-sm hover:border-purple-200 transition"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold text-gray-900 flex items-center gap-2">
+                    {place.name}
+                    {place.trending ? (
+                      <span className="text-[10px] uppercase bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full">
+                        trending
                       </span>
-                    )}
-                  </div>
-                </div>
+                    ) : null}
+                </p>
+                <p className="text-xs text-gray-500 mt-0.5">{place.category}</p>
+                <p className="text-sm text-gray-500 mt-1 line-clamp-1">{place.description}</p>
+                <p className="text-xs text-gray-400 mt-1">
+                  {place.reviews} reviews • {place.rating.toFixed(1)} ★
+                </p>
               </div>
-
-              {/* CTA */}
-              <button className="w-full mt-3 py-2 px-3 bg-purple-50 hover:bg-purple-100 text-purple-700 text-sm font-medium rounded-lg transition">
-                View details
-              </button>
+              <div className="text-right">
+                <p className="text-sm font-medium text-gray-900">{place.distance} mi</p>
+                <p className="text-[10px] text-gray-400 mt-1">open until {place.openUntil}</p>
+                <p className="text-[10px] text-gray-500 mt-1">{place.busy}</p>
+              </div>
             </div>
-          ))}
-        </div>
+          </Link>
+        ))}
+
+        {nearbyPlaces.length === 0 && (
+          <p className="text-center text-gray-400 text-sm py-8">No places found.</p>
+        )}
       </section>
 
       <BottomNav />
