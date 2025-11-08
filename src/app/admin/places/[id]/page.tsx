@@ -2,14 +2,12 @@
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-type AdminPlacePageProps = {
-  params: {
-    id: string;
-  };
-};
-
-export default function AdminPlacePage({ params }: AdminPlacePageProps) {
-  // params.id is already a string – no await, no Promise
+export default function AdminPlacePage({
+  params,
+}: {
+  params: { id: string };
+}) {
+  // params.id is already a string
   const place = mockPlaces.find((p) => p.id === params.id);
 
   if (!place) {
@@ -72,9 +70,7 @@ export default function AdminPlacePage({ params }: AdminPlacePageProps) {
           ) : null}
         </div>
 
-        <p className="text-[11px] text-gray-500">
-          Admin view reading from mock data.
-        </p>
+        <p className="text-[11px] text-gray-500">Admin view from mock data.</p>
       </div>
     </main>
   );
