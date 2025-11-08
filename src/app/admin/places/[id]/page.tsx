@@ -3,27 +3,27 @@
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-type AdminPlacePageProps = {
-  params: {
-    id: string;
-  };
-};
-
-export default function AdminPlacePage({ params }: AdminPlacePageProps) {
+export default function AdminPlacePage({
+  params,
+}: {
+  params: { id: string };
+}) {
   const { id } = params;
 
-  // compare as strings so TS is happy and it matches your mock data
+  // ids in mockPlaces are strings, so compare as strings
   const place = mockPlaces.find((p) => String(p.id) === String(id));
 
   if (!place) {
     return (
-      <main className="min-h-screen bg-gray-50 p-6">
+      <main className="min-h-screen bg-gray-50 p-6 space-y-4">
         <Link href="/admin/places" className="text-sm text-purple-600">
           ← Back
         </Link>
-        <h1 className="text-xl font-semibold mt-4">Place not found</h1>
-        <p className="text-sm text-gray-500 mt-2">
-          The ID in the URL didn’t match anything in <code>src/app/data/places.ts</code>.
+        <h1 className="text-xl font-semibold">Place not found</h1>
+        <p className="text-sm text-gray-500">
+          The ID in the URL didn&apos;t match any mock data in
+          {" "}
+          <code>src/app/data/places.ts</code>.
         </p>
       </main>
     );
@@ -40,28 +40,30 @@ export default function AdminPlacePage({ params }: AdminPlacePageProps) {
         <p className="text-sm text-gray-500">{place.category}</p>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {"distanceMiles" in place && place.distanceMiles ? (
+          {place.distanceMiles ? (
             <div>
               <p className="text-xs text-gray-400">Distance</p>
-              <p className="text-sm text-gray-900">{place.distanceMiles} mi</p>
+              <p className="text-sm text-gray-900">
+                {place.distanceMiles} mi
+              </p>
             </div>
           ) : null}
 
-          {"openUntil" in place && place.openUntil ? (
+          {place.openUntil ? (
             <div>
               <p className="text-xs text-gray-400">Open until</p>
               <p className="text-sm text-gray-900">{place.openUntil}</p>
             </div>
           ) : null}
 
-          {"rating" in place && place.rating ? (
+          {typeof place.rating === "number" ? (
             <div>
               <p className="text-xs text-gray-400">Rating</p>
               <p className="text-sm text-gray-900">★ {place.rating}</p>
             </div>
           ) : null}
 
-          {"reviews" in place && place.reviews ? (
+          {typeof place.reviews === "number" ? (
             <div>
               <p className="text-xs text-gray-400">Reviews</p>
               <p className="text-sm text-gray-900">{place.reviews}</p>
