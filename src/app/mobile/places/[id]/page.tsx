@@ -6,11 +6,7 @@ type Place = (typeof mockPlaces)[number] & {
   openUntil?: string;
 };
 
-export default function MobilePlaceDetail({
-  params,
-}: {
-  params: { id: string };
-}) {
+export default function MobilePlaceDetail({ params }: any) {
   const place = (mockPlaces as Place[]).find((p) => p.id === params.id);
 
   if (!place) {
