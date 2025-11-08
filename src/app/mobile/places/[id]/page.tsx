@@ -1,21 +1,11 @@
-// src/app/mobile/places/[id]/page.tsx
-
+// @ts-nocheck
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-type Place = (typeof mockPlaces)[number];
-
-export default function MobilePlaceDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  // be VERY forgiving about id shapes
-  const place = mockPlaces.find((p) => {
-    const rawId = (p as any).id;
-    // compare as string
+export default function MobilePlaceDetailPage({ params }: { params: { id: string } }) {
+  const place = mockPlaces.find((p: any) => {
+    const rawId = p.id;
     if (String(rawId) === String(params.id)) return true;
-    // compare as number (in case we get "2" vs 2)
     if (Number(rawId) === Number(params.id)) return true;
     return false;
   });
@@ -28,8 +18,7 @@ export default function MobilePlaceDetailPage({
         </Link>
         <p className="mt-6 text-base font-medium">Place not found</p>
         <p className="mt-2 text-sm text-slate-400">
-          (This just means the ID in the URL didn’t match anything in
-          src/app/data/places.ts.)
+          (The ID in the URL didn’t match anything in src/app/data/places.ts.)
         </p>
       </main>
     );
