@@ -9,7 +9,7 @@ type AdminPlacePageProps = {
 };
 
 export default function AdminPlacePage({ params }: AdminPlacePageProps) {
-  // params.id is a string like "1"
+  // params.id is already a string – no await, no Promise
   const place = mockPlaces.find((p) => p.id === params.id);
 
   if (!place) {
@@ -31,7 +31,7 @@ export default function AdminPlacePage({ params }: AdminPlacePageProps) {
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">
-            Edit place
+            Admin · {place.name}
           </h1>
           <p className="text-xs text-gray-500">ID: {place.id}</p>
         </div>
@@ -73,7 +73,7 @@ export default function AdminPlacePage({ params }: AdminPlacePageProps) {
         </div>
 
         <p className="text-[11px] text-gray-500">
-          This is reading from mock data right now.
+          Admin view reading from mock data.
         </p>
       </div>
     </main>
