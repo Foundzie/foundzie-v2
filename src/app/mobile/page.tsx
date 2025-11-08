@@ -1,131 +1,112 @@
+// src/app/mobile/page.tsx
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
-import { savedPlaceIds } from "@/app/data/saved";
 
-// make TS happy about optional mobile fields
-type Place = (typeof mockPlaces)[number] & {
-  distanceMiles?: number;
-  openUntil?: string;
-};
-
-function PlaceRow({ place }: { place: Place }) {
-  return (
-    <Link
-      href={`/mobile/places/${place.id}`}
-      className="flex items-center justify-between py-3 border-b border-slate-800"
-    >
-      <div>
-        <p className="font-medium">{place.name}</p>
-        <p className="text-xs text-slate-400">{place.category}</p>
-      </div>
-      <div className="text-right text-xs text-slate-500 space-y-1">
-        {place.distanceMiles ? <p>{place.distanceMiles} mi</p> : null}
-        {place.openUntil ? <p>open until {place.openUntil}</p> : null}
-      </div>
-    </Link>
-  );
-}
+const FILTERS = ["Trending", "Nearby", "Saved"] as const;
+type Filter = (typeof FILTERS)[number];
 
 export default function MobileHomePage() {
-  const [activeTab, setActiveTab] = useState<"trending" | "nearby" | "saved">(
-    "trending"
-  );
-  const [query, setQuery] = useState("");
+  const [activeFilter, setActiveFilter] = useState<Filter>("Trending");
+  const [search, setSearch] = useState("");
 
-  // base lists
-  const trending: Place[] = mockPlaces as Place[];
-  const nearby: Place[] = mockPlaces as Place[];
-  const saved: Place[] = (mockPlaces as Place[]).filter((p) =>
-    savedPlaceIds.includes(Number(p.id))
-  );
+  const filteredPlaces = useMemo(() => {
+    let places = [...mockPlaces];
 
-  // pick list for the current tab
-  let listToShow: Place[] = trending;
-  if (activeTab === "nearby") listToShow = nearby;
-  if (activeTab === "saved") listToShow = saved;
+    // 1) apply tab filter first
+    if (activeFilter === "Trending") {
+      places = places.filter((p) => p.trending);
+    } else if (activeFilter === "Nearby") {
+      // we have distanceMiles in the data, so "nearby" = sort by distance
+      places = places
+        .filter((p) => typeof p.distanceMiles === "number")
+        .sort((a, b) => a.distanceMiles - b.distanceMiles);
+    } else if (activeFilter === "Saved") {
+      // we don’t have real saved data yet, so show empty for now
+      places = [];
+    }
 
-  // filter by search
-  const filtered = listToShow.filter((place) => {
-    if (!query) return true;
-    const q = query.toLowerCase();
-    return (
-      place.name.toLowerCase().includes(q) ||
-      place.category.toLowerCase().includes(q)
-    );
-  });
+    // 2) apply search text
+    const term = search.trim().toLowerCase();
+    if (term.length > 0) {
+      places = places.filter((p) => {
+        return (
+          p.name.toLowerCase().includes(term) ||
+          p.category.toLowerCase().includes(term)
+        );
+      });
+    }
+
+    return places;
+  }, [activeFilter, search]);
 
   return (
-    <main className="min-h-screen bg-[#0f172a] text-white pb-14">
-      {/* header */}
-      <header className="px-4 pt-5 pb-3 space-y-2">
-        <h1 className="text-lg font-semibold">Foundzie</h1>
-        <p className="text-sm text-slate-300">What’s near you</p>
+    <main className="min-h-screen bg-slate-950 text-white">
+      <div className="px-4 pt-6 pb-4 space-y-4">
+        <h1 className="text-xl font-semibold">Foundzie</h1>
+        <p className="text-xs text-slate-400">What&apos;s near you</p>
 
         {/* search */}
         <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
           placeholder="Search nearby places..."
-          className="w-full bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-slate-400"
+          className="w-full rounded-md bg-slate-900 border border-slate-800 px-3 py-2 text-sm outline-none focus:border-slate-500"
         />
-      </header>
 
-      {/* tabs */}
-      <div className="px-4 flex gap-2 mb-2">
-        <button
-          onClick={() => setActiveTab("trending")}
-          className={`px-3 py-1 rounded-full text-sm ${
-            activeTab === "trending"
-              ? "bg-fuchsia-500 text-white"
-              : "bg-slate-800 text-slate-200"
-          }`}
-        >
-          Trending
-        </button>
-        <button
-          onClick={() => setActiveTab("nearby")}
-          className={`px-3 py-1 rounded-full text-sm ${
-            activeTab === "nearby"
-              ? "bg-fuchsia-500 text-white"
-              : "bg-slate-800 text-slate-200"
-          }`}
-        >
-          Nearby
-        </button>
-        <button
-          onClick={() => setActiveTab("saved")}
-          className={`px-3 py-1 rounded-full text-sm ${
-            activeTab === "saved"
-              ? "bg-fuchsia-500 text-white"
-              : "bg-slate-800 text-slate-200"
-          }`}
-        >
-          Saved
-        </button>
+        {/* tabs */}
+        <div className="flex gap-2">
+          {FILTERS.map((f) => (
+            <button
+              key={f}
+              onClick={() => setActiveFilter(f)}
+              className={
+                "px-3 py-1 rounded-full text-sm " +
+                (activeFilter === f
+                  ? "bg-pink-500 text-white"
+                  : "bg-slate-900 text-slate-200")
+              }
+            >
+              {f}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* list */}
-      <div className="px-4 space-y-1">
-        {filtered.length === 0 ? (
-          <p className="text-sm text-slate-400 py-6">No places match that.</p>
+      <ul className="divide-y divide-slate-900">
+        {filteredPlaces.length === 0 ? (
+          <li className="px-4 py-6 text-sm text-slate-400">
+            No places match that.
+          </li>
         ) : (
-          filtered.map((place) => <PlaceRow key={place.id} place={place} />)
+          filteredPlaces.map((place) => (
+            <li key={place.id}>
+              <Link
+                href={`/mobile/places/${place.id}`}
+                className="flex items-center justify-between px-4 py-4 hover:bg-slate-900/40"
+              >
+                <div>
+                  <p className="text-sm font-medium">{place.name}</p>
+                  <p className="text-xs text-slate-400">{place.category}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-slate-400">
+                    {typeof place.distanceMiles === "number"
+                      ? `${place.distanceMiles} mi`
+                      : ""}
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    open until {place.openUntil}
+                  </p>
+                </div>
+              </Link>
+            </li>
+          ))
         )}
-      </div>
-
-      {/* bottom nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-[#0f172a] border-t border-slate-800 flex justify-around py-2 text-xs text-slate-300">
-        <Link href="/mobile" className="text-white">
-          Home
-        </Link>
-        <Link href="/mobile/explore">Explore</Link>
-        <Link href="/mobile/notifications">Alerts</Link>
-        <Link href="/mobile/profile">Profile</Link>
-        <Link href="/admin">Admin</Link>
-      </nav>
+      </ul>
     </main>
   );
 }
