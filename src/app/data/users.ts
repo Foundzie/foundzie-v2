@@ -9,10 +9,10 @@ export interface AdminUser {
   email: string;
   role: AdminUserRole;
   status: AdminUserStatus;
-  joined: string; // month year just for display
+  joined: string; // display only
 }
 
-const mockUsers: AdminUser[] = [
+export const mockUsers: AdminUser[] = [
   {
     id: "1",
     name: "Kashif Yusuf",
@@ -47,4 +47,5 @@ const mockUsers: AdminUser[] = [
   },
 ];
 
+// export BOTH named and default so other files can do either style
 export default mockUsers;
