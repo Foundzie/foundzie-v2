@@ -7,7 +7,6 @@ export default function AdminPlacePage({
 }: {
   params: { id: string };
 }) {
-  // params.id is already a string
   const place = mockPlaces.find((p) => p.id === params.id);
 
   if (!place) {
@@ -38,7 +37,7 @@ export default function AdminPlacePage({
         </Link>
       </header>
 
-      <div className="p-6 space-y-4">
+      <div className="p-6 space-y-3">
         <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-2">
           <p className="text-sm">
             <span className="font-medium">Name:</span> {place.name}
@@ -69,8 +68,6 @@ export default function AdminPlacePage({
             </p>
           ) : null}
         </div>
-
-        <p className="text-[11px] text-gray-500">Admin view from mock data.</p>
       </div>
     </main>
   );
