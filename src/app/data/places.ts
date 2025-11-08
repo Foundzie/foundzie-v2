@@ -1,6 +1,6 @@
 // src/app/data/places.ts
 
-// this is the single source of truth for mobile places
+// single source of truth for places used on mobile
 export const mockPlaces = [
   {
     id: "1",
@@ -10,6 +10,7 @@ export const mockPlaces = [
     rating: 4.8,
     reviews: 124,
     openUntil: "9:00 PM",
+    trending: true,
   },
   {
     id: "2",
@@ -19,6 +20,7 @@ export const mockPlaces = [
     rating: 4.9,
     reviews: 892,
     openUntil: "Always open",
+    trending: true,
   },
   {
     id: "3",
@@ -28,6 +30,7 @@ export const mockPlaces = [
     rating: 4.6,
     reviews: 45,
     openUntil: "6:00 PM",
+    trending: false,
   },
   {
     id: "4",
@@ -37,6 +40,7 @@ export const mockPlaces = [
     rating: 4.7,
     reviews: 203,
     openUntil: "11:00 PM",
+    trending: false,
   },
   {
     id: "5",
@@ -46,6 +50,7 @@ export const mockPlaces = [
     rating: 4.5,
     reviews: 76,
     openUntil: "10:00 PM",
+    trending: false,
   },
   {
     id: "6",
@@ -55,8 +60,8 @@ export const mockPlaces = [
     rating: 4.4,
     reviews: 31,
     openUntil: "10:30 PM",
+    trending: false,
   },
 ];
 
-// handy type if you need it elsewhere
 export type Place = (typeof mockPlaces)[number];

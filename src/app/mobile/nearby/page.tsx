@@ -3,7 +3,7 @@
 
 import { useState } from 'react';
 import BottomNav from '../../components/BottomNav';
-import mockPlaces from '@/app/data/places';
+import { mockPlaces } from '@/app/data/places';
 import Link from 'next/link';
 
 const filters = ['All', 'Coffee', 'Parks', 'Restaurants', 'Workspaces', 'Events', 'Shopping'];
