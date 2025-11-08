@@ -1,50 +1,43 @@
-'use client';
+// src/app/mobile/notifications/page.tsx
+import Link from "next/link";
+import { mockNotifications } from "@/app/data/notifications";
 
-import BottomNav from '../../components/BottomNav';
-import { mockNotifications } from '@/app/data/notifications';
-import { appMeta } from '@/app/data/appMeta';
-
-export default function NotificationsPage() {
+export default function MobileNotificationsPage() {
   return (
-    <main className="min-h-screen bg-white pb-20">
-      <p className="px-4 pt-3 text-[10px] text-gray-400">
-        Data last updated: {appMeta.lastDataUpdate} • {appMeta.source} • {appMeta.version}
+    <main className="p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold">Alerts</h1>
+        <Link href="/mobile" className="text-sm text-purple-700">
+          back
+        </Link>
+      </div>
+
+      <p className="text-sm text-gray-500">
+        These come from <code>src/app/data/notifications.ts</code>
       </p>
-      {/* Header */}
-      <header className="sticky top-0 z-40 bg-white border-b border-gray-100 px-4 py-3">
-        <h1 className="text-2xl font-bold text-gray-900">Notifications</h1>
-        <p className="text-xs text-gray-500">Updates from Foundzie</p>
-      </header>
 
-      {/* List */}
-      <section className="px-4 py-4 space-y-3">
+      <ul className="space-y-3">
         {mockNotifications.map((n) => (
-          <div
+          <li
             key={n.id}
-            className="border border-gray-100 rounded-lg p-3 bg-white shadow-sm/5"
+            className="rounded-lg border border-gray-200 p-3 flex flex-col gap-1 bg-white"
           >
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <p className="text-sm font-semibold text-gray-900">
-                  {n.title}
-                </p>
-                <p className="text-xs text-gray-600 mt-1">{n.message}</p>
-                <p className="text-[10px] text-gray-400 mt-2">{n.time}</p>
-              </div>
-              {n.unread && (
-                <span className="w-2 h-2 rounded-full bg-purple-500 mt-1" />
-              )}
+            <div className="flex items-center gap-2">
+              <p className="font-medium">{n.title}</p>
+              <span className="text-xs uppercase tracking-wide text-purple-700">
+                {n.type}
+              </span>
             </div>
-            {n.actionLabel && (
-              <button className="mt-3 text-xs text-purple-600 font-medium">
-                {n.actionLabel}
-              </button>
-            )}
-          </div>
+            <p className="text-sm text-gray-600">{n.message}</p>
+            <p className="text-xs text-gray-400">{n.timeAgo}</p>
+            {!n.read ? (
+              <span className="text-xs text-green-600 font-medium">
+                unread
+              </span>
+            ) : null}
+          </li>
         ))}
-      </section>
-
-      <BottomNav />
+      </ul>
     </main>
   );
 }
