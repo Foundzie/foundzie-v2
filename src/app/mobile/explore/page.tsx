@@ -1,129 +1,61 @@
-'use client';
+// src/app/mobile/explore/page.tsx
+import Link from "next/link";
+import { mockPlaces } from "@/app/data/places";
 
-import { useState } from 'react';
-import BottomNav from '../../components/BottomNav';
-import PlaceCard from '../../components/PlaceCard';
-import { Search, Filter, ChevronRight } from 'lucide-react';
-import mockPlaces, { Place } from '@/app/data/places';
-import { appMeta } from '@/app/data/appMeta';
-
-// you can keep showing these categories in the UI
-const categories = [
-  { id: 1, name: 'Coffee', icon: '☕', count: 24 },
-  { id: 2, name: 'Parks', icon: '🌳', count: 12 },
-  { id: 3, name: 'Restaurants', icon: '🍽️', count: 48 },
-  { id: 4, name: 'Workspaces', icon: '💻', count: 8 },
-  { id: 5, name: 'Events', icon: '🎉', count: 15 },
-  { id: 6, name: 'Shopping', icon: '🛍️', count: 32 },
-];
-
-export default function ExplorePage() {
-  const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-
-  // 👉 use ONLY the shared mockPlaces from src/app/data/places.ts
-  const filteredPlaces = mockPlaces.filter((place) => {
-    // match category (or "all")
-    const matchesCategory =
-      selectedCategory === null
-        ? true
-        : place.category ===
-          categories.find((c) => c.id === selectedCategory)?.name;
-
-    // match text search
-    const matchesSearch = place.name
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase());
-
-    return matchesCategory && matchesSearch;
-  });
-
+export default function MobileExplorePage() {
   return (
-    <main className="min-h-screen bg-white pb-20">
-      {/* Data status */}
-      <p className="px-4 pt-3 text-[10px] text-gray-400">
-        Data last updated: {appMeta.lastDataUpdate} • {appMeta.source} • {appMeta.version}
-      </p>
-      {/* Header */}
-      <header className="sticky top-0 z-40 bg-white border-b border-gray-100 px-4 py-3">
-        <h1 className="text-2xl font-bold text-gray-900 mb-3">Explore</h1>
-
-        {/* Search bar */}
-        <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-2">
-          <Search className="w-4 h-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search places..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="bg-transparent text-sm outline-none flex-1 text-gray-700 placeholder-gray-500"
-          />
-          <button className="p-1 text-purple-600">
-            <Filter className="w-4 h-4" />
-          </button>
-        </div>
+    <main className="min-h-screen bg-[#0f172a] text-white pb-14">
+      <header className="px-4 pt-5 pb-3">
+        <h1 className="text-lg font-semibold">Explore</h1>
+        <p className="text-sm text-slate-300">Browse all nearby places</p>
       </header>
 
-      {/* Categories */}
-      <section className="px-4 py-4 border-b border-gray-100">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-gray-900">Categories</h2>
-          <button className="flex items-center gap-1 text-purple-600 text-xs font-medium hover:underline">
-            Filter
-            <ChevronRight className="w-3 h-3" />
-          </button>
+      {/* categories (fake for now) */}
+      <div className="px-4 mb-4 grid grid-cols-3 gap-3">
+        <div className="bg-slate-800 rounded-xl p-3 text-center">
+          <p className="text-sm">Coffee</p>
+          <p className="text-xs text-slate-400">24</p>
         </div>
-
-        <div className="grid grid-cols-3 gap-2">
-          {categories.map((cat) => (
-            <button
-              key={cat.id}
-              onClick={() =>
-                setSelectedCategory(
-                  selectedCategory === cat.id ? null : cat.id
-                )
-              }
-              className={`rounded-lg text-center transition ${
-                selectedCategory === cat.id
-                  ? 'bg-purple-100 border border-purple-600'
-                  : 'bg-gray-50 border border-gray-200'
-              }`}
-            >
-              <div className="text-2xl mb-1">{cat.icon}</div>
-              <div className="text-xs font-medium text-gray-900">
-                {cat.name}
-              </div>
-              <div className="text-[10px] text-gray-500">{cat.count}</div>
-            </button>
-          ))}
+        <div className="bg-slate-800 rounded-xl p-3 text-center">
+          <p className="text-sm">Parks</p>
+          <p className="text-xs text-slate-400">18</p>
         </div>
-      </section>
-
-      {/* Results */}
-      <section className="px-4 py-4 space-y-3">
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-sm font-semibold text-gray-900">
-            {selectedCategory
-              ? categories.find((c) => c.id === selectedCategory)?.name
-              : 'All Places'}{' '}
-            ({filteredPlaces.length})
-          </h2>
+        <div className="bg-slate-800 rounded-xl p-3 text-center">
+          <p className="text-sm">Workspaces</p>
+          <p className="text-xs text-slate-400">6</p>
         </div>
+      </div>
 
-        {filteredPlaces.length > 0 ? (
-          <div className="space-y-3">
-            {filteredPlaces.map((place: Place) => (
-              <PlaceCard key={place.id} place={place} />
-            ))}
-          </div>
-        ) : (
-          <p className="text-center py-8 text-sm text-gray-500">
-            No places found
-          </p>
-        )}
-      </section>
+      {/* list */}
+      <div className="px-4 space-y-1">
+        {mockPlaces.map((place) => (
+          <Link
+            key={place.id}
+            href={`/mobile/places/${place.id}`}
+            className="flex items-center justify-between py-3 border-b border-slate-800"
+          >
+            <div>
+              <p className="font-medium">{place.name}</p>
+              <p className="text-xs text-slate-400">{place.category}</p>
+            </div>
+            <div className="text-right text-xs text-slate-400 space-y-1">
+              {place.distanceMiles ? <p>{place.distanceMiles} mi</p> : null}
+              {place.openUntil ? <p>open until {place.openUntil}</p> : null}
+            </div>
+          </Link>
+        ))}
+      </div>
 
-      <BottomNav />
+      {/* bottom nav (same as Home) */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-[#0f172a] border-t border-slate-800 flex justify-around py-2 text-xs text-slate-300">
+        <Link href="/mobile">Home</Link>
+        <Link href="/mobile/explore" className="text-white">
+          Explore
+        </Link>
+        <Link href="/mobile/notifications">Alerts</Link>
+        <Link href="/mobile/profile">Profile</Link>
+        <Link href="/admin">Admin</Link>
+      </nav>
     </main>
   );
 }
