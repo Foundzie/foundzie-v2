@@ -2,20 +2,20 @@
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-export default function AdminEditPlacePage({
+export default async function AdminEditPlacePage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const place = mockPlaces.find((p) => p.id === Number(params.id));
+  const { id } = await params;
+  const place = mockPlaces.find((p) => p.id === Number(id));
 
   if (!place) {
     return (
       <main className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="bg-white border border-gray-200 rounded-lg px-6 py-8 text-center">
           <p className="text-sm text-gray-600 mb-4">
-            Place with id {params.id} not found (remember: we’re using mock
-            data).
+            Place with id {id} not found (mock data).
           </p>
           <Link
             href="/admin/places"
@@ -30,7 +30,6 @@ export default function AdminEditPlacePage({
 
   return (
     <main className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="w-full bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">
@@ -48,7 +47,6 @@ export default function AdminEditPlacePage({
         </Link>
       </header>
 
-      {/* Form (mock) */}
       <section className="px-6 py-6">
         <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-xl">
           <div className="grid gap-4">

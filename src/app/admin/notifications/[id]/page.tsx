@@ -2,19 +2,20 @@
 import Link from "next/link";
 import { mockNotifications } from "@/app/data/notifications";
 
-export default function AdminEditNotificationPage({
+export default async function AdminEditNotificationPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const notification = mockNotifications.find((n) => n.id === params.id);
+  const { id } = await params;
+  const notification = mockNotifications.find((n) => n.id === id);
 
   if (!notification) {
     return (
       <main className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="bg-white border border-gray-200 rounded-lg px-6 py-8 text-center">
           <p className="text-sm text-gray-600 mb-4">
-            Notification with id {params.id} not found (mock data).
+            Notification with id {id} not found (mock data).
           </p>
           <Link
             href="/admin/notifications"
