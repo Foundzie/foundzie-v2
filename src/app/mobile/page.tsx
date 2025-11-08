@@ -5,7 +5,11 @@ import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 import { savedPlaceIds } from "@/app/data/saved";
 
-type Place = (typeof mockPlaces)[number];
+// make TS happy about optional mobile fields
+type Place = (typeof mockPlaces)[number] & {
+  distanceMiles?: number;
+  openUntil?: string;
+};
 
 function PlaceRow({ place }: { place: Place }) {
   return (
@@ -32,9 +36,11 @@ export default function MobileHomePage() {
   const [query, setQuery] = useState("");
 
   // base lists
-  const trending = mockPlaces;
-  const nearby = mockPlaces;
-  const saved = mockPlaces.filter((p) => savedPlaceIds.includes(Number(p.id)));
+  const trending: Place[] = mockPlaces as Place[];
+  const nearby: Place[] = mockPlaces as Place[];
+  const saved: Place[] = (mockPlaces as Place[]).filter((p) =>
+    savedPlaceIds.includes(Number(p.id))
+  );
 
   // pick list for the current tab
   let listToShow: Place[] = trending;
