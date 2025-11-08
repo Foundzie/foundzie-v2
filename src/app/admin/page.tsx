@@ -1,8 +1,14 @@
 // src/app/admin/page.tsx
+
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 import { mockNotifications } from "@/app/data/notifications";
 import { mockUsers } from "@/app/data/users";
+
+// make TS happy about the shape coming from data files
+type Place = (typeof mockPlaces)[number];
+type AdminNotification = (typeof mockNotifications)[number];
+type AdminUser = (typeof mockUsers)[number];
 
 export default function AdminPage() {
   return (
@@ -16,17 +22,17 @@ export default function AdminPage() {
       </header>
 
       <div className="px-6 py-6 flex flex-col gap-6">
-        {/* 3 cards at the top */}
+        {/* stats cards */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Places card */}
+          {/* places card */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
             <p className="text-xs text-gray-400 mb-1">Places</p>
             <p className="text-2xl font-semibold text-gray-900">
               {mockPlaces.length}
-              <span className="text-xs text-gray-400 ml-1">
-                (from src/app/data/places.ts)
-              </span>
             </p>
+            <span className="text-xs text-gray-400 mt-1 inline-block">
+              (from src/app/data/places.ts)
+            </span>
             <Link
               href="/admin/places"
               className="text-xs text-purple-600 mt-2 inline-block hover:underline"
@@ -35,15 +41,15 @@ export default function AdminPage() {
             </Link>
           </div>
 
-          {/* Notifications card */}
+          {/* notifications card */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
             <p className="text-xs text-gray-400 mb-1">Notifications</p>
             <p className="text-2xl font-semibold text-gray-900">
               {mockNotifications.length}
-              <span className="text-xs text-gray-400 ml-1">
-                (from src/app/data/notifications.ts)
-              </span>
             </p>
+            <span className="text-xs text-gray-400 mt-1 inline-block">
+              (from src/app/data/notifications.ts)
+            </span>
             <Link
               href="/admin/notifications"
               className="text-xs text-purple-600 mt-2 inline-block hover:underline"
@@ -52,15 +58,15 @@ export default function AdminPage() {
             </Link>
           </div>
 
-          {/* Users card */}
+          {/* users card */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
             <p className="text-xs text-gray-400 mb-1">Users</p>
             <p className="text-2xl font-semibold text-gray-900">
               {mockUsers.length}
-              <span className="text-xs text-gray-400 ml-1">
-                (from src/app/data/users.ts)
-              </span>
             </p>
+            <span className="text-xs text-gray-400 mt-1 inline-block">
+              (from src/app/data/users.ts)
+            </span>
             <Link
               href="/admin/users"
               className="text-xs text-purple-600 mt-2 inline-block hover:underline"
@@ -70,7 +76,7 @@ export default function AdminPage() {
           </div>
         </section>
 
-        {/* lower area: notifications + places side by side */}
+        {/* lower area: notifications + places */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* latest notifications */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
@@ -86,10 +92,15 @@ export default function AdminPage() {
               </Link>
             </div>
             <ul className="space-y-3">
-              {mockNotifications.map((n) => (
-                <li key={n.id} className="border-b last:border-b-0 pb-3 last:pb-0">
+              {mockNotifications.map((n: AdminNotification) => (
+                <li
+                    key={n.id}
+                    className="border-b last:border-b-0 pb-3 last:pb-0"
+                >
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium text-gray-900">{n.title}</p>
+                    <p className="text-sm font-medium text-gray-900">
+                      {n.title}
+                    </p>
                     <span className="text-[10px] uppercase text-gray-400">
                       {n.type}
                     </span>
@@ -113,10 +124,10 @@ export default function AdminPage() {
               </Link>
             </div>
             <ul className="space-y-3">
-              {mockPlaces.map((place) => (
+              {mockPlaces.map((place: Place) => (
                 <li
-                    key={place.id}
-                    className="flex items-center justify-between border-b last:border-b-0 pb-3 last:pb-0"
+                  key={place.id}
+                  className="flex items-center justify-between border-b last:border-b-0 pb-3 last:pb-0"
                 >
                   <div>
                     <p className="text-sm font-medium text-gray-900">
@@ -128,7 +139,16 @@ export default function AdminPage() {
                       )}
                     </p>
                     <p className="text-xs text-gray-400">
-                      {place.category} • {place.distance} mi • ⭐ {place.rating}
+                      {place.category}
+                      {typeof place.distanceMiles === "number"
+                        ? ` · ${place.distanceMiles} mi`
+                        : ""}
+                      {place.openUntil
+                        ? ` · open until ${place.openUntil}`
+                        : ""}
+                      {typeof place.rating === "number"
+                        ? ` · ★ ${place.rating}`
+                        : ""}
                     </p>
                   </div>
                   <Link
