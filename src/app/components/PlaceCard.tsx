@@ -1,35 +1,59 @@
 // src/app/components/PlaceCard.tsx
-import Link from 'next/link';
-import { Place } from '@/app/data/places';
+import Link from "next/link";
 
-export default function PlaceCard({ place }: { place: Place }) {
-  return (
-    <Link
-      href={`/mobile/places/${place.id}`}
-      className="block border border-gray-100 rounded-xl p-4 shadow-sm hover:border-purple-200 transition bg-white"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="font-semibold text-gray-900 flex items-center gap-2">
-            {place.name}
-            {place.trending ? (
-              <span className="text-[10px] uppercase bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full">
-                trending
-              </span>
-            ) : null}
-          </p>
-          <p className="text-xs text-gray-500 mt-0.5">{place.category}</p>
-          <p className="text-sm text-gray-500 mt-1 line-clamp-1">{place.description}</p>
-          <p className="text-xs text-gray-400 mt-1">
-            {place.reviews} reviews • {place.rating.toFixed(1)} ★
-          </p>
-        </div>
-        <div className="text-right">
-          <p className="text-sm font-medium text-gray-900">{place.distance} mi</p>
-          <p className="text-[10px] text-gray-400 mt-1">open until {place.openUntil}</p>
-          <p className="text-[10px] text-gray-500 mt-1">{place.busy}</p>
-        </div>
+type PlaceCardProps = {
+  place: {
+    id: string;
+    name: string;
+    category: string;
+    distanceMiles?: number;
+    rating?: number;
+    reviews?: number;
+    openUntil?: string;
+    trending?: boolean;
+    description?: string; // 👈 make it optional
+  };
+  href?: string; // in case this card is clickable
+};
+
+export default function PlaceCard({ place, href }: PlaceCardProps) {
+  const content = (
+    <div className="bg-slate-900 border border-slate-700 rounded-lg px-4 py-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-medium text-white">{place.name}</p>
+        {place.trending ? (
+          <span className="text-[10px] bg-yellow-100 text-yellow-800 px-2 py-[1px] rounded">
+            trending
+          </span>
+        ) : null}
       </div>
+
+      <p className="text-xs text-slate-400 mt-0.5">{place.category}</p>
+
+      {/* 👇 this line was failing because description didn't exist */}
+      {place.description ? (
+        <p className="text-xs text-slate-300 mt-1 line-clamp-1">
+          {place.description}
+        </p>
+      ) : null}
+
+      <p className="text-[11px] text-slate-400 mt-1">
+        {typeof place.distanceMiles === "number"
+          ? `${place.distanceMiles} mi`
+          : ""}
+        {typeof place.rating === "number" ? ` • ${place.rating.toFixed(1)} ★` : ""}
+        {typeof place.reviews === "number" ? ` • ${place.reviews} reviews` : ""}
+        {place.openUntil ? ` • open until ${place.openUntil}` : ""}
+      </p>
+    </div>
+  );
+
+  // if a link was passed, wrap it, otherwise just render the card
+  return href ? (
+    <Link href={href} className="block">
+      {content}
     </Link>
+  ) : (
+    content
   );
 }
