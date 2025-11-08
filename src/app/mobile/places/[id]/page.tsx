@@ -3,13 +3,10 @@
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-// we don't fight Vercel's generated types — just accept anything
+// keep params loose so Vercel's generated type doesn't fight us
 export default function PlaceDetailPage({ params }: { params: any }) {
-  // sometimes params might be a promise-ish thing in the generated types,
-  // so we just read .id defensively
   const rawId =
     params && typeof params === "object" && "id" in params ? params.id : "";
-
   const id = String(rawId);
 
   const place = mockPlaces.find((p) => String(p.id) === id);
@@ -30,6 +27,9 @@ export default function PlaceDetailPage({ params }: { params: any }) {
     );
   }
 
+  // make TS relax about optional fields in the mock data
+  const placeAny = place as any;
+
   return (
     <main className="min-h-screen bg-slate-950 text-white p-6 space-y-6">
       <Link href="/mobile" className="text-sm text-slate-400">
@@ -45,19 +45,19 @@ export default function PlaceDetailPage({ params }: { params: any }) {
         <div className="bg-slate-900 p-4 rounded-lg">
           <p className="text-xs text-slate-400 mb-1">Distance</p>
           <p className="text-base">
-            {place.distanceMiles ? `${place.distanceMiles} mi` : "—"}
+            {placeAny.distanceMiles ? `${placeAny.distanceMiles} mi` : "—"}
           </p>
         </div>
         <div className="bg-slate-900 p-4 rounded-lg">
           <p className="text-xs text-slate-400 mb-1">Rating</p>
           <p className="text-base">
-            {place.rating ? `${place.rating} ⭐` : "—"}
+            {placeAny.rating ? `${placeAny.rating} ⭐` : "—"}
           </p>
         </div>
         <div className="bg-slate-900 p-4 rounded-lg">
           <p className="text-xs text-slate-400 mb-1">Open until</p>
           <p className="text-base">
-            {place.openUntil ? place.openUntil : "—"}
+            {placeAny.openUntil ? placeAny.openUntil : "—"}
           </p>
         </div>
       </div>
