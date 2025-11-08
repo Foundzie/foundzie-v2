@@ -1,70 +1,60 @@
 // src/app/admin/users/page.tsx
-import Link from "next/link";
-import { mockUsers } from "@/app/data/users";
+import Link from 'next/link';
+import mockUsers from '@/app/data/users';
 
 export default function AdminUsersPage() {
   return (
-    <main className="min-h-screen bg-gray-50">
-      {/* header */}
-      <header className="w-full bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+    <main className="min-h-screen bg-white px-6 py-6">
+      <header className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Users</h1>
-          <p className="text-xs text-gray-500">
-            Shared list coming from src/app/data/users.ts
+          <p className="text-sm text-gray-500">
+            Shared list coming from <code className="text-xs">src/app/data/users.ts</code>
           </p>
         </div>
-        {/* we won't actually create users, so keep this fake */}
-        <button className="bg-purple-200 text-purple-800 text-sm px-4 py-2 rounded-md cursor-not-allowed">
+        <Link
+          href="/admin/users/new"
+          className="bg-purple-600 text-white text-sm px-4 py-2 rounded-md"
+        >
           + New (mock)
-        </button>
+        </Link>
       </header>
 
-      {/* list */}
-      <section className="px-6 py-6">
-        <div className="bg-white border border-gray-200 rounded-lg">
-          <ul className="divide-y divide-gray-100">
-            {mockUsers.map((user) => (
-              <li
-                key={user.id}
-                className="flex items-center justify-between px-4 py-3"
+      <section className="bg-gray-50 border border-gray-100 rounded-xl p-4 space-y-3">
+        {mockUsers.map((u) => (
+          <div key={u.id} className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-900">{u.name}</p>
+              <p className="text-xs text-gray-500">{u.email}</p>
+              <p className="text-[10px] text-gray-400">{u.joined}</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full ${
+                  u.status === 'active'
+                    ? 'bg-green-100 text-green-700'
+                    : u.status === 'invited'
+                    ? 'bg-yellow-100 text-yellow-700'
+                    : 'bg-gray-100 text-gray-500'
+                }`}
               >
-                <div>
-                  <p className="text-sm font-medium text-gray-900">
-                    {user.name}
-                  </p>
-                  <p className="text-xs text-gray-500">{user.email}</p>
-                  <p className="text-[10px] text-gray-400 mt-1">
-                    Joined {user.joined} • {user.role}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={
-                      "text-[10px] uppercase tracking-wide px-2 py-[2px] rounded " +
-                      (user.status === "active"
-                        ? "bg-green-100 text-green-700"
-                        : user.status === "invited"
-                        ? "bg-yellow-100 text-yellow-700"
-                        : "bg-red-100 text-red-700")
-                    }
-                  >
-                    {user.status}
-                  </span>
-                  {/* in a real app this would go to /admin/users/[id] */}
-                  <span className="text-xs text-gray-300">Edit (mock)</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <Link
-          href="/admin"
-          className="inline-block mt-4 text-[11px] text-gray-400 hover:text-gray-600"
-        >
-          ← back to admin
-        </Link>
+                {u.status.toUpperCase()}
+              </span>
+              <span className="text-[10px] text-gray-400">{u.role}</span>
+              <Link
+                href={`/admin/users/${u.id}`}
+                className="text-xs text-purple-600 hover:underline"
+              >
+                edit
+              </Link>
+            </div>
+          </div>
+        ))}
       </section>
+
+      <p className="text-xs text-gray-400 mt-4">
+        ← <Link href="/admin" className="underline">back to admin</Link>
+      </p>
     </main>
   );
 }
