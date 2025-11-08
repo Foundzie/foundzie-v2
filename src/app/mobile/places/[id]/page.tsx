@@ -4,23 +4,20 @@ import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
 export default function PlaceDetailPage({ params }: { params: any }) {
-  const rawId =
-    params && typeof params === "object" && "id" in params ? params.id : "";
-  const id = String(rawId);
+  const id = String(params?.id ?? "");
 
-  // 1) try exact ID match first
-  let place = mockPlaces.find((p: any) => String(p.id) === id) as any;
+  // try exact match
+  let place = mockPlaces.find((p) => String(p.id) === id);
 
-  // 2) if that didn't work, try treating the id as "1 = first item, 2 = second item..."
+  // fallback: treat "1" as first item
   if (!place) {
     const idx = Number(id) - 1;
     if (!Number.isNaN(idx) && idx >= 0 && idx < mockPlaces.length) {
-      place = mockPlaces[idx] as any;
+      place = mockPlaces[idx];
     }
   }
 
   if (!place) {
-    // still nothing? show the friendly message
     return (
       <main className="min-h-screen bg-slate-950 text-white p-6">
         <Link href="/mobile" className="text-sm text-slate-400">
@@ -28,9 +25,7 @@ export default function PlaceDetailPage({ params }: { params: any }) {
         </Link>
         <h1 className="mt-6 text-lg font-semibold">Place not found</h1>
         <p className="text-slate-400 text-sm mt-2">
-          The ID in the URL didn&apos;t match any mock data in
-          {" "}
-          <code>src/app/data/places.ts</code>.
+          The ID in the URL didn&apos;t match any mock data in src/app/data/places.ts.
         </p>
       </main>
     );
