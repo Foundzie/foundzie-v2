@@ -6,13 +6,15 @@ import {
   AdminUserStatus,
 } from "@/app/data/users";
 
-type PageProps = {
-  params: { id: string };
-};
+export default async function AdminEditUserPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  // Next.js 16 passes params as a Promise, so we await it
+  const { id } = await params;
 
-export default function AdminEditUserPage({ params }: PageProps) {
-  // params.id will be "1", "2", "3", ...
-  const user = mockUsers.find((u) => u.id === params.id);
+  const user = mockUsers.find((u) => u.id === id);
 
   if (!user) {
     return (
@@ -21,9 +23,7 @@ export default function AdminEditUserPage({ params }: PageProps) {
           &larr; back to users
         </Link>
         <h1 className="text-xl font-semibold">User not found</h1>
-        <p className="text-gray-500">
-          No user with id {params.id} in mock data.
-        </p>
+        <p className="text-gray-500">No user with id {id} in mock data.</p>
       </main>
     );
   }
