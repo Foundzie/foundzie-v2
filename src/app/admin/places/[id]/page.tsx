@@ -3,85 +3,75 @@ import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
 type AdminPlacePageProps = {
-  // in this project params is a Promise, so we await it
-  params: Promise<{ id: string }>;
+  params: { id: string };
 };
 
-export default async function AdminPlacePage({ params }: AdminPlacePageProps) {
-  const { id } = await params;
-
-  // ids in your mockPlaces are strings, so compare as strings
-  const place = mockPlaces.find((p) => p.id === id);
+export default function AdminPlacePage({ params }: AdminPlacePageProps) {
+  const place = mockPlaces.find((p) => p.id === params.id);
 
   if (!place) {
     return (
-      <main className="min-h-screen bg-slate-950 text-slate-50 p-6 space-y-4">
-        <Link href="/admin/places" className="text-sm underline">
-          ← Back
+      <main className="min-h-screen bg-gray-50 p-6">
+        <Link href="/admin/places" className="text-xs text-purple-600 hover:underline">
+          ← back
         </Link>
-        <p>Place not found. The ID in the URL didn’t match anything in src/app/data/places.ts.</p>
+        <p className="mt-4 text-sm text-red-600">
+          Place not found. The ID in the URL didn&apos;t match anything in src/app/data/places.ts.
+        </p>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-50 p-6 space-y-6">
-      <div className="flex items-center justify-between gap-4">
+    <main className="min-h-screen bg-gray-50">
+      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
-          <p className="text-xs text-slate-400 mb-1">Admin · Place detail</p>
-          <h1 className="text-2xl font-semibold">{place.name}</h1>
-          <p className="text-sm text-slate-400">
-            {place.category}
-            {place.distanceMiles !== undefined ? ` • ${place.distanceMiles} mi` : ""}
+          <h1 className="text-xl font-semibold text-gray-900">Edit place</h1>
+          <p className="text-xs text-gray-500">
+            ID: {place.id} • from src/app/data/places.ts
           </p>
         </div>
-        <Link
-          href="/admin/places"
-          className="text-sm px-3 py-1 rounded bg-slate-800 hover:bg-slate-700"
-        >
-          Back to places
+        <Link href="/admin/places" className="text-xs text-purple-600 hover:underline">
+          ← back to list
         </Link>
+      </header>
+
+      <div className="p-6 space-y-4">
+        {/* For now: read-only preview. Later: turn into a form. */}
+        <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-2">
+          <p className="text-sm">
+            <span className="font-medium">Name:</span> {place.name}
+          </p>
+          <p className="text-sm">
+            <span className="font-medium">Category:</span> {place.category}
+          </p>
+          <p className="text-sm">
+            <span className="font-medium">Distance:</span> {place.distanceMiles} mi
+          </p>
+          <p className="text-sm">
+            <span className="font-medium">Rating:</span> {place.rating} ⭐
+          </p>
+          <p className="text-sm">
+            <span className="font-medium">Reviews:</span> {place.reviews}
+          </p>
+          <p className="text-sm">
+            <span className="font-medium">Open until:</span> {place.openUntil}
+          </p>
+          <p className="text-sm">
+            <span className="font-medium">Trending:</span> {place.trending ? "Yes" : "No"}
+          </p>
+          {place.description ? (
+            <p className="text-sm">
+              <span className="font-medium">Description:</span> {place.description}
+            </p>
+          ) : null}
+        </div>
+
+        <p className="text-[11px] text-gray-500">
+          Note: we&apos;re still on mock data, so editing won&apos;t persist. When we hook this to a
+          real API / DB, we&apos;ll replace this with a form.
+        </p>
       </div>
-
-      <section className="bg-slate-900 rounded-lg p-4 space-y-3">
-        <h2 className="text-lg font-medium">Basics</h2>
-        <div className="grid gap-2 text-sm">
-          <p>
-            <span className="text-slate-400 mr-2">ID:</span>
-            {place.id}
-          </p>
-          <p>
-            <span className="text-slate-400 mr-2">Category:</span>
-            {place.category}
-          </p>
-          <p>
-            <span className="text-slate-400 mr-2">Open until:</span>
-            {place.openUntil ?? "—"}
-          </p>
-          <p>
-            <span className="text-slate-400 mr-2">Trending:</span>
-            {place.trending ? "Yes" : "No"}
-          </p>
-        </div>
-      </section>
-
-      <section className="bg-slate-900 rounded-lg p-4 space-y-3">
-        <h2 className="text-lg font-medium">Metrics</h2>
-        <div className="grid gap-2 text-sm">
-          <p>
-            <span className="text-slate-400 mr-2">Distance:</span>
-            {place.distanceMiles !== undefined ? `${place.distanceMiles} mi` : "—"}
-          </p>
-          <p>
-            <span className="text-slate-400 mr-2">Rating:</span>
-            {place.rating ?? "—"}
-          </p>
-          <p>
-            <span className="text-slate-400 mr-2">Reviews:</span>
-            {place.reviews ?? "—"}
-          </p>
-        </div>
-      </section>
     </main>
   );
 }

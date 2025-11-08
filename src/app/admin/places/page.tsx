@@ -5,53 +5,48 @@ import { mockPlaces } from "@/app/data/places";
 export default function AdminPlacesPage() {
   return (
     <main className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 px-6 py-4">
-        <h1 className="text-2xl font-semibold text-gray-900">Places</h1>
-        <p className="text-sm text-gray-500">
-          Listing of mock places from <code>src/app/data/places.ts</code>
-        </p>
+      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-gray-900">Places</h1>
+          <p className="text-xs text-gray-500">
+            Viewing {mockPlaces.length} places (from src/app/data/places.ts)
+          </p>
+        </div>
+        <Link
+          href="/admin/places/new"
+          className="inline-flex items-center rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700"
+        >
+          + Add place
+        </Link>
       </header>
 
-      <div className="px-6 py-6">
-        <ul className="space-y-3">
-          {mockPlaces.map((place) => (
-            <li
-              key={place.id}
-              className="bg-white border border-gray-200 rounded-lg px-4 py-3 flex items-center justify-between"
+      <div className="p-6 space-y-3">
+        {mockPlaces.map((place) => (
+          <div
+            key={place.id}
+            className="bg-white border border-gray-200 rounded-lg px-4 py-3 flex items-center justify-between"
+          >
+            <div>
+              <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                {place.name}
+                {place.trending ? (
+                  <span className="text-[10px] bg-yellow-100 text-yellow-700 px-2 py-[2px] rounded-full">
+                    trending
+                  </span>
+                ) : null}
+              </p>
+              <p className="text-xs text-gray-500">
+                {place.category} • {place.distanceMiles} mi • ⭐ {place.rating} ({place.reviews} reviews)
+              </p>
+            </div>
+            <Link
+              href={`/admin/places/${place.id}`}
+              className="text-xs text-purple-600 hover:underline"
             >
-              <div>
-                <p className="text-sm font-medium text-gray-900">
-                  {place.name}
-                  {place.trending && (
-                    <span className="ml-2 text-[10px] bg-yellow-100 text-yellow-800 px-2 py-[1px] rounded">
-                      trending
-                    </span>
-                  )}
-                </p>
-                <p className="text-xs text-gray-500">
-                  {place.category}
-                  {/* 👇 this was `place.distance` before — that caused the build error */}
-                  {typeof place.distanceMiles === "number"
-                    ? ` • ${place.distanceMiles} mi`
-                    : ""}
-                  {typeof place.rating === "number"
-                    ? ` • ${place.rating}★`
-                    : ""}
-                  {typeof place.reviews === "number"
-                    ? ` • ${place.reviews} reviews`
-                    : ""}
-                  {place.openUntil ? ` • open until ${place.openUntil}` : ""}
-                </p>
-              </div>
-              <Link
-                href={`/admin/places/${place.id}`}
-                className="text-xs text-purple-600 hover:underline"
-              >
-                edit
-              </Link>
-            </li>
-          ))}
-        </ul>
+              edit
+            </Link>
+          </div>
+        ))}
       </div>
     </main>
   );
