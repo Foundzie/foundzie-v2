@@ -1,97 +1,114 @@
+// src/app/mobile/page.tsx
 'use client';
 
 import { useState } from 'react';
 import BottomNav from '../components/BottomNav';
-import PlaceCard from '../components/PlaceCard';
-import { MapPin, Bell, Search, Zap } from 'lucide-react';
-import { mockPlaces } from "@/app/data/places";
+import mockPlaces from '@/app/data/places';
+import savedPlaceIds from '@/app/data/saved';
+import Link from 'next/link';
 
+type Tab = 'trending' | 'nearby' | 'saved';
 
-export default function MobileHome() {
-  const [notificationCount] = useState(3);
+export default function MobileHomePage() {
+  const [activeTab, setActiveTab] = useState<Tab>('trending');
+
+  // break the data up
+  const trendingPlaces = mockPlaces.filter((p) => p.trending);
+  const nearbyPlaces = mockPlaces; // for now just show all
+  const savedPlaces = mockPlaces.filter((p) => savedPlaceIds.includes(p.id));
+
+  // decide which list to show
+  let listToShow = trendingPlaces;
+  if (activeTab === 'nearby') listToShow = nearbyPlaces;
+  if (activeTab === 'saved') listToShow = savedPlaces;
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-purple-50 to-white pb-20">
-      {/* Header */}
-      <header className="sticky top-0 z-40 bg-white border-b border-gray-100 shadow-sm">
-        <div className="px-4 py-3 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-purple-900">Foundzie</h1>
-            <p className="text-xs text-gray-500">What's near you</p>
-          </div>
-          <button className="relative p-2 hover:bg-gray-100 rounded-full transition">
-            <Bell className="w-5 h-5 text-gray-700" />
-            {notificationCount > 0 && (
-              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
-            )}
-          </button>
+    <main className="min-h-screen bg-white pb-20">
+      {/* top bar */}
+      <header className="px-4 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">Foundzie</h1>
+          <p className="text-xs text-gray-500">What&apos;s near you</p>
         </div>
-
-        {/* Search Bar */}
-        <div className="px-4 pb-3">
-          <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-2">
-            <Search className="w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Search places..."
-              className="bg-transparent text-sm outline-none flex-1 text-gray-700 placeholder-gray-500"
-            />
-          </div>
-        </div>
+        <Link href="/mobile/notifications" className="text-purple-600 text-sm underline">
+          alerts
+        </Link>
       </header>
 
-      {/* Location & Quick Actions */}
-      <div className="px-4 pt-4 pb-2">
-        <div className="flex items-center gap-2 text-sm text-gray-600 mb-4">
-          <MapPin className="w-4 h-4 text-purple-600" />
-          <span>Chicago, IL • 72°F</span>
-        </div>
-
-        {/* Quick Action Buttons */}
-        <div className="grid grid-cols-3 gap-2">
-          <button className="bg-purple-100 hover:bg-purple-200 text-purple-900 text-xs font-medium py-2 px-3 rounded-lg transition flex items-center justify-center gap-1">
-            <Zap className="w-3 h-3" />
-            Trending
-          </button>
-          <button className="bg-blue-100 hover:bg-blue-200 text-blue-900 text-xs font-medium py-2 px-3 rounded-lg transition">
-            Events
-          </button>
-          <button className="bg-green-100 hover:bg-green-200 text-green-900 text-xs font-medium py-2 px-3 rounded-lg transition">
-            Saved
-          </button>
-        </div>
+      {/* search */}
+      <div className="px-4 pt-4">
+        <input
+          type="text"
+          placeholder="Search places..."
+          className="w-full border border-gray-200 rounded-full px-4 py-2 text-sm outline-none"
+        />
       </div>
 
-      {/* Featured Section */}
-      <section className="px-4 py-4">
-        <div className="bg-gradient-to-r from-purple-600 to-purple-700 rounded-2xl p-4 text-white shadow-lg">
-          <p className="text-xs font-semibold opacity-90 mb-1">FEATURED</p>
-          <h3 className="text-lg font-bold mb-1">Sunny Café</h3>
-          <p className="text-sm opacity-90 mb-3">New spot trending in your area</p>
-          <button className="bg-white text-purple-600 font-semibold text-sm py-2 px-4 rounded-lg hover:bg-gray-100 transition w-full">
-            View Details
-          </button>
-        </div>
+      {/* tabs */}
+      <div className="px-4 mt-4 flex gap-2">
+        <button
+          onClick={() => setActiveTab('trending')}
+          className={`flex-1 text-center text-sm py-2 rounded-full ${
+            activeTab === 'trending' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-700'
+          }`}
+        >
+          Trending
+        </button>
+        <button
+          onClick={() => setActiveTab('nearby')}
+          className={`flex-1 text-center text-sm py-2 rounded-full ${
+            activeTab === 'nearby' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-700'
+          }`}
+        >
+          Nearby
+        </button>
+        <button
+          onClick={() => setActiveTab('saved')}
+          className={`flex-1 text-center text-sm py-2 rounded-full ${
+            activeTab === 'saved' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-700'
+          }`}
+        >
+          Saved
+        </button>
+      </div>
+
+      {/* list */}
+      <section className="px-4 mt-4 space-y-3">
+        {listToShow.length === 0 ? (
+          <p className="text-xs text-gray-400 py-6 text-center">
+            Nothing here yet.
+          </p>
+        ) : (
+          listToShow.map((place) => (
+            <Link
+              key={place.id}
+              href={`/mobile/places/${place.id}`}
+              className="flex items-center justify-between border border-gray-100 rounded-xl px-3 py-3 shadow-sm"
+            >
+              <div>
+                <p className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+                  {place.name}
+                  {place.trending && activeTab !== 'saved' ? (
+                    <span className="text-[10px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
+                      TRENDING
+                    </span>
+                  ) : null}
+                </p>
+                <p className="text-xs text-gray-500">{place.category}</p>
+                <p className="text-[10px] text-gray-400">
+                  {place.description}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-gray-600">{place.distance} mi</p>
+                <p className="text-[10px] text-gray-400">
+                  open until {place.openUntil}
+                </p>
+              </div>
+            </Link>
+          ))
+        )}
       </section>
-
-      {/* Nearby Places */}
-      <section className="px-4 py-2">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-bold text-gray-900">Nearby Places</h2>
-          <a href="/mobile/nearby" className="text-purple-600 text-sm font-medium hover:underline">
-            See all
-          </a>
-        </div>
-
-        <div className="space-y-3">
-          {mockPlaces.map((place) => (
-            <PlaceCard key={place.id} place={place} />
-          ))}
-        </div>
-      </section>
-
-      {/* Footer Spacing */}
-      <div className="h-4" />
 
       <BottomNav />
     </main>
