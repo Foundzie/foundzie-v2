@@ -1,37 +1,37 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 import { savedPlaceIds } from "@/app/data/saved";
-import { useState } from "react";
 
 const TABS = ["Trending", "Nearby", "Saved"] as const;
 
 export default function MobileHomePage() {
-  const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>("Trending");
+  const [activeTab, setActiveTab] =
+    useState<(typeof TABS)[number]>("Trending");
   const [search, setSearch] = useState("");
 
-  // normalize saved ids because your places.ts uses string ids
+  // 1) normalize saved ids because places use string ids like "1"
   const savedIdsAsString = savedPlaceIds.map((id) => String(id));
 
-  // basic filtering by search
+  // 2) start from search-filtered list
   const filtered = mockPlaces.filter((place) =>
     place.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  // tab-specific lists
-  const trendingList =
-    filtered.filter((p) => p.trending) ?? filtered;
+  // 3) build the three tab lists from the filtered list
+  const trendingList = filtered.filter((p) => p.trending);
 
-  const nearbyList =
-    filtered
-      .slice() // copy
-      .sort((a, b) => a.distanceMiles - b.distanceMiles);
+  const nearbyList = filtered
+    .slice()
+    .sort((a, b) => a.distanceMiles - b.distanceMiles);
 
   const savedList = filtered.filter((p) =>
     savedIdsAsString.includes(p.id)
   );
 
+  // 4) pick which one to show
   let listToShow = filtered;
   if (activeTab === "Trending") listToShow = trendingList;
   if (activeTab === "Nearby") listToShow = nearbyList;
@@ -43,7 +43,7 @@ export default function MobileHomePage() {
         <h1 className="text-lg font-semibold">Foundzie</h1>
         <p className="text-sm text-slate-400">What&apos;s near you</p>
 
-        {/* search */}
+        {/* search bar */}
         <div className="mt-4">
           <input
             value={search}
@@ -78,15 +78,17 @@ export default function MobileHomePage() {
             listToShow.map((place) => (
               <li key={place.id}>
                 <Link
-                    href={`/mobile/places/${place.id}`}
-                    className="flex items-center justify-between rounded-md bg-slate-900 px-4 py-3 hover:bg-slate-800"
-                  >
+                  href={`/mobile/places/${place.id}`}
+                  className="flex items-center justify-between rounded-md bg-slate-900 px-4 py-3 hover:bg-slate-800"
+                >
                   <div>
                     <p className="text-sm font-medium">{place.name}</p>
-                    <p className="text-xs text-slate-400">{place.category}</p>
+                    <p className="text-xs text-slate-400">
+                      {place.category}
+                    </p>
                   </div>
                   <div className="text-right">
-                    {/* 👇 this was `place.distance` in your build log */}
+                    {/* this must match src/app/data/places.ts */}
                     <div className="text-xs text-slate-400">
                       {place.distanceMiles.toFixed(1)} mi
                     </div>
