@@ -1,43 +1,9 @@
 // src/app/admin/users/page.tsx
+
 import Link from "next/link";
+import mockUsers from "@/app/data/users";
 
-async function getBaseUrl() {
-  // 1. if you’ve set this locally, we use it
-  if (
-    typeof process.env.NEXT_PUBLIC_BASE_URL === "string" &&
-    process.env.NEXT_PUBLIC_BASE_URL.length > 0
-  ) {
-    return process.env.NEXT_PUBLIC_BASE_URL;
-  }
-
-  // 2. on Vercel this is set automatically
-  if (process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}`;
-  }
-
-  // 3. fallback for local dev
-  return "http://localhost:3000";
-}
-
-async function getUsers() {
-  const baseUrl = await getBaseUrl();
-  const res = await fetch(`${baseUrl}/api/users`, {
-    cache: "no-store",
-  });
-  const data = await res.json();
-  return (data.items || []) as Array<{
-    id: string;
-    name: string;
-    email: string;
-    status: string;
-    role: string;
-    joined: string;
-  }>;
-}
-
-export default async function AdminUsersPage() {
-  const users = await getUsers();
-
+export default function AdminUsersPage() {
   return (
     <main className="min-h-screen bg-white px-6 py-6">
       <Link href="/admin" className="text-xs text-gray-400 mb-4 inline-block">
@@ -48,7 +14,7 @@ export default async function AdminUsersPage() {
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Users</h1>
           <p className="text-sm text-gray-500">
-            Shared list coming from <code>/api/users</code>
+            Shared list coming from <code>src/app/data/users.ts</code>
           </p>
         </div>
 
@@ -61,7 +27,7 @@ export default async function AdminUsersPage() {
       </header>
 
       <div className="bg-gray-50 border border-gray-100 rounded-xl divide-y divide-gray-100 max-w-lg">
-        {users.map((u) => (
+        {mockUsers.map((u) => (
           <div
             key={u.id}
             className="flex items-center justify-between px-4 py-4"
@@ -95,7 +61,7 @@ export default async function AdminUsersPage() {
           </div>
         ))}
 
-        {users.length === 0 && (
+        {mockUsers.length === 0 && (
           <p className="px-4 py-6 text-sm text-gray-400">No users yet.</p>
         )}
       </div>

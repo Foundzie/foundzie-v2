@@ -1,41 +1,20 @@
 // src/app/admin/users/[id]/page.tsx
+
 import Link from "next/link";
-
-async function getBaseUrl() {
-  if (
-    typeof process.env.NEXT_PUBLIC_BASE_URL === "string" &&
-    process.env.NEXT_PUBLIC_BASE_URL.length > 0
-  ) {
-    return process.env.NEXT_PUBLIC_BASE_URL;
-  }
-  if (process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}`;
-  }
-  return "http://localhost:3000";
-}
-
-async function getUsers() {
-  const baseUrl = await getBaseUrl();
-  const res = await fetch(`${baseUrl}/api/users`, { cache: "no-store" });
-  const data = await res.json();
-  return data.items as Array<{
-    id: string;
-    name: string;
-    email: string;
-    role: "admin" | "editor" | "viewer";
-    status: "active" | "invited" | "disabled";
-    joined: string;
-  }>;
-}
+import mockUsers, {
+  AdminUserRole,
+  AdminUserStatus,
+} from "@/app/data/users";
 
 export default async function AdminEditUserPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
+  // Next.js app router gives params as a Promise in your setup
   const { id } = await params;
-  const users = await getUsers();
-  const user = users.find((u) => u.id === id);
+
+  const user = mockUsers.find((u) => u.id === id);
 
   if (!user) {
     return (
@@ -51,16 +30,8 @@ export default async function AdminEditUserPage({
     );
   }
 
-  const roles: Array<"admin" | "editor" | "viewer"> = [
-    "admin",
-    "editor",
-    "viewer",
-  ];
-  const statuses: Array<"active" | "invited" | "disabled"> = [
-    "active",
-    "invited",
-    "disabled",
-  ];
+  const roles: AdminUserRole[] = ["admin", "editor", "viewer"];
+  const statuses: AdminUserStatus[] = ["active", "invited", "disabled"];
 
   return (
     <main className="p-8 space-y-4 max-w-lg">
@@ -70,7 +41,7 @@ export default async function AdminEditUserPage({
 
       <h1 className="mt-6 text-2xl font-semibold">Edit user</h1>
       <p className="text-xs text-gray-500 mb-6">
-        Values shown here come from <code>/api/users</code>
+        Values shown here come from <code>src/app/data/users.ts</code>
       </p>
 
       <form className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
@@ -121,8 +92,7 @@ export default async function AdminEditUserPage({
         </div>
 
         <p className="text-xs text-gray-400">
-          Note: this is still a mock edit screen. In a real app we’d PATCH/PUT
-          to an API.
+          Note: mock screen. Later we&apos;ll wire it to real storage.
         </p>
 
         <button
