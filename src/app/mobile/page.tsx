@@ -1,110 +1,68 @@
-// src/app/mobile/page.tsx
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import { mockPlaces } from "@/app/data/places";
-
-const FILTERS = ["Trending", "Nearby", "Saved"] as const;
-type Filter = (typeof FILTERS)[number];
+import { trendingPlaces, nearbyPlaces, allPlaces } from "@/app/data/places";
+import { savedPlaceIds } from "@/app/data/saved";
 
 export default function MobileHomePage() {
-  const [activeFilter, setActiveFilter] = useState<Filter>("Trending");
-  const [search, setSearch] = useState("");
+  const [activeTab, setActiveTab] = useState<"trending" | "nearby" | "saved">("trending");
 
-  const filteredPlaces = useMemo(() => {
-    let places = [...mockPlaces];
+  // Automatically build savedPlaces from allPlaces using savedPlaceIds
+  const savedPlaces = allPlaces.filter((place) => savedPlaceIds.includes(place.id));
 
-    // 1) apply tab filter first
-    if (activeFilter === "Trending") {
-      places = places.filter((p) => p.trending);
-    } else if (activeFilter === "Nearby") {
-      // we have distanceMiles in the data, so "nearby" = sort by distance
-      places = places
-        .filter((p) => typeof p.distanceMiles === "number")
-        .sort((a, b) => a.distanceMiles - b.distanceMiles);
-    } else if (activeFilter === "Saved") {
-      // we don’t have real saved data yet, so show empty for now
-      places = [];
-    }
-
-    // 2) apply search text
-    const term = search.trim().toLowerCase();
-    if (term.length > 0) {
-      places = places.filter((p) => {
-        return (
-          p.name.toLowerCase().includes(term) ||
-          p.category.toLowerCase().includes(term)
-        );
-      });
-    }
-
-    return places;
-  }, [activeFilter, search]);
+  // Pick which dataset to show based on the active tab
+  const places =
+    activeTab === "trending"
+      ? trendingPlaces
+      : activeTab === "nearby"
+      ? nearbyPlaces
+      : savedPlaces;
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white">
-      <div className="px-4 pt-6 pb-4 space-y-4">
-        <h1 className="text-xl font-semibold">Foundzie</h1>
-        <p className="text-xs text-slate-400">What&apos;s near you</p>
+    <main className="p-4 bg-slate-950 text-white min-h-screen">
+      <h1 className="text-lg font-semibold mb-4">What's near you</h1>
 
-        {/* search */}
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search nearby places..."
-          className="w-full rounded-md bg-slate-900 border border-slate-800 px-3 py-2 text-sm outline-none focus:border-slate-500"
-        />
+      {/* Search bar */}
+      <input
+        type="text"
+        placeholder="Search nearby places..."
+        className="w-full mb-4 p-2 rounded-md bg-slate-900 border border-slate-700 text-sm text-white placeholder-slate-400"
+      />
 
-        {/* tabs */}
-        <div className="flex gap-2">
-          {FILTERS.map((f) => (
-            <button
-              key={f}
-              onClick={() => setActiveFilter(f)}
-              className={
-                "px-3 py-1 rounded-full text-sm " +
-                (activeFilter === f
-                  ? "bg-pink-500 text-white"
-                  : "bg-slate-900 text-slate-200")
-              }
-            >
-              {f}
-            </button>
-          ))}
-        </div>
+      {/* Tabs */}
+      <div className="flex space-x-4 mb-4">
+        {["trending", "nearby", "saved"].map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab as any)}
+            className={`px-3 py-1 text-sm rounded-full ${
+              activeTab === tab ? "bg-pink-600 text-white" : "bg-slate-800 text-slate-300"
+            }`}
+          >
+            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+          </button>
+        ))}
       </div>
 
-      {/* list */}
-      <ul className="divide-y divide-slate-900">
-        {filteredPlaces.length === 0 ? (
-          <li className="px-4 py-6 text-sm text-slate-400">
-            No places match that.
-          </li>
-        ) : (
-          filteredPlaces.map((place) => (
-            <li key={place.id}>
-              <Link
-                href={`/mobile/places/${place.id}`}
-                className="flex items-center justify-between px-4 py-4 hover:bg-slate-900/40"
-              >
-                <div>
-                  <p className="text-sm font-medium">{place.name}</p>
-                  <p className="text-xs text-slate-400">{place.category}</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs text-slate-400">
-                    {typeof place.distanceMiles === "number"
-                      ? `${place.distanceMiles} mi`
-                      : ""}
-                  </p>
-                  <p className="text-[10px] text-slate-500">
-                    open until {place.openUntil}
-                  </p>
+      {/* Places list */}
+      <ul>
+        {places.length > 0 ? (
+          places.map((place) => (
+            <li key={place.id} className="border-b border-slate-800 py-3">
+              <Link href={`/mobile/places/${place.id}`}>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <p className="text-base font-medium">{place.name}</p>
+                    <p className="text-xs text-slate-400">{place.category}</p>
+                  </div>
+                  <div className="text-xs text-slate-400">{place.distance} mi</div>
                 </div>
               </Link>
             </li>
           ))
+        ) : (
+          <li className="text-sm text-slate-400 py-4">No places found.</li>
         )}
       </ul>
     </main>
