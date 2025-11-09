@@ -12,15 +12,11 @@ export default function MobileHomePage() {
     useState<(typeof TABS)[number]>("Trending");
   const [search, setSearch] = useState("");
 
-  // 1) normalize saved ids because places use string ids like "1"
-  const savedIdsAsString = savedPlaceIds.map((id) => String(id));
-
-  // 2) start from search-filtered list
+  // now savedPlaceIds is already string[]
   const filtered = mockPlaces.filter((place) =>
     place.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  // 3) build the three tab lists from the filtered list
   const trendingList = filtered.filter((p) => p.trending);
 
   const nearbyList = filtered
@@ -28,10 +24,9 @@ export default function MobileHomePage() {
     .sort((a, b) => a.distanceMiles - b.distanceMiles);
 
   const savedList = filtered.filter((p) =>
-    savedIdsAsString.includes(p.id)
+    savedPlaceIds.includes(p.id)
   );
 
-  // 4) pick which one to show
   let listToShow = filtered;
   if (activeTab === "Trending") listToShow = trendingList;
   if (activeTab === "Nearby") listToShow = nearbyList;
@@ -43,7 +38,6 @@ export default function MobileHomePage() {
         <h1 className="text-lg font-semibold">Foundzie</h1>
         <p className="text-sm text-slate-400">What&apos;s near you</p>
 
-        {/* search bar */}
         <div className="mt-4">
           <input
             value={search}
@@ -53,7 +47,6 @@ export default function MobileHomePage() {
           />
         </div>
 
-        {/* tabs */}
         <div className="mt-4 flex gap-2">
           {TABS.map((tab) => (
             <button
@@ -70,7 +63,6 @@ export default function MobileHomePage() {
           ))}
         </div>
 
-        {/* list */}
         <ul className="mt-6 space-y-3">
           {listToShow.length === 0 ? (
             <li className="text-sm text-slate-400">No places match.</li>
@@ -78,8 +70,8 @@ export default function MobileHomePage() {
             listToShow.map((place) => (
               <li key={place.id}>
                 <Link
-                  href={`/mobile/places/${place.id}`}
-                  className="flex items-center justify-between rounded-md bg-slate-900 px-4 py-3 hover:bg-slate-800"
+                    href={`/mobile/places/${place.id}`}
+                    className="flex items-center justify-between rounded-md bg-slate-900 px-4 py-3 hover:bg-slate-800"
                 >
                   <div>
                     <p className="text-sm font-medium">{place.name}</p>
@@ -88,7 +80,6 @@ export default function MobileHomePage() {
                     </p>
                   </div>
                   <div className="text-right">
-                    {/* this must match src/app/data/places.ts */}
                     <div className="text-xs text-slate-400">
                       {place.distanceMiles.toFixed(1)} mi
                     </div>

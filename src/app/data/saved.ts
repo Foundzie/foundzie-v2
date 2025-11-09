@@ -1,5 +1,5 @@
 // src/app/data/saved.ts
+// which place IDs this user has saved / favorited
+// these must match the string ids in src/app/data/places.ts
 
-// just saying which place IDs this user has saved / favorited
-// these IDs must match the ones in src/app/data/places.ts
-export const savedPlaceIds: number[] = [1, 3, 5]; // Sunny Café, Tech Hub, Urban Market
+export const savedPlaceIds: string[] = ["1", "3", "5"]; // Sunny Café, Tech Hub, Urban Market
