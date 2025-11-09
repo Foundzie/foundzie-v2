@@ -1,11 +1,22 @@
 // src/app/admin/users/[id]/page.tsx
 import Link from "next/link";
 
+async function getBaseUrl() {
+  if (
+    typeof process.env.NEXT_PUBLIC_BASE_URL === "string" &&
+    process.env.NEXT_PUBLIC_BASE_URL.length > 0
+  ) {
+    return process.env.NEXT_PUBLIC_BASE_URL;
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return "http://localhost:3000";
+}
+
 async function getUsers() {
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/users`,
-    { cache: "no-store" }
-  );
+  const baseUrl = await getBaseUrl();
+  const res = await fetch(`${baseUrl}/api/users`, { cache: "no-store" });
   const data = await res.json();
   return data.items as Array<{
     id: string;
@@ -29,10 +40,7 @@ export default async function AdminEditUserPage({
   if (!user) {
     return (
       <main className="p-8 space-y-4">
-        <Link
-          href="/admin/users"
-          className="text-sm text-purple-700 hover:text-purple-900"
-        >
+        <Link href="/admin/users" className="text-sm text-purple-700">
           &larr; back to users
         </Link>
         <h1 className="text-xl font-semibold">User not found</h1>
@@ -56,10 +64,7 @@ export default async function AdminEditUserPage({
 
   return (
     <main className="p-8 space-y-4 max-w-lg">
-      <Link
-        href="/admin/users"
-        className="text-sm text-purple-700 hover:text-purple-900"
-      >
+      <Link href="/admin/users" className="text-sm text-purple-700">
         &larr; back to users
       </Link>
 

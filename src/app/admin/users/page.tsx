@@ -1,12 +1,29 @@
 // src/app/admin/users/page.tsx
 import Link from "next/link";
 
+async function getBaseUrl() {
+  // 1. if you’ve set this locally, we use it
+  if (
+    typeof process.env.NEXT_PUBLIC_BASE_URL === "string" &&
+    process.env.NEXT_PUBLIC_BASE_URL.length > 0
+  ) {
+    return process.env.NEXT_PUBLIC_BASE_URL;
+  }
+
+  // 2. on Vercel this is set automatically
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+
+  // 3. fallback for local dev
+  return "http://localhost:3000";
+}
+
 async function getUsers() {
-  // if NEXT_PUBLIC_BASE_URL is not set, this will just call /api/users
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/users`,
-    { cache: "no-store" }
-  );
+  const baseUrl = await getBaseUrl();
+  const res = await fetch(`${baseUrl}/api/users`, {
+    cache: "no-store",
+  });
   const data = await res.json();
   return (data.items || []) as Array<{
     id: string;
@@ -77,6 +94,7 @@ export default async function AdminUsersPage() {
             </div>
           </div>
         ))}
+
         {users.length === 0 && (
           <p className="px-4 py-6 text-sm text-gray-400">No users yet.</p>
         )}
