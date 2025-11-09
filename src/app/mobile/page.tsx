@@ -12,11 +12,15 @@ export default function MobileHomePage() {
     useState<(typeof TABS)[number]>("Trending");
   const [search, setSearch] = useState("");
 
-  // now savedPlaceIds is already string[]
+  // ✅ make sure saved ids are strings no matter what saved.ts exports
+  const savedIdsAsString = savedPlaceIds.map((id) => id.toString());
+
+  // 1) filter by search
   const filtered = mockPlaces.filter((place) =>
     place.name.toLowerCase().includes(search.toLowerCase())
   );
 
+  // 2) build views
   const trendingList = filtered.filter((p) => p.trending);
 
   const nearbyList = filtered
@@ -24,9 +28,10 @@ export default function MobileHomePage() {
     .sort((a, b) => a.distanceMiles - b.distanceMiles);
 
   const savedList = filtered.filter((p) =>
-    savedPlaceIds.includes(p.id)
+    savedIdsAsString.includes(p.id)
   );
 
+  // 3) pick which list to show
   let listToShow = filtered;
   if (activeTab === "Trending") listToShow = trendingList;
   if (activeTab === "Nearby") listToShow = nearbyList;
@@ -70,8 +75,8 @@ export default function MobileHomePage() {
             listToShow.map((place) => (
               <li key={place.id}>
                 <Link
-                    href={`/mobile/places/${place.id}`}
-                    className="flex items-center justify-between rounded-md bg-slate-900 px-4 py-3 hover:bg-slate-800"
+                  href={`/mobile/places/${place.id}`}
+                  className="flex items-center justify-between rounded-md bg-slate-900 px-4 py-3 hover:bg-slate-800"
                 >
                   <div>
                     <p className="text-sm font-medium">{place.name}</p>
