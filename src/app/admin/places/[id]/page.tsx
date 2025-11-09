@@ -9,7 +9,7 @@ type AdminPlacePageProps = {
 export default async function AdminPlacePage({ params }: AdminPlacePageProps) {
   const { id } = await params;
 
-  const place = mockPlaces.find((p) => p.id === id);
+  const place = mockPlaces.find((p) => p.id === Number(id));
 
   if (!place) {
     return (
