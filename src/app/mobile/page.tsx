@@ -1,3 +1,4 @@
+// src/app/mobile/page.tsx
 "use client";
 
 import { useState } from "react";
@@ -5,36 +6,30 @@ import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 import { savedPlaceIds } from "@/app/data/saved";
 
-const TABS = ["Trending", "Nearby", "Saved"] as const;
-
 export default function MobileHomePage() {
-  const [activeTab, setActiveTab] =
-    useState<(typeof TABS)[number]>("Trending");
   const [search, setSearch] = useState("");
+  const [activeTab, setActiveTab] =
+    useState<"Trending" | "Nearby" | "Saved">("Trending");
 
-  // 1) filter by search
+  // 1) filter by search text
   const filtered = mockPlaces.filter((place) =>
     place.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  // 2) build each view
-
-  // trending = just those marked trending
+  // 2) build the 3 views
   const trendingList = filtered.filter((p) => p.trending);
 
-  // nearby = sort by distance
-  const nearbyList = filtered
-    .slice()
-    .sort((a, b) => a.distanceMiles - b.distanceMiles);
-
-  // ✅ saved = match numbers-to-strings safely
-  // savedPlaceIds is number[]   (from saved.ts)
-  // place.id is string          (from places.ts)
-  const savedList = filtered.filter((p) =>
-    savedPlaceIds.some((id) => id.toString() === p.id)
+  // sort a copy by distanceMiles
+  const nearbyList = [...filtered].sort(
+    (a, b) => a.distanceMiles - b.distanceMiles
   );
 
-  // 3) pick which one to show
+  // saved: our savedPlaceIds are strings, so cast place.id to string
+  const savedList = filtered.filter((p) =>
+    savedPlaceIds.includes(p.id.toString())
+  );
+
+  // 3) decide which list to show
   let listToShow = filtered;
   if (activeTab === "Trending") listToShow = trendingList;
   if (activeTab === "Nearby") listToShow = nearbyList;
@@ -42,8 +37,8 @@ export default function MobileHomePage() {
 
   return (
     <main className="min-h-screen bg-slate-950 text-white">
-      <div className="mx-auto max-w-5xl px-4 py-4">
-        <h1 className="text-lg font-semibold">Foundzie</h1>
+      <div className="mx-auto max-w-xl px-4 py-4">
+        <h1 className="text-lg font-bold">Foundzie</h1>
         <p className="text-sm text-slate-400">What&apos;s near you</p>
 
         {/* search box */}
@@ -52,21 +47,21 @@ export default function MobileHomePage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search nearby places..."
-            className="w-full rounded-md bg-slate-900 px-3 py-2 text-sm outline-none ring-1 ring-slate-800 focus:ring-pink-500"
+            className="w-full rounded bg-slate-900 px-3 py-2 text-sm ring-1 ring-slate-800 focus:outline-none focus:ring-2 focus:ring-pink-500"
           />
         </div>
 
         {/* tabs */}
         <div className="mt-4 flex gap-2">
-          {TABS.map((tab) => (
+          {["Trending", "Nearby", "Saved"].map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`rounded-full px-4 py-1 text-sm transition ${
+              onClick={() => setActiveTab(tab as "Trending" | "Nearby" | "Saved")}
+              className={
                 activeTab === tab
-                  ? "bg-pink-500 text-white"
-                  : "bg-slate-900 text-slate-300"
-              }`}
+                  ? "px-3 py-1 rounded-full bg-pink-500 text-sm"
+                  : "px-3 py-1 rounded-full bg-slate-900 text-sm text-slate-200"
+              }
             >
               {tab}
             </button>
@@ -81,22 +76,20 @@ export default function MobileHomePage() {
             listToShow.map((place) => (
               <li key={place.id}>
                 <Link
-                  href={`/mobile/places/${place.id}`}
-                  className="flex items-center justify-between rounded-md bg-slate-900 px-4 py-3 hover:bg-slate-800"
-                >
+                    href={`/mobile/places/${place.id}`}
+                    className="flex items-center justify-between rounded-md bg-slate-900 px-3 py-3"
+                  >
                   <div>
                     <p className="text-sm font-medium">{place.name}</p>
-                    <p className="text-xs text-slate-400">
-                      {place.category}
-                    </p>
+                    <p className="text-xs text-slate-400">{place.category}</p>
                   </div>
                   <div className="text-right">
-                    <div className="text-xs text-slate-400">
-                      {place.distanceMiles.toFixed(1)} mi
-                    </div>
-                    <div className="text-[10px] text-slate-500">
+                    <p className="text-xs text-slate-400">
+                      {place.distanceMiles} mi
+                    </p>
+                    <p className="text-[10px] text-slate-500">
                       open until {place.openUntil}
-                    </div>
+                    </p>
                   </div>
                 </Link>
               </li>
