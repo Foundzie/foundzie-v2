@@ -12,7 +12,7 @@ export type Place = {
   description: string;
 };
 
-// ✅ Your main mock data — all places
+// ✅ Master dataset
 export const allPlaces: Place[] = [
   {
     id: 1,
@@ -82,6 +82,9 @@ export const allPlaces: Place[] = [
   },
 ];
 
-// ✅ Trending and nearby lists (for home tabs)
+// ✅ Derived lists
 export const trendingPlaces = allPlaces.filter((p) => p.trending);
 export const nearbyPlaces = allPlaces.filter((p) => p.distanceMiles <= 1.5);
+
+// ✅ Backward compatibility for older imports
+export const mockPlaces = allPlaces;
