@@ -1,36 +1,37 @@
 // src/app/mobile/notifications/page.tsx
-import Link from "next/link";
+"use client";
+
 import { mockNotifications } from "@/app/data/notifications";
 
 export default function MobileNotificationsPage() {
   return (
-    <main className="p-4 space-y-4">
-      <div className="flex items-center justify-between">
+    <main className="min-h-screen bg-slate-950 text-white">
+      <div className="px-4 pt-6 pb-4 space-y-2">
         <h1 className="text-xl font-semibold">Alerts</h1>
-        <Link href="/mobile" className="text-sm text-purple-700">
-          back
-        </Link>
+        <p className="text-xs text-slate-400">
+          Latest updates from places near you
+        </p>
       </div>
 
-      <p className="text-sm text-gray-500">
-        These come from <code>src/app/data/notifications.ts</code>
-      </p>
-
-      <ul className="space-y-3">
-        {mockNotifications.map((n) => (
-          <li
-            key={n.id}
-           className="rounded-lg border border-gray-700 p-3 bg-gray-800 text-gray-100"
-          >
-            <div className="flex items-center gap-2 mb-1">
-              <p className="font-medium">{n.title}</p>
-              <span className="text-xs uppercase tracking-wide text-purple-700">
+      <ul className="divide-y divide-slate-900">
+        {mockNotifications.length === 0 ? (
+          <li className="px-4 py-6 text-sm text-slate-400">
+            No alerts right now.
+          </li>
+        ) : (
+          mockNotifications.map((n) => (
+            <li key={n.id} className="px-4 py-4 flex items-start gap-3">
+              <div className="flex-1">
+                <p className="text-sm font-medium text-white">{n.title}</p>
+                <p className="text-xs text-slate-400 mt-1">{n.message}</p>
+                <p className="text-[10px] text-slate-500 mt-1">{n.time}</p>
+              </div>
+              <span className="text-[10px] uppercase text-slate-400">
                 {n.type}
               </span>
-            </div>
-            <p className="text-sm text-gray-600">{n.message}</p>
-          </li>
-        ))}
+            </li>
+          ))
+        )}
       </ul>
     </main>
   );
