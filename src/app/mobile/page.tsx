@@ -12,26 +12,29 @@ export default function MobileHomePage() {
     useState<(typeof TABS)[number]>("Trending");
   const [search, setSearch] = useState("");
 
-  // ✅ make sure saved ids are strings no matter what saved.ts exports
-  const savedIdsAsString = savedPlaceIds.map((id) => id.toString());
-
   // 1) filter by search
   const filtered = mockPlaces.filter((place) =>
     place.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  // 2) build views
+  // 2) build each view
+
+  // trending = just those marked trending
   const trendingList = filtered.filter((p) => p.trending);
 
+  // nearby = sort by distance
   const nearbyList = filtered
     .slice()
     .sort((a, b) => a.distanceMiles - b.distanceMiles);
 
+  // ✅ saved = match numbers-to-strings safely
+  // savedPlaceIds is number[]   (from saved.ts)
+  // place.id is string          (from places.ts)
   const savedList = filtered.filter((p) =>
-    savedIdsAsString.includes(p.id)
+    savedPlaceIds.some((id) => id.toString() === p.id)
   );
 
-  // 3) pick which list to show
+  // 3) pick which one to show
   let listToShow = filtered;
   if (activeTab === "Trending") listToShow = trendingList;
   if (activeTab === "Nearby") listToShow = nearbyList;
@@ -43,6 +46,7 @@ export default function MobileHomePage() {
         <h1 className="text-lg font-semibold">Foundzie</h1>
         <p className="text-sm text-slate-400">What&apos;s near you</p>
 
+        {/* search box */}
         <div className="mt-4">
           <input
             value={search}
@@ -52,6 +56,7 @@ export default function MobileHomePage() {
           />
         </div>
 
+        {/* tabs */}
         <div className="mt-4 flex gap-2">
           {TABS.map((tab) => (
             <button
@@ -68,6 +73,7 @@ export default function MobileHomePage() {
           ))}
         </div>
 
+        {/* list */}
         <ul className="mt-6 space-y-3">
           {listToShow.length === 0 ? (
             <li className="text-sm text-slate-400">No places match.</li>
