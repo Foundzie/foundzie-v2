@@ -2,21 +2,21 @@
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-type PageProps = {
-  params: {
-    id: string; // Next gives us the route param as string
-  };
+type AdminPlaceDetailPageProps = {
+  // Vercel/Next for this project is giving params as a Promise
+  params: Promise<{ id: string }>;
 };
 
-export default function AdminPlaceDetailPage({ params }: PageProps) {
-  const id = params.id;
+export default async function AdminPlaceDetailPage({
+  params,
+}: AdminPlaceDetailPageProps) {
+  // unwrap the promise
+  const { id } = await params;
 
-  // 🔴 important part:
-  // some old typing thinks p.id might be a number,
-  // so we ALWAYS turn it into a string before comparing
+  // ids in mockPlaces are strings, but we toString() anyway to shut TS up
   const place = mockPlaces.find((p) => p.id.toString() === id);
 
-  // if id doesn't match anything, show a friendly message
+  // if not found, show friendly message
   if (!place) {
     return (
       <main className="min-h-screen bg-slate-950 text-slate-50 p-6 space-y-4">
