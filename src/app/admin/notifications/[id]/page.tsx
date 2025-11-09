@@ -1,29 +1,98 @@
 // src/app/admin/notifications/[id]/page.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import Link from "next/link";
-import { mockNotifications } from "@/app/data/notifications";
 
-export default async function AdminEditNotificationPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-  const notification = mockNotifications.find((n) => n.id === id);
+type NotificationType = "system" | "offer" | "event" | "chat";
 
-  if (!notification) {
+export default function AdminEditNotificationPage() {
+  const params = useParams();
+  const id = params?.id as string;
+
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+
+  const [title, setTitle] = useState("");
+  const [message, setMessage] = useState("");
+  const [type, setType] = useState<NotificationType>("system");
+  const [actionLabel, setActionLabel] = useState("");
+  const [actionHref, setActionHref] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  // load from API
+  useEffect(() => {
+    async function load() {
+      const res = await fetch("/api/notifications");
+      const data = await res.json();
+      const found = data.find((n: any) => n.id === id);
+      if (!found) {
+        setNotFound(true);
+      } else {
+        setTitle(found.title ?? "");
+        setMessage(found.message ?? "");
+        setType(found.type ?? "system");
+        setActionLabel(found.actionLabel ?? "");
+        setActionHref(found.actionHref ?? "");
+      }
+      setLoading(false);
+    }
+    if (id) {
+      load();
+    }
+  }, [id]);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setSaved(false);
+
+    const res = await fetch("/api/notifications", {
+      method: "POST", // our route treats POST with id as update
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        id,
+        title,
+        message,
+        type,
+        actionLabel,
+        actionHref,
+      }),
+    });
+
+    if (res.ok) {
+      setSaved(true);
+    } else {
+      alert("Could not update notification.");
+    }
+
+    setSaving(false);
+  }
+
+  if (loading) {
     return (
-      <main className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="bg-white border border-gray-200 rounded-lg px-6 py-8 text-center">
-          <p className="text-sm text-gray-600 mb-4">
-            Notification with id {id} not found (mock data).
-          </p>
-          <Link
-            href="/admin/notifications"
-            className="text-xs text-purple-600 hover:underline"
-          >
-            ← back to notifications
-          </Link>
-        </div>
+      <main className="min-h-screen bg-gray-50 px-6 py-6">
+        <p className="text-sm text-gray-500">Loading notification…</p>
+      </main>
+    );
+  }
+
+  if (notFound) {
+    return (
+      <main className="min-h-screen bg-gray-50 px-6 py-6">
+        <p className="text-sm text-gray-500 mb-4">
+          Notification with id {id} not found.
+        </p>
+        <Link
+          href="/admin/notifications"
+          className="text-xs text-purple-600 hover:underline"
+        >
+          ← back to notifications
+        </Link>
       </main>
     );
   }
@@ -36,7 +105,7 @@ export default async function AdminEditNotificationPage({
             Edit notification
           </h1>
           <p className="text-xs text-gray-500">
-            Values shown here come from src/app/data/notifications.ts
+            Values shown here come from /api/notifications.
           </p>
         </div>
         <Link
@@ -48,47 +117,91 @@ export default async function AdminEditNotificationPage({
       </header>
 
       <section className="px-6 py-6">
-        <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-xl">
-          <div className="grid gap-4">
-            <label className="text-xs text-gray-700">
+        <form
+          onSubmit={handleSubmit}
+          className="bg-white border border-gray-200 rounded-lg p-5 max-w-xl space-y-4"
+        >
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
               Title
-              <input
-                defaultValue={notification.title}
-                className="mt-1 w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
-              />
             </label>
-
-            <label className="text-xs text-gray-700">
-              Message
-              <textarea
-                defaultValue={notification.message}
-                rows={3}
-                className="mt-1 w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
-              />
-            </label>
-
-            <label className="text-xs text-gray-700">
-              Type
-              <select
-                defaultValue={notification.type}
-                className="mt-1 w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
-              >
-                <option value="system">system</option>
-                <option value="offer">offer</option>
-                <option value="event">event</option>
-                <option value="chat">chat</option>
-              </select>
-            </label>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              required
+              className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+            />
           </div>
 
-          <p className="text-[10px] text-gray-400 mt-4 mb-2">
-            This is a mock edit screen. We’ll wire it to real storage later.
-          </p>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Message
+            </label>
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              rows={3}
+              required
+              className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+            />
+          </div>
 
-          <button className="mt-2 bg-purple-600 text-white px-4 py-2 rounded-md text-sm hover:bg-purple-700">
-            Save (mock)
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Type
+            </label>
+            <select
+              value={type}
+              onChange={(e) =>
+                setType(e.target.value as NotificationType)
+              }
+              className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+            >
+              <option value="system">system</option>
+              <option value="offer">offer</option>
+              <option value="event">event</option>
+              <option value="chat">chat</option>
+            </select>
+          </div>
+
+          <div className="grid gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Action label (optional)
+              </label>
+              <input
+                value={actionLabel}
+                onChange={(e) => setActionLabel(e.target.value)}
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Action href (optional)
+              </label>
+              <input
+                value={actionHref}
+                onChange={(e) => setActionHref(e.target.value)}
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={saving}
+            className="bg-purple-600 text-white text-sm px-4 py-2 rounded-md hover:bg-purple-700 transition disabled:opacity-60"
+          >
+            {saving ? "Saving..." : "Save"}
           </button>
-        </div>
+
+          {saved && (
+            <p className="text-xs text-green-600">
+              ✅ Notification updated. Check the list.
+            </p>
+          )}
+        </form>
       </section>
     </main>
   );
