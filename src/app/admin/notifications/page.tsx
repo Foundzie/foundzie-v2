@@ -13,6 +13,12 @@ export default function AdminNotificationsPage() {
           </p>
         </div>
         <Link
+  href="/admin/notifications/send"
+  className="bg-purple-500 text-white text-sm px-4 py-2 rounded-md hover:bg-purple-600"
+>
+  Send alert (mock)
+</Link>
+        <Link
           href="/admin/notifications/new"
           className="bg-purple-600 text-white text-sm px-4 py-2 rounded-md hover:bg-purple-700"
         >
