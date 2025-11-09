@@ -1,68 +1,69 @@
 // src/app/mobile/places/[id]/page.tsx
+
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-type MobilePlacePageProps = {
-  // in this project, params is a Promise
-  params: Promise<{ id: string }>;
+type MobilePlaceDetailPageProps = {
+  params: {
+    id: string;
+  };
 };
 
-export default async function MobilePlacePage({ params }: MobilePlacePageProps) {
-  const { id } = await params;
+export default function MobilePlaceDetailPage({
+  params,
+}: MobilePlaceDetailPageProps) {
+  // force to string so TS stops complaining
+  const id = String(params.id);
 
-  // ids in mockPlaces are strings, so compare strings
-  const place = mockPlaces.find((p) => p.id === id);
+  // also force p.id to string (belt + suspenders)
+  const place = mockPlaces.find((p) => String(p.id) === id);
 
   if (!place) {
     return (
-      <main className="min-h-screen bg-slate-950 text-slate-50 p-4 space-y-4">
-        <Link href="/mobile" className="text-sm underline">
-          ← Back
+      <main className="min-h-screen bg-slate-950 text-white p-4">
+        <p className="mb-4 text-sm">Place not found.</p>
+        <Link href="/mobile" className="text-pink-400 underline text-sm">
+          ← Back to list
         </Link>
-        <h1 className="text-xl font-semibold">Place not found</h1>
-        <p className="text-sm text-slate-400">
-          The ID in the URL didn’t match any mock data in <code>src/app/data/places.ts</code>.
-        </p>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-50 p-4 space-y-6">
-      <header className="flex items-center justify-between">
-        <div>
-          <p className="text-xs text-slate-400 mb-1">Place detail</p>
-          <h1 className="text-2xl font-semibold">{place.name}</h1>
-          <p className="text-sm text-slate-400">
-            {place.category}
-            {place.distanceMiles !== undefined ? ` • ${place.distanceMiles} mi` : ""}
-          </p>
-        </div>
-        <Link
-          href="/mobile"
-          className="text-sm px-3 py-1 rounded bg-slate-800 hover:bg-slate-700"
-        >
-          Back
-        </Link>
+    <main className="min-h-screen bg-slate-950 text-white p-4 space-y-4">
+      <Link href="/mobile" className="text-pink-400 underline text-sm">
+        ← Back
+      </Link>
+
+      <header>
+        <h1 className="text-xl font-bold">{place.name}</h1>
+        <p className="text-sm text-slate-400">{place.category}</p>
       </header>
 
-      <section className="bg-slate-900 rounded-lg p-4 space-y-2 text-sm">
+      <section className="space-y-2 text-sm">
         <p>
-          <span className="text-slate-400 mr-2">Open until:</span>
-          {place.openUntil ?? "—"}
+          <span className="font-medium">Distance:</span>{" "}
+          {place.distanceMiles} mi
         </p>
         <p>
-          <span className="text-slate-400 mr-2">Rating:</span>
-          {place.rating ?? "—"}
+          <span className="font-medium">Open until:</span> {place.openUntil}
         </p>
         <p>
-          <span className="text-slate-400 mr-2">Reviews:</span>
-          {place.reviews ?? "—"}
+          <span className="font-medium">Rating:</span> {place.rating}
         </p>
         <p>
-          <span className="text-slate-400 mr-2">Trending:</span>
+          <span className="font-medium">Reviews:</span> {place.reviews}
+        </p>
+        <p>
+          <span className="font-medium">Trending:</span>{" "}
           {place.trending ? "Yes" : "No"}
         </p>
+        {place.description ? (
+          <p>
+            <span className="font-medium">Description:</span>{" "}
+            {place.description}
+          </p>
+        ) : null}
       </section>
     </main>
   );
