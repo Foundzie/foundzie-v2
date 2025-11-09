@@ -2,62 +2,51 @@
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-export default function MobilePlaceDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  const id = params.id; // string from the URL
+// This is the shape Next gives us for a route like /mobile/places/[id]
+type MobilePlaceDetailPageProps = {
+  params: {
+    id: string;
+  };
+};
 
-  // force both sides to string so TS stops complaining
-  const place = mockPlaces.find((p) => String(p.id) === id);
+export default function MobilePlaceDetailPage({ params }: MobilePlaceDetailPageProps) {
+  const { id } = params; // route param is always a string
 
+  // make sure we also compare as strings
+  const place = mockPlaces.find((p) => p.id.toString() === id);
+
+  // if the id in the URL didn't match anything, show a friendly message
   if (!place) {
     return (
-      <main className="min-h-screen bg-slate-950 text-white p-4">
-        <p className="mb-4 text-sm">Place not found.</p>
+      <main className="min-h-screen bg-slate-950 text-slate-50 p-4 space-y-4">
         <Link href="/mobile" className="text-pink-400 underline text-sm">
           ← Back to list
         </Link>
+        <p className="text-xl font-semibold">Place not found</p>
+        <p className="text-sm text-slate-400">
+          Check <code>src/app/data/places.ts</code> for available IDs.
+        </p>
       </main>
     );
   }
 
+  // normal detail view
   return (
-    <main className="min-h-screen bg-slate-950 text-white p-4 space-y-4">
-      <Link href="/mobile" className="text-pink-400 underline text-sm">
-        ← Back
-      </Link>
-
-      <header>
+    <main className="min-h-screen bg-slate-950 text-slate-50 p-4 space-y-6">
+      <header className="flex items-center justify-between gap-3">
+        <Link href="/mobile" className="text-pink-400 underline text-sm">
+          ← Back
+        </Link>
         <h1 className="text-xl font-bold">{place.name}</h1>
-        <p className="text-sm text-slate-400">{place.category}</p>
       </header>
 
       <section className="space-y-2 text-sm">
-        <p>
-          <span className="font-medium">Distance:</span>{" "}
-          {place.distanceMiles} mi
+        <p className="text-slate-300">{place.category}</p>
+        <p className="text-slate-400">
+          {place.distanceMiles !== undefined ? `${place.distanceMiles} mi • ` : ""}
+          open until {place.openUntil}
         </p>
-        <p>
-          <span className="font-medium">Open until:</span> {place.openUntil}
-        </p>
-        <p>
-          <span className="font-medium">Rating:</span> {place.rating}
-        </p>
-        <p>
-          <span className="font-medium">Reviews:</span> {place.reviews}
-        </p>
-        <p>
-          <span className="font-medium">Trending:</span>{" "}
-          {place.trending ? "Yes" : "No"}
-        </p>
-        {place.description ? (
-          <p>
-            <span className="font-medium">Description:</span>{" "}
-            {place.description}
-          </p>
-        ) : null}
+        <p className="text-slate-200">{place.description}</p>
       </section>
     </main>
   );
