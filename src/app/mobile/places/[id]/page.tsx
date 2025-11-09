@@ -1,21 +1,15 @@
 // src/app/mobile/places/[id]/page.tsx
-
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-type MobilePlaceDetailPageProps = {
-  params: {
-    id: string;
-  };
-};
-
 export default function MobilePlaceDetailPage({
   params,
-}: MobilePlaceDetailPageProps) {
-  // force to string so TS stops complaining
-  const id = String(params.id);
+}: {
+  params: { id: string };
+}) {
+  const id = params.id; // string from the URL
 
-  // also force p.id to string (belt + suspenders)
+  // force both sides to string so TS stops complaining
   const place = mockPlaces.find((p) => String(p.id) === id);
 
   if (!place) {
