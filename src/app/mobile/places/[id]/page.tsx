@@ -2,20 +2,21 @@
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
-// This is the shape Next gives us for a route like /mobile/places/[id]
-type MobilePlaceDetailPageProps = {
+// Next expects page components in /[id]/page.tsx to accept plain params,
+// not a Promise.
+type PageProps = {
   params: {
     id: string;
   };
 };
 
-export default function MobilePlaceDetailPage({ params }: MobilePlaceDetailPageProps) {
-  const { id } = params; // route param is always a string
+export default function MobilePlaceDetailPage({ params }: PageProps) {
+  const id = params.id; // this is already a string
 
-  // make sure we also compare as strings
+  // our mockPlaces ids might be strings or numbers, so compare as strings
   const place = mockPlaces.find((p) => p.id.toString() === id);
 
-  // if the id in the URL didn't match anything, show a friendly message
+  // if no place was found, show a friendly message
   if (!place) {
     return (
       <main className="min-h-screen bg-slate-950 text-slate-50 p-4 space-y-4">
