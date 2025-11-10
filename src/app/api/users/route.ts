@@ -1,40 +1,26 @@
 // src/app/api/users/route.ts
 import { NextResponse } from "next/server";
-import mockUsers, {
-  type AdminUser,
-} from "@/app/data/users";
-
-// we'll keep an in-memory copy so POSTs show up right away
-let users: AdminUser[] = [...mockUsers];
+import { listUsers, createUser } from "./store";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/users  → { items: [...] }
+// GET /api/users -> list everything we have in memory
 export async function GET() {
-  return NextResponse.json({ items: users });
+  const items = listUsers();
+  return NextResponse.json({ items });
 }
 
-// POST /api/users  → create a new user (mock)
+// POST /api/users -> create a new (admin) user
 export async function POST(req: Request) {
   const body = await req.json();
 
-  const newUser: AdminUser = {
-    id: (users.length + 1).toString(),
-    name: body.name ?? "New user",
-    email: body.email ?? "no-email@example.com",
+  const newUser = createUser({
+    name: body.name,
+    email: body.email,
     role: body.role ?? "viewer",
     status: body.status ?? "active",
-    // match your display style in src/app/data/users.ts
-    joined:
-      body.joined ??
-      new Date().toLocaleString("en-US", {
-        month: "short",
-        year: "numeric",
-      }),
-  };
-
-  // put new ones at the top like we did for notifications
-  users.unshift(newUser);
+    joined: body.joined,
+  });
 
   return NextResponse.json({ item: newUser }, { status: 201 });
 }
