@@ -15,15 +15,13 @@ export function createUser(partial: Partial<AdminUser>): AdminUser {
     email: partial.email ?? "no-email@example.com",
     role: partial.role ?? "viewer",
     status: partial.status ?? "active",
-    joined:
-      partial.joined ??
-      new Date().toLocaleString("en-US", {
-        month: "short",
-        year: "numeric",
-      }),
+    joined: new Date().toLocaleString("en-US", {
+      month: "short",
+      year: "numeric",
+    }),
   };
 
-  // put newest on top like your notifications
+  // newest on top
   users.unshift(user);
   return user;
 }

@@ -1,28 +1,26 @@
 // src/app/api/users/collect/route.ts
 import { NextResponse } from "next/server";
-import { createUser, listUsers } from "@/store";
+import { createUser, listUsers } from "../store";
 
 export const dynamic = "force-dynamic";
 
 // POST /api/users/collect
-// lightweight user capture: name, email, etc.
+// lightweight user capture from mobile
 export async function POST(req: Request) {
   const body = await req.json();
 
   const newUser = createUser({
     name: body.name ?? body.firstName ?? "Anonymous visitor",
     email: body.email ?? "no-email@example.com",
-    role: "viewer",
+    // so we can see in admin that this came from mobile/popup
     status: "collected",
-    // NEW optional fields
-    interest: body.interest ?? "",
-    source: body.source ?? "mobile",
+    role: "viewer",
   });
 
   return NextResponse.json({ ok: true, item: newUser });
 }
 
-// optional GET to see what was collected
+// GET /api/users/collect (optional) – just return everything
 export async function GET() {
   return NextResponse.json({ items: listUsers() });
 }
