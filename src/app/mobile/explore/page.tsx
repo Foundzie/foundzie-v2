@@ -1,30 +1,39 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { mockPlaces } from "@/app/data/places";
 
 export default function MobileExplorePage() {
-  // what the user typed
   const [query, setQuery] = useState("");
+  const [places, setPlaces] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // filtered list
-  const filtered = mockPlaces.filter((place) => {
+  useEffect(() => {
+    async function loadPlaces() {
+      try {
+        const res = await fetch("/api/places");
+        const json = await res.json();
+        setPlaces(json.data || []);
+      } catch (e) {
+        console.error("Failed to load places", e);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadPlaces();
+  }, []);
+
+  const filtered = places.filter((p) => {
     if (!query) return true;
     const q = query.toLowerCase();
-    return (
-      place.name.toLowerCase().includes(q) ||
-      place.category.toLowerCase().includes(q)
-    );
+    return p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q);
   });
 
   return (
     <main className="min-h-screen bg-[#0f172a] text-white pb-14">
-      <header className="px-4 pt-5 pb-3 space-y-2">
+      <header className="px-4 pt-3 space-y-2">
         <h1 className="text-lg font-semibold">Explore</h1>
         <p className="text-sm text-slate-300">Browse all nearby places</p>
-
-        {/* search */}
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -33,50 +42,34 @@ export default function MobileExplorePage() {
         />
       </header>
 
-      {/* categories (still fake) */}
-      <div className="px-4 mb-4 grid grid-cols-3 gap-3">
-        <div className="bg-slate-800 rounded-xl p-3 text-center">
-          <p className="text-sm">Coffee</p>
-          <p className="text-xs text-slate-400">24</p>
+      {loading ? (
+        <p className="text-center py-8 text-slate-400">Loading...</p>
+      ) : (
+        <div className="px-4 mt-4 space-y-3">
+          {filtered.length === 0 ? (
+            <p className="text-center text-slate-400 py-6">No matches found.</p>
+          ) : (
+            filtered.map((p) => (
+              <Link
+                key={p.id}
+                href={`/mobile/places/${p.id}`}
+                className="flex items-center justify-between border-b border-slate-800 py-3"
+              >
+                <div>
+                  <p className="font-medium">{p.name}</p>
+                  <p className="text-xs text-slate-400">{p.category}</p>
+                </div>
+                <span className="text-xs text-slate-500">View</span>
+              </Link>
+            ))
+          )}
         </div>
-        <div className="bg-slate-800 rounded-xl p-3 text-center">
-          <p className="text-sm">Parks</p>
-          <p className="text-xs text-slate-400">18</p>
-        </div>
-        <div className="bg-slate-800 rounded-xl p-3 text-center">
-          <p className="text-sm">Workspaces</p>
-          <p className="text-xs text-slate-400">6</p>
-        </div>
-      </div>
+      )}
 
-      {/* list */}
-      <div className="px-4 space-y-1">
-        {filtered.length === 0 ? (
-          <p className="text-sm text-slate-400 py-6">No places match that.</p>
-        ) : (
-          filtered.map((place) => (
-            <Link
-              key={place.id}
-              href={`/mobile/places/${place.id}`}
-              className="flex items-center justify-between py-3 border-b border-slate-800"
-            >
-              <div>
-                <p className="font-medium">{place.name}</p>
-                <p className="text-xs text-slate-400">{place.category}</p>
-              </div>
-              <div className="text-right text-xs text-slate-500">View</div>
-            </Link>
-          ))
-        )}
-      </div>
-
-      {/* bottom nav */}
       <nav className="fixed bottom-0 left-0 right-0 bg-[#0f172a] border-t border-slate-800 flex justify-around py-2 text-xs text-slate-300">
         <Link href="/mobile">Home</Link>
-        <Link href="/mobile/explore" className="text-white">
-          Explore
-        </Link>
-        <Link href="/mobile/notifications">Alerts</Link>
+        <Link href="/mobile/explore" className="text-white">Explore</Link>
+        <Link href="/mobile/nearby">Nearby</Link>
         <Link href="/mobile/profile">Profile</Link>
         <Link href="/admin">Admin</Link>
       </nav>

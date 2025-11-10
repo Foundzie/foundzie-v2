@@ -1,60 +1,65 @@
-// src/app/mobile/nearby/page.tsx
-import Link from "next/link";
-import { mockPlaces } from "@/app/data/places";
+"use client";
 
-const FILTERS = ["All", "Coffee", "Parks", "Workspaces", "Restaurants", "Events", "Shopping"];
+import { useEffect, useState } from "react";
+import Link from "next/link";
 
 export default function NearbyPage() {
-  // sort by distanceMiles (NOT distance)
-  const sorted = mockPlaces
-    .slice()
-    .sort(
-      (a, b) =>
-        (a.distanceMiles ?? Number.POSITIVE_INFINITY) -
-        (b.distanceMiles ?? Number.POSITIVE_INFINITY)
-    );
+  const [places, setPlaces] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await fetch("/api/places");
+        const json = await res.json();
+        setPlaces(json.data || []);
+      } catch (e) {
+        console.error("Failed to load places", e);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, []);
+
+  const sorted = [...places].sort((a, b) => (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999));
 
   return (
     <main className="min-h-screen bg-slate-950 text-white">
       <header className="px-4 py-4 border-b border-slate-800">
         <h1 className="text-lg font-semibold">Nearby</h1>
-        <p className="text-xs text-slate-400">Browse all nearby places</p>
+        <p className="text-slate-400 text-sm">Places near your location</p>
       </header>
 
-      {/* filters row */}
-      <div className="flex gap-2 px-4 py-3 overflow-x-auto no-scrollbar">
-        {FILTERS.map((f) => (
-          <span
-            key={f}
-            className={`inline-flex items-center rounded-lg bg-slate-900 px-4 py-2 text-xs text-slate-100 whitespace-nowrap`}
-          >
-            {f}
-          </span>
-        ))}
-      </div>
-
-      <ul className="px-2 pb-16">
-        {sorted.map((place) => (
-          <li key={place.id}>
+      {loading ? (
+        <p className="text-center py-8 text-slate-400">Loading...</p>
+      ) : (
+        <div className="px-4 pb-16 space-y-2">
+          {sorted.map((p) => (
             <Link
-              href={`/mobile/places/${place.id}`}
-              className="flex items-center justify-between px-2 py-3 border-b border-slate-900"
+              key={p.id}
+              href={`/mobile/places/${p.id}`}
+              className="flex items-center justify-between border-b border-slate-800 py-3"
             >
               <div>
-                <p className="text-sm font-medium">{place.name}</p>
-                <p className="text-xs text-slate-400">{place.category}</p>
+                <p className="font-medium">{p.name}</p>
+                <p className="text-xs text-slate-400">{p.category}</p>
               </div>
-              <div className="text-right text-[11px] text-slate-400 space-y-1">
-                {/* 👇 THIS was place.distance before – now it's distanceMiles */}
-                {typeof place.distanceMiles === "number" ? (
-                  <p>{place.distanceMiles} mi</p>
-                ) : null}
-                {place.openUntil ? <p>open until {place.openUntil}</p> : null}
-              </div>
+              <p className="text-xs text-slate-500">{p.distanceMiles} mi</p>
             </Link>
-          </li>
-        ))}
-      </ul>
+          ))}
+        </div>
+      )}
+
+      <nav className="fixed bottom-0 left-0 right-0 bg-slate-950 border-t border-slate-800 flex justify-around py-2 text-xs text-slate-300">
+        <Link href="/mobile">Home</Link>
+        <Link href="/mobile/explore">Explore</Link>
+        <Link href="/mobile/nearby" className="text-white">
+          Nearby
+        </Link>
+        <Link href="/mobile/profile">Profile</Link>
+        <Link href="/admin">Admin</Link>
+      </nav>
     </main>
   );
 }
