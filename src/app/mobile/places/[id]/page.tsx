@@ -3,12 +3,16 @@ import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 import MobileSaveButton from "@/app/components/MobileSaveButton";
 
+type MobilePlaceDetailPageProps = {
+  // ✅ this is the important part: params is a Promise
+  params: Promise<{ id: string }>;
+};
+
 export default async function MobilePlaceDetailPage({
   params,
-}: {
-  params: { id: string };
-}) {
-  const { id } = params;
+}: MobilePlaceDetailPageProps) {
+  // ✅ unwrap the promise
+  const { id } = await params;
 
   const place = mockPlaces.find((p) => p.id.toString() === id);
 
