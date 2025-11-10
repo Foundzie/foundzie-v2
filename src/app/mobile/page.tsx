@@ -30,9 +30,7 @@ export default function MobileHomePage() {
     const isSaved = savedIds.includes(id);
 
     // update UI immediately
-    setSavedIds((prev) =>
-      isSaved ? prev.filter((x) => x !== id) : [...prev, id]
-    );
+    setSavedIds((prev) => (isSaved ? prev.filter((x) => x !== id) : [...prev, id]));
 
     // tell backend
     try {
@@ -46,7 +44,27 @@ export default function MobileHomePage() {
       });
     } catch (err) {
       console.error("Failed to update saved on server", err);
-      // optional: revert UI here if you want
+      // optional: you could revert UI here if you want
+    }
+  };
+
+  // 🔴 new: send lightweight user to backend
+  const sendCollectedUser = async () => {
+    try {
+      const res = await fetch("/api/users/collect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Mobile visitor",
+          email: "no-email@example.com",
+          source: "mobile-home",
+        }),
+      });
+      const data = await res.json();
+      console.log("collect result:", data);
+      // for now we just log it — admin /api/users will show it on local runs
+    } catch (err) {
+      console.error("failed to collect user from mobile", err);
     }
   };
 
@@ -60,7 +78,7 @@ export default function MobileHomePage() {
     <main className="min-h-screen bg-slate-950 text-white">
       <div className="px-4 pt-6 pb-2 space-y-2">
         <h1 className="text-xl font-bold">Foundzie</h1>
-        <p className="text-xs text-slate-400">What’s near you</p>
+        <p className="text-xs text-slate-400">What&apos;s near you</p>
       </div>
 
       {/* Tabs */}
@@ -70,9 +88,7 @@ export default function MobileHomePage() {
             key={tab}
             onClick={() => setActiveTab(tab as any)}
             className={`px-3 py-1 rounded-full text-xs ${
-              activeTab === tab
-                ? "bg-pink-500 text-white"
-                : "bg-slate-900 text-slate-300"
+              activeTab === tab ? "bg-pink-500 text-white" : "bg-slate-900 text-slate-300"
             }`}
           >
             {tab[0].toUpperCase() + tab.slice(1)}
@@ -80,12 +96,12 @@ export default function MobileHomePage() {
         ))}
       </div>
 
-      {/* List */}
+      {/* list */}
       <ul>
         {shownPlaces.length === 0 && activeTab === "saved" ? (
-          <li className="px-4 py-8 text-slate-500 text-center">
-            No saved places yet.
-          </li>
+            <li className="px-4 py-8 text-slate-500 text-center">
+              No saved places yet.
+            </li>
         ) : null}
 
         {shownPlaces.map((p) => (
@@ -108,11 +124,7 @@ export default function MobileHomePage() {
 
               <button
                 onClick={() => toggleSave(p.id.toString())}
-                className={`text-xs ${
-                  savedIds.includes(p.id.toString())
-                    ? "text-yellow-400"
-                    : "text-slate-500"
-                }`}
+                className="text-xs"
               >
                 {savedIds.includes(p.id.toString()) ? "★" : "☆"}
               </button>
@@ -120,6 +132,16 @@ export default function MobileHomePage() {
           </li>
         ))}
       </ul>
+
+      {/* 🔴 new test button at bottom */}
+      <div className="px-4 py-6">
+        <button
+          onClick={sendCollectedUser}
+          className="text-xs bg-slate-800 rounded-md px-3 py-2"
+        >
+          Send test mobile user → /api/users/collect
+        </button>
+      </div>
     </main>
   );
 }
