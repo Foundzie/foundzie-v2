@@ -10,8 +10,8 @@ interface AppNotification {
   type: NotificationType;
   title: string;
   message: string;
-  time: string;
   unread: boolean;
+  time: string;
   actionLabel?: string;
   actionHref?: string;
 }
@@ -20,38 +20,52 @@ export default function MobileNotificationsPage() {
   const [items, setItems] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const res = await fetch("/api/notifications", { cache: "no-store" });
-        const data = await res.json();
-        setItems(data);
-      } catch (err) {
-        console.error("failed to load mobile notifications", err);
-      } finally {
-        setLoading(false);
-      }
+  // load notifications
+  async function load() {
+    try {
+      const res = await fetch("/api/notifications", { cache: "no-store" });
+      const data = await res.json();
+      setItems(data);
+    } catch (err) {
+      console.error("Failed to load notifications", err);
+    } finally {
+      setLoading(false);
     }
+  }
+
+  // initial load + auto refresh every 5 seconds
+  useEffect(() => {
     load();
+    const timer = setInterval(load, 5000); // refresh every 5 seconds
+    return () => clearInterval(timer);
   }, []);
 
   return (
     <main className="min-h-screen bg-slate-950 text-white">
       <div className="px-4 pt-6 pb-4 space-y-2">
         <h1 className="text-xl font-semibold">Alerts</h1>
-        <p className="text-xs text-slate-400">Latest updates from places near you</p>
+        <p className="text-xs text-slate-400">
+          Latest updates from places near you
+        </p>
       </div>
 
       <ul className="divide-y divide-slate-900">
         {loading ? (
-          <li className="px-4 py-6 text-sm text-slate-400">Loading…</li>
+          <li className="px-4 py-6 text-center text-slate-400">Loading...</li>
         ) : items.length === 0 ? (
-          <li className="px-4 py-6 text-sm text-slate-400">No alerts right now.</li>
+          <li className="px-4 py-6 text-center text-slate-400">
+            No alerts right now.
+          </li>
         ) : (
           items.map((n) => (
-            <li key={n.id} className="px-4 py-4 flex items-start gap-3">
+            <li
+              key={n.id}
+              className={`px-4 py-4 flex items-start gap-3 ${
+                n.unread ? "bg-slate-900/30" : ""
+              }`}
+            >
               <div className="flex-1">
-                <p className="text-sm font-medium text-white">{n.title}</p>
+                <p className="text-sm font-medium">{n.title}</p>
                 <p className="text-xs text-slate-400 mt-1">{n.message}</p>
                 <p className="text-[10px] text-slate-500 mt-1">{n.time}</p>
               </div>
