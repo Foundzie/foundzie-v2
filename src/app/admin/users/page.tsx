@@ -11,13 +11,14 @@ type AdminUser = {
   role: string;
   status: string;
   joined: string;
-  interest?: string; // NEW – may come from /api/users/collect
-  source?: string;   // NEW – mobile-home etc.
+  interest?: string; // may come from /api/users/collect
+  source?: string; // mobile-home etc.
 };
 
 export default function AdminUsersPage() {
   const [items, setItems] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<"all" | "collected">("all");
 
   useEffect(() => {
     async function load() {
@@ -33,6 +34,17 @@ export default function AdminUsersPage() {
     }
     load();
   }, []);
+
+  // pick what to show based on filter
+  const shown =
+    filter === "all"
+      ? items
+      : items.filter(
+          (u) =>
+            u.status === "collected" ||
+            typeof u.source === "string" ||
+            typeof u.interest === "string"
+        );
 
   return (
     <main className="min-h-screen bg-white px-6 py-6">
@@ -56,16 +68,49 @@ export default function AdminUsersPage() {
         </Link>
       </header>
 
+      {/* filter bar */}
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => setFilter("all")}
+          className={`text-xs px-3 py-1 rounded-full ${
+            filter === "all"
+              ? "bg-gray-900 text-white"
+              : "bg-gray-100 text-gray-500"
+          }`}
+        >
+          All ({items.length})
+        </button>
+        <button
+          onClick={() => setFilter("collected")}
+          className={`text-xs px-3 py-1 rounded-full ${
+            filter === "collected"
+              ? "bg-gray-900 text-white"
+              : "bg-gray-100 text-gray-500"
+          }`}
+        >
+          Collected (
+          {
+            items.filter(
+              (u) =>
+                u.status === "collected" ||
+                typeof u.source === "string" ||
+                typeof u.interest === "string"
+            ).length
+          }
+          )
+        </button>
+      </div>
+
       <div className="bg-gray-50 border border-gray-100 rounded-xl divide-y divide-gray-100 max-w-lg">
         {loading && (
           <p className="px-4 py-6 text-sm text-gray-400">Loading users...</p>
         )}
 
-        {!loading && items.length === 0 && (
+        {!loading && shown.length === 0 && (
           <p className="px-4 py-6 text-sm text-gray-400">No users yet.</p>
         )}
 
-        {items.map((u) => (
+        {shown.map((u) => (
           <div
             key={u.id}
             className="flex items-start justify-between px-4 py-4 gap-4"
@@ -78,13 +123,13 @@ export default function AdminUsersPage() {
               {/* show interest if present */}
               {u.interest ? (
                 <p className="text-[11px] text-pink-500 mt-1">
-                  Interest: {u.interest}
+                  interest: {u.interest}
                 </p>
               ) : null}
 
               {/* show source if present */}
               {u.source ? (
-                <p className="text-[10px] text-gray-300">
+                <p className="text-[11px] text-gray-300">
                   source: {u.source}
                 </p>
               ) : null}
@@ -102,6 +147,7 @@ export default function AdminUsersPage() {
               >
                 {u.status.toUpperCase()}
               </span>
+
               <Link
                 href={`/admin/users/${u.id}`}
                 className="text-xs text-purple-600 hover:underline"
