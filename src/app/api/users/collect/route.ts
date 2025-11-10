@@ -1,6 +1,6 @@
 // src/app/api/users/collect/route.ts
 import { NextResponse } from "next/server";
-import { createUser, listUsers } from "../store";
+import { createUser, listUsers } from "@/store";
 
 export const dynamic = "force-dynamic";
 
@@ -12,9 +12,11 @@ export async function POST(req: Request) {
   const newUser = createUser({
     name: body.name ?? body.firstName ?? "Anonymous visitor",
     email: body.email ?? "no-email@example.com",
-    // must match your unions in src/app/data/users.ts
     role: "viewer",
-    status: "invited",
+    status: "collected",
+    // NEW optional fields
+    interest: body.interest ?? "",
+    source: body.source ?? "mobile",
   });
 
   return NextResponse.json({ ok: true, item: newUser });

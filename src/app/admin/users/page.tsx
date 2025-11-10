@@ -11,6 +11,8 @@ type AdminUser = {
   role: string;
   status: string;
   joined: string;
+  interest?: string; // NEW – may come from /api/users/collect
+  source?: string;   // NEW – mobile-home etc.
 };
 
 export default function AdminUsersPage() {
@@ -56,7 +58,7 @@ export default function AdminUsersPage() {
 
       <div className="bg-gray-50 border border-gray-100 rounded-xl divide-y divide-gray-100 max-w-lg">
         {loading && (
-          <p className="px-4 py-6 text-sm text-gray-400">Loading users…</p>
+          <p className="px-4 py-6 text-sm text-gray-400">Loading users...</p>
         )}
 
         {!loading && items.length === 0 && (
@@ -64,12 +66,30 @@ export default function AdminUsersPage() {
         )}
 
         {items.map((u) => (
-          <div key={u.id} className="flex items-center justify-between px-4 py-4 gap-4">
+          <div
+            key={u.id}
+            className="flex items-start justify-between px-4 py-4 gap-4"
+          >
             <div>
               <p className="text-sm font-medium text-gray-900">{u.name}</p>
               <p className="text-xs text-gray-400">{u.email}</p>
-              <p className="text-xs text-gray-400">Joined {u.joined}</p>
+              <p className="text-[11px] text-gray-400">Joined {u.joined}</p>
+
+              {/* show interest if present */}
+              {u.interest ? (
+                <p className="text-[11px] text-pink-500 mt-1">
+                  Interest: {u.interest}
+                </p>
+              ) : null}
+
+              {/* show source if present */}
+              {u.source ? (
+                <p className="text-[10px] text-gray-300">
+                  source: {u.source}
+                </p>
+              ) : null}
             </div>
+
             <div className="flex gap-4 items-center">
               <span
                 className={

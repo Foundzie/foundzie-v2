@@ -10,6 +10,7 @@ export default function MobileHomePage() {
     "trending"
   );
   const [savedIds, setSavedIds] = useState<string[]>([]);
+  const [interest, setInterest] = useState(""); // NEW: user preference from mobile
 
   // load saved ids from API once
   useEffect(() => {
@@ -30,7 +31,9 @@ export default function MobileHomePage() {
     const isSaved = savedIds.includes(id);
 
     // update UI immediately
-    setSavedIds((prev) => (isSaved ? prev.filter((x) => x !== id) : [...prev, id]));
+    setSavedIds((prev) =>
+      isSaved ? prev.filter((x) => x !== id) : [...prev, id]
+    );
 
     // tell backend
     try {
@@ -44,11 +47,11 @@ export default function MobileHomePage() {
       });
     } catch (err) {
       console.error("Failed to update saved on server", err);
-      // optional: you could revert UI here if you want
+      // optional: revert UI here if you want
     }
   };
 
-  // 🔴 new: send lightweight user to backend
+  // NEW: send lightweight user + interest to backend
   const sendCollectedUser = async () => {
     try {
       const res = await fetch("/api/users/collect", {
@@ -58,11 +61,13 @@ export default function MobileHomePage() {
           name: "Mobile visitor",
           email: "no-email@example.com",
           source: "mobile-home",
+          interest: interest.trim() || undefined,
         }),
       });
       const data = await res.json();
       console.log("collect result:", data);
-      // for now we just log it — admin /api/users will show it on local runs
+      // you could clear the input if you want:
+      // setInterest("");
     } catch (err) {
       console.error("failed to collect user from mobile", err);
     }
@@ -96,12 +101,12 @@ export default function MobileHomePage() {
         ))}
       </div>
 
-      {/* list */}
+      {/* List */}
       <ul>
         {shownPlaces.length === 0 && activeTab === "saved" ? (
-            <li className="px-4 py-8 text-slate-500 text-center">
-              No saved places yet.
-            </li>
+          <li className="px-4 py-8 text-slate-500 text-center">
+            No saved places yet.
+          </li>
         ) : null}
 
         {shownPlaces.map((p) => (
@@ -133,14 +138,28 @@ export default function MobileHomePage() {
         ))}
       </ul>
 
-      {/* 🔴 new test button at bottom */}
-      <div className="px-4 py-6">
-        <button
-          onClick={sendCollectedUser}
-          className="text-xs bg-slate-800 rounded-md px-3 py-2"
-        >
-          Send test mobile user → /api/users/collect
-        </button>
+      {/* NEW: interest capture area */}
+      <div className="px-4 py-6 space-y-2">
+        <p className="text-xs text-slate-400">
+          Tell Foundzie what you like (saved to admin):
+        </p>
+        <div className="flex gap-2">
+          <input
+            value={interest}
+            onChange={(e) => setInterest(e.target.value)}
+            placeholder="e.g. brunch, parks, events"
+            className="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs outline-none"
+          />
+          <button
+            onClick={sendCollectedUser}
+            className="text-xs bg-slate-800 rounded-md px-3 py-1"
+          >
+            Save
+          </button>
+        </div>
+        <p className="text-[10px] text-slate-500">
+          This hits <code>/api/users/collect</code> — no login.
+        </p>
       </div>
     </main>
   );

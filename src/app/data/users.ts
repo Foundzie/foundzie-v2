@@ -1,6 +1,6 @@
 // src/app/data/users.ts
 
-export type AdminUserStatus = "active" | "invited" | "disabled";
+export type AdminUserStatus = "active" | "invited" | "disabled" | "collected";
 export type AdminUserRole = "admin" | "editor" | "viewer";
 
 export interface AdminUser {
@@ -10,6 +10,10 @@ export interface AdminUser {
   role: AdminUserRole;
   status: AdminUserStatus;
   joined: string; // display only
+
+  // NEW optional fields
+  interest?: string;
+  source?: string;
 }
 
 export const mockUsers: AdminUser[] = [
