@@ -1,56 +1,49 @@
 // src/app/mobile/places/[id]/page.tsx
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
-
-// match what Next/Vercel is generating for this route: params is a Promise
-type MobilePlaceDetailPageProps = {
-  params: Promise<{ id: string }>;
-};
+import MobileSaveButton from "@/app/components/MobileSaveButton";
 
 export default async function MobilePlaceDetailPage({
   params,
-}: MobilePlaceDetailPageProps) {
-  // Vercel expects a Promise, so we await it
-  const { id } = await params;
+}: {
+  params: { id: string };
+}) {
+  const { id } = params;
 
-  // your mockPlaces ids can be numbers or strings, so compare as strings
   const place = mockPlaces.find((p) => p.id.toString() === id);
 
-  // if no place matched, show a friendly message
   if (!place) {
     return (
-      <main className="min-h-screen bg-slate-950 text-slate-50 p-4 space-y-4">
+      <main className="min-h-screen bg-slate-950 text-white p-4">
         <Link href="/mobile" className="text-pink-400 underline text-sm">
-          ← Back to list
+          ← Back
         </Link>
-        <p className="text-xl font-semibold">Place not found</p>
-        <p className="text-sm text-slate-400">
-          Check <code>src/app/data/places.ts</code> for available IDs.
-        </p>
+        <p className="mt-4 text-slate-400">Place not found.</p>
       </main>
     );
   }
 
-  // normal detail view
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-50 p-4 space-y-6">
-      <header className="flex items-center justify-between gap-3">
+    <main className="min-h-screen bg-slate-950 text-white p-4 space-y-6">
+      <header className="flex justify-between items-center mb-4">
         <Link href="/mobile" className="text-pink-400 underline text-sm">
           ← Back
         </Link>
-        <h1 className="text-xl font-bold">{place.name}</h1>
+        <MobileSaveButton placeId={id} />
       </header>
 
-      <section className="space-y-2 text-sm">
-        <p className="text-slate-300">{place.category}</p>
-        <p className="text-slate-400">
-          {place.distanceMiles !== undefined
-            ? `${place.distanceMiles} mi • `
-            : ""}
-          open until {place.openUntil}
-        </p>
-        <p className="text-slate-200">{place.description}</p>
-      </section>
+      <div>
+        <h1 className="text-xl font-bold mb-2">{place.name}</h1>
+        <p className="text-slate-400 text-sm mb-1">{place.category}</p>
+        {place.distanceMiles !== undefined && (
+          <p className="text-slate-300 text-xs mb-2">
+            {place.distanceMiles} mi • open until {place.openUntil}
+          </p>
+        )}
+        {place.description ? (
+          <p className="text-slate-200 text-sm">{place.description}</p>
+        ) : null}
+      </div>
     </main>
   );
 }
