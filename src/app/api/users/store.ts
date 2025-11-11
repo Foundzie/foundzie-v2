@@ -1,27 +1,41 @@
 // src/app/api/users/store.ts
 import mockUsers, { type AdminUser } from "@/app/data/users";
 
-// we still start from mock data
-let users: AdminUser[] = [...mockUsers];
+// we’ll keep everything in a single global slot so the whole runtime
+// (all route handlers that import this file) sees the same array.
+const GLOBAL_KEY = "__foundzie_users__";
+
+function getRuntimeUsers(): AdminUser[] {
+  const g = globalThis as any;
+  if (!g[GLOBAL_KEY]) {
+    // first time: seed from mock data
+    g[GLOBAL_KEY] = [...mockUsers];
+  }
+  return g[GLOBAL_KEY] as AdminUser[];
+}
 
 // narrow type for partial updates/creates
 type AdminUserInput = Partial<AdminUser>;
 
 /**
  * This is the pluggable layer.
- * Right now it just uses the in-memory array.
- * Later we can replace ONLY this object with Vercel KV / DB calls.
+ * Today: runtime memory (globalThis) → survives multiple requests in the same lambda.
+ * Later: swap these methods to Vercel KV / DB without touching the API routes.
  */
 const userProvider = {
   async list(): Promise<AdminUser[]> {
+    const users = getRuntimeUsers();
     return users;
   },
 
   async get(id: string): Promise<AdminUser | undefined> {
+    const users = getRuntimeUsers();
     return users.find((u) => u.id === id);
   },
 
   async create(partial: AdminUserInput): Promise<AdminUser> {
+    const users = getRuntimeUsers();
+
     const user: AdminUser = {
       id: (users.length + 1).toString(),
       name: partial.name ?? "Anonymous visitor",
@@ -48,6 +62,7 @@ const userProvider = {
     id: string,
     partial: AdminUserInput
   ): Promise<AdminUser | undefined> {
+    const users = getRuntimeUsers();
     const index = users.findIndex((u) => u.id === id);
     if (index === -1) return undefined;
 
@@ -62,8 +77,7 @@ const userProvider = {
   },
 };
 
-// ↓ public API (what your routes already use) stays the same
-
+// ↓ public API (your routes already use these) — do NOT change route files
 export async function listUsers(): Promise<AdminUser[]> {
   return userProvider.list();
 }
