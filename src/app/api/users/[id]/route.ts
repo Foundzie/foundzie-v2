@@ -4,12 +4,16 @@ import { getUser, updateUser } from "../store";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/users/:id  → return one user
-export async function GET(_req: Request, context: any) {
-  // don’t type the second arg, just read from it
-  const { id } = context.params as { id: string };
+// GET /api/users/:id → return one user
+export async function GET(
+  _req: Request,
+  context: { params: { id: string } }
+) {
+  const { id } = context.params;
 
-  const user = getUser(id);
+  // ⬅️ this was missing before
+  const user = await getUser(id);
+
   if (!user) {
     return NextResponse.json(
       { ok: false, message: "User not found" },
@@ -20,12 +24,16 @@ export async function GET(_req: Request, context: any) {
   return NextResponse.json({ ok: true, item: user });
 }
 
-// PATCH /api/users/:id  → update one user
-export async function PATCH(req: Request, context: any) {
-  const { id } = context.params as { id: string };
+// PATCH /api/users/:id → update one user
+export async function PATCH(
+  req: Request,
+  context: { params: { id: string } }
+) {
+  const { id } = context.params;
   const body = await req.json();
 
-  const updated = updateUser(id, body);
+  // ⬅️ this was missing before
+  const updated = await updateUser(id, body);
 
   if (!updated) {
     return NextResponse.json(
