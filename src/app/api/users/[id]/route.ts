@@ -4,9 +4,9 @@ import { getUser, updateUser } from "../store";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/users/:id → return one user
+// GET /api/users/:id
 export async function GET(
-  req: Request,
+  _req: Request,
   { params }: { params: { id: string } }
 ) {
   const user = getUser(params.id);
@@ -19,7 +19,7 @@ export async function GET(
   return NextResponse.json({ ok: true, item: user });
 }
 
-// PATCH /api/users/:id → update one user
+// PATCH /api/users/:id
 export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
