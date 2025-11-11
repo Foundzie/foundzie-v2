@@ -4,12 +4,12 @@ import { getUser, updateUser } from "../store";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/users/:id  → return one user
+// GET /api/users/:id → return one user
 export async function GET(
-  _req: Request,
-  ctx: { params: { id: string } }
+  req: Request,
+  { params }: { params: { id: string } }
 ) {
-  const user = getUser(ctx.params.id);
+  const user = getUser(params.id);
   if (!user) {
     return NextResponse.json(
       { ok: false, message: "User not found" },
@@ -19,13 +19,13 @@ export async function GET(
   return NextResponse.json({ ok: true, item: user });
 }
 
-// PATCH /api/users/:id  → update one user
+// PATCH /api/users/:id → update one user
 export async function PATCH(
   req: Request,
-  ctx: { params: { id: string } }
+  { params }: { params: { id: string } }
 ) {
   const body = await req.json();
-  const updated = updateUser(ctx.params.id, body);
+  const updated = updateUser(params.id, body);
 
   if (!updated) {
     return NextResponse.json(
