@@ -1,8 +1,12 @@
 // src/app/data/users.ts
 
+// what statuses we allow everywhere
 export type AdminUserStatus = "active" | "invited" | "disabled" | "collected";
+
+// what roles we allow
 export type AdminUserRole = "admin" | "editor" | "viewer";
 
+// the shape every user will have
 export interface AdminUser {
   id: string;
   name: string;
@@ -11,11 +15,12 @@ export interface AdminUser {
   status: AdminUserStatus;
   joined: string; // display only
 
-  // NEW optional fields
+  // NEW optional fields (these are what mobile /collect can send)
   interest?: string;
   source?: string;
 }
 
+// your starter users
 export const mockUsers: AdminUser[] = [
   {
     id: "1",
@@ -51,5 +56,5 @@ export const mockUsers: AdminUser[] = [
   },
 ];
 
-// export BOTH named and default so other files can do either style
+// export both ways
 export default mockUsers;

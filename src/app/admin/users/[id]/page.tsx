@@ -1,75 +1,159 @@
 // src/app/admin/users/[id]/page.tsx
+"use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import mockUsers, {
-  AdminUserRole,
-  AdminUserStatus,
-} from "@/app/data/users";
 
-export default async function AdminEditUserPage({
+type AdminUserStatus = "active" | "invited" | "disabled" | "collected";
+type AdminUserRole = "admin" | "editor" | "viewer";
+
+type AdminUser = {
+  id: string;
+  name: string;
+  email: string;
+  role: AdminUserRole;
+  status: AdminUserStatus;
+  joined: string;
+  interest?: string;
+  source?: string;
+};
+
+const ROLES: AdminUserRole[] = ["admin", "editor", "viewer"];
+const STATUSES: AdminUserStatus[] = [
+  "active",
+  "invited",
+  "disabled",
+  "collected",
+];
+
+export default function AdminEditUserPage({
   params,
 }: {
-  params: Promise<{ id: string }>;
+  params: { id: string };
 }) {
-  // Next.js app router gives params as a Promise in your setup
-  const { id } = await params;
+  const { id } = params;
+  const [user, setUser] = useState<AdminUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
-  const user = mockUsers.find((u) => u.id === id);
+  // load user from API
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await fetch(`/api/users/${id}`, { cache: "no-store" });
+        const data = await res.json();
+        if (data.ok) {
+          setUser(data.item);
+        } else {
+          setError(data.message ?? "Failed to load user");
+        }
+      } catch (err) {
+        setError("Failed to load user");
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [id]);
 
-  if (!user) {
+  async function handleSave() {
+    if (!user) return;
+    setSaving(true);
+    setError(null);
+    setSavedMsg(null);
+    try {
+      const res = await fetch(`/api/users/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(user),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setUser(data.item);
+        setSavedMsg("Saved!");
+      } else {
+        setError(data.message ?? "Save failed");
+      }
+    } catch (err) {
+      setError("Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function updateField<K extends keyof AdminUser>(key: K, value: AdminUser[K]) {
+    setUser((prev) => (prev ? { ...prev, [key]: value } : prev));
+  }
+
+  if (loading) {
+    return (
+      <main className="p-8 space-y-4">
+        <Link href="/admin/users" className="text-sm text-purple-700">
+          &larr; back to users
+        </Link>
+        <p>Loading user…</p>
+      </main>
+    );
+  }
+
+  if (error || !user) {
     return (
       <main className="p-8 space-y-4">
         <Link href="/admin/users" className="text-sm text-purple-700">
           &larr; back to users
         </Link>
         <h1 className="text-xl font-semibold">User not found</h1>
-        <p className="text-gray-500">
-          No user with id <code>{id}</code> in mock data.
-        </p>
+        <p className="text-gray-500">{error ?? `No user with id ${id}`}</p>
       </main>
     );
   }
 
-  const roles: AdminUserRole[] = ["admin", "editor", "viewer"];
-  const statuses: AdminUserStatus[] = ["active", "invited", "disabled"];
-
   return (
-    <main className="p-8 space-y-4 max-w-lg">
+    <main className="p-8 space-y-6 max-w-lg">
       <Link href="/admin/users" className="text-sm text-purple-700">
         &larr; back to users
       </Link>
 
-      <h1 className="mt-6 text-2xl font-semibold">Edit user</h1>
-      <p className="text-xs text-gray-500 mb-6">
-        Values shown here come from <code>src/app/data/users.ts</code>
-      </p>
+      <div>
+        <h1 className="text-2xl font-semibold">Edit user</h1>
+        <p className="text-xs text-gray-500">
+          Values shown here come from the live in-memory API.
+        </p>
+      </div>
 
-      <form className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+        {/* name */}
         <div>
           <label className="block text-sm font-medium mb-1">Name</label>
           <input
-            defaultValue={user.name}
+            value={user.name}
+            onChange={(e) => updateField("name", e.target.value)}
             className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
           />
         </div>
 
+        {/* email */}
         <div>
           <label className="block text-sm font-medium mb-1">Email</label>
           <input
-            type="email"
-            defaultValue={user.email}
+            value={user.email}
+            onChange={(e) => updateField("email", e.target.value)}
             className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
           />
         </div>
 
+        {/* role + status */}
         <div className="flex gap-4">
           <div className="flex-1">
             <label className="block text-sm font-medium mb-1">Role</label>
             <select
-              defaultValue={user.role}
+              value={user.role}
+              onChange={(e) => updateField("role", e.target.value as AdminUserRole)}
               className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
             >
-              {roles.map((r) => (
+              {ROLES.map((r) => (
                 <option key={r} value={r}>
                   {r}
                 </option>
@@ -79,10 +163,13 @@ export default async function AdminEditUserPage({
           <div className="flex-1">
             <label className="block text-sm font-medium mb-1">Status</label>
             <select
-              defaultValue={user.status}
+              value={user.status}
+              onChange={(e) =>
+                updateField("status", e.target.value as AdminUserStatus)
+              }
               className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
             >
-              {statuses.map((s) => (
+              {STATUSES.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
@@ -91,17 +178,54 @@ export default async function AdminEditUserPage({
           </div>
         </div>
 
+        {/* interest */}
+        <div>
+          <label className="block text-sm font-medium mb-1">
+            Interest (from mobile)
+          </label>
+          <input
+            value={user.interest ?? ""}
+            onChange={(e) => updateField("interest", e.target.value)}
+            placeholder="e.g. brunch"
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
+          />
+        </div>
+
+        {/* source */}
+        <div>
+          <label className="block text-sm font-medium mb-1">
+            Source (where this came from)
+          </label>
+          <input
+            value={user.source ?? ""}
+            onChange={(e) => updateField("source", e.target.value)}
+            placeholder="mobile-home / popup / campaign-1"
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
+          />
+        </div>
+
+        {/* joined (read-only) */}
         <p className="text-xs text-gray-400">
-          Note: mock screen. Later we&apos;ll wire it to real storage.
+          Joined: {user.joined ?? "—"}
         </p>
+
+        {/* messages */}
+        {error ? (
+          <p className="text-xs text-red-500">{error}</p>
+        ) : null}
+        {savedMsg ? (
+          <p className="text-xs text-green-500">{savedMsg}</p>
+        ) : null}
 
         <button
           type="button"
-          className="inline-flex items-center rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white"
+          onClick={handleSave}
+          disabled={saving}
+          className="inline-flex items-center rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
         >
-          Save (mock)
+          {saving ? "Saving..." : "Save"}
         </button>
-      </form>
+      </div>
     </main>
   );
 }
