@@ -9,8 +9,7 @@ export async function GET(
   _req: Request,
   { params }: { params: { id: string } }
 ) {
-  const id = params.id;
-  const user = getUser(id);
+  const user = getUser(params.id);
 
   if (!user) {
     return NextResponse.json(
@@ -27,10 +26,8 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
 ) {
-  const id = params.id;
   const body = await req.json();
-
-  const updated = updateUser(id, body);
+  const updated = updateUser(params.id, body);
 
   if (!updated) {
     return NextResponse.json(
