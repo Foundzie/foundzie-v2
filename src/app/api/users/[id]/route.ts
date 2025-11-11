@@ -5,13 +5,10 @@ import { getUser, updateUser } from "../store";
 export const dynamic = "force-dynamic";
 
 // GET /api/users/:id → return one user
-export async function GET(
-  _req: Request,
-  context: { params: { id: string } }
-) {
-  const { id } = context.params;
+export async function GET(_req: Request, context: any) {
+  const { id } = context.params as { id: string };
 
-  // ⬅️ this was missing before
+  // ✅ now awaited
   const user = await getUser(id);
 
   if (!user) {
@@ -25,14 +22,11 @@ export async function GET(
 }
 
 // PATCH /api/users/:id → update one user
-export async function PATCH(
-  req: Request,
-  context: { params: { id: string } }
-) {
-  const { id } = context.params;
+export async function PATCH(req: Request, context: any) {
+  const { id } = context.params as { id: string };
   const body = await req.json();
 
-  // ⬅️ this was missing before
+  // ✅ now awaited
   const updated = await updateUser(id, body);
 
   if (!updated) {
