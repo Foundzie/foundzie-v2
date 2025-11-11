@@ -15,7 +15,7 @@ export interface UserProvider {
   ): Promise<AdminUser | undefined>;
 }
 
-// ------------ current in-memory implementation ------------
+// ------------- current in-memory implementation -------------
 
 // we still start from mock data
 let users: AdminUser[] = [...mockUsers];
@@ -68,5 +68,64 @@ const memoryProvider: UserProvider = {
 };
 
 // this is what the rest of the app will import
-// later we can change ONLY this export to point to a KV-backed provider
+// right now we point to in-memory
 export const userProvider: UserProvider = memoryProvider;
+
+/*
+  ----------------- KV version (future) -----------------
+
+  When you're ready:
+
+  1. npm install @vercel/kv
+  2. add KV to your Vercel project (Storage → KV)
+  3. uncomment the import below and the kvProvider, then
+     change the export at the bottom to use kvProvider
+
+  // import { kv } from "@vercel/kv";
+
+  const kvKey = "foundzie:users";
+
+  const kvProvider: UserProvider = {
+    async list() {
+      const list = (await kv.get<AdminUser[]>(kvKey)) ?? [];
+      return list;
+    },
+    async get(id: string) {
+      const list = (await kv.get<AdminUser[]>(kvKey)) ?? [];
+      return list.find((u) => u.id === id);
+    },
+    async create(partial: AdminUserInput) {
+      const list = (await kv.get<AdminUser[]>(kvKey)) ?? [];
+      const user: AdminUser = {
+        id: (list.length + 1).toString(),
+        name: partial.name ?? "Anonymous visitor",
+        email: partial.email ?? "no-email@example.com",
+        role: partial.role ?? "viewer",
+        status: partial.status ?? "active",
+        joined:
+          partial.joined ??
+          new Date().toLocaleString("en-US", {
+            month: "short",
+            year: "numeric",
+          }),
+        interest: partial.interest ?? "",
+        source: partial.source ?? "",
+      };
+      list.unshift(user);
+      await kv.set(kvKey, list);
+      return user;
+    },
+    async update(id: string, partial: AdminUserInput) {
+      const list = (await kv.get<AdminUser[]>(kvKey)) ?? [];
+      const index = list.findIndex((u) => u.id === id);
+      if (index === -1) return undefined;
+      const updated: AdminUser = { ...list[index], ...partial };
+      list[index] = updated;
+      await kv.set(kvKey, list);
+      return updated;
+    },
+  };
+
+  // then switch this:
+  // export const userProvider: UserProvider = kvProvider;
+*/

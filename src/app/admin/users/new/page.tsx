@@ -43,13 +43,10 @@ export default function AdminNewUserPage() {
 
       <h1 className="text-xl font-semibold text-gray-900 mb-2">New user</h1>
       <p className="text-sm text-gray-500 mb-6">
-        This will POST to <code>/api/users</code> (mock for now).
+        This will POST to <code>/api/users</code>.
       </p>
 
-      <form
-        onSubmit={handleSubmit}
-        className="space-y-4 bg-gray-50 border border-gray-100 rounded-xl p-5"
-      >
+      <form onSubmit={handleSubmit} className="space-y-4 bg-gray-50 border border-gray-100 rounded-xl p-5">
         <div>
           <label className="block text-xs text-gray-500 mb-1">Name</label>
           <input
@@ -77,9 +74,7 @@ export default function AdminNewUserPage() {
             <select
               className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm bg-white"
               value={role}
-              onChange={(e) =>
-                setRole(e.target.value as "admin" | "editor" | "viewer")
-              }
+              onChange={(e) => setRole(e.target.value as any)}
             >
               <option value="admin">admin</option>
               <option value="editor">editor</option>
@@ -92,9 +87,7 @@ export default function AdminNewUserPage() {
             <select
               className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm bg-white"
               value={status}
-              onChange={(e) =>
-                setStatus(e.target.value as "active" | "invited" | "disabled")
-              }
+              onChange={(e) => setStatus(e.target.value as any)}
             >
               <option value="active">active</option>
               <option value="invited">invited</option>
@@ -107,7 +100,7 @@ export default function AdminNewUserPage() {
           type="submit"
           className="bg-purple-600 text-white text-sm px-4 py-2 rounded-md"
         >
-          Save (mock)
+          Save
         </button>
 
         {saved && (
