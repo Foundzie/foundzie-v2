@@ -1,19 +1,22 @@
 // src/app/api/users/store.ts
-
 import mockUsers, { type AdminUser } from "@/app/data/users";
 
-// single in-memory array that ALL user routes will share
+// For now we stay in memory, but everything is async so later we can
+// swap this to Vercel KV / DB without touching the API routes.
 let users: AdminUser[] = [...mockUsers];
 
-export function listUsers(): AdminUser[] {
+// narrow type for partial updates/creates
+type AdminUserInput = Partial<AdminUser>;
+
+export async function listUsers(): Promise<AdminUser[]> {
   return users;
 }
 
-export function getUser(id: string): AdminUser | undefined {
+export async function getUser(id: string): Promise<AdminUser | undefined> {
   return users.find((u) => u.id === id);
 }
 
-export function createUser(partial: Partial<AdminUser>): AdminUser {
+export async function createUser(partial: AdminUserInput): Promise<AdminUser> {
   const user: AdminUser = {
     id: (users.length + 1).toString(),
     name: partial.name ?? "Anonymous visitor",
@@ -26,19 +29,20 @@ export function createUser(partial: Partial<AdminUser>): AdminUser {
         month: "short",
         year: "numeric",
       }),
-    interest: partial.interest,
-    source: partial.source,
+    // the admin page has these extra fields now
+    interest: partial.interest ?? "",
+    source: partial.source ?? "",
   };
 
-  // newest on top
+  // put newest on top (same pattern as before)
   users.unshift(user);
   return user;
 }
 
-export function updateUser(
+export async function updateUser(
   id: string,
-  partial: Partial<AdminUser>
-): AdminUser | undefined {
+  partial: AdminUserInput
+): Promise<AdminUser | undefined> {
   const index = users.findIndex((u) => u.id === id);
   if (index === -1) return undefined;
 

@@ -4,23 +4,24 @@ import { createUser, listUsers } from "../store";
 
 export const dynamic = "force-dynamic";
 
-// POST /api/users/collect
-// lightweight user capture from mobile
+// POST /api/users/collect  → capture lightweight visitor
 export async function POST(req: Request) {
   const body = await req.json();
 
-  const newUser = createUser({
+  const newUser = await createUser({
     name: body.name ?? body.firstName ?? "Anonymous visitor",
     email: body.email ?? "no-email@example.com",
-    // so we can see in admin that this came from mobile/popup
-    status: "collected",
     role: "viewer",
+    status: "collected",
+    interest: body.interest ?? "",
+    source: body.source ?? "mobile",
   });
 
   return NextResponse.json({ ok: true, item: newUser });
 }
 
-// GET /api/users/collect (optional) – just return everything
+// optional GET → return everything (so admin can see collected too)
 export async function GET() {
-  return NextResponse.json({ items: listUsers() });
+  const items = await listUsers();
+  return NextResponse.json({ items });
 }
