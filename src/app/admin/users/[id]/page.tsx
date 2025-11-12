@@ -1,11 +1,11 @@
 // src/app/admin/users/[id]/page.tsx
 import EditUserClient from "./EditUserClient";
 
-export default async function AdminEditUserPage({
+export default function AdminEditUserPage({
   params,
 }: {
-  params: Promise<{ id: string }>;
+  params: { id: string };
 }) {
-  const { id } = await params;
+  const id = decodeURIComponent(String(params?.id ?? "").trim());
   return <EditUserClient id={id} />;
 }

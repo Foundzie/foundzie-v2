@@ -3,7 +3,6 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
 
 type AdminUserStatus = "active" | "invited" | "disabled" | "collected";
 type AdminUserRole = "admin" | "editor" | "viewer";
@@ -17,18 +16,12 @@ type AdminUser = {
   joined: string;
   interest?: string;
   source?: string;
-  tags?: string[]; // NEW
 };
 
 const ROLES: AdminUserRole[] = ["admin", "editor", "viewer"];
 const STATUSES: AdminUserStatus[] = ["active", "invited", "disabled", "collected"];
 
-export default function EditUserClient() {
-  const params = useParams<{ id: string }>();
-  const raw = params?.id;
-  const id = Array.isArray(raw) ? raw[0] : raw;
-  const router = useRouter();
-
+export default function EditUserClient({ id }: { id: string }) {
   const [user, setUser] = useState<AdminUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -42,15 +35,16 @@ export default function EditUserClient() {
         setError(null);
         setUser(null);
 
-        if (!id) {
+        const cleanId = String(id ?? "").trim();
+        if (!cleanId) {
           setError("Missing id in route");
           setLoading(false);
           return;
         }
 
-        const url = `/api/users/${encodeURIComponent(String(id).trim())}`;
+        const url = `/api/users/${encodeURIComponent(cleanId)}`;
         const res = await fetch(url, { cache: "no-store" });
-        const data = await res.json().catch(() => ({}));
+        const data = await res.json().catch(() => ({} as any));
 
         if (res.ok && data?.ok && data?.item) {
           setUser(data.item);
@@ -67,22 +61,19 @@ export default function EditUserClient() {
   }, [id]);
 
   async function handleSave() {
-    if (!user || !id) return;
+    const cleanId = String(id ?? "").trim();
+    if (!user || !cleanId) return;
     setSaving(true);
     setError(null);
     setSavedMsg(null);
     try {
-      const url = `/api/users/${encodeURIComponent(String(id).trim())}`;
+      const url = `/api/users/${encodeURIComponent(cleanId)}`;
       const res = await fetch(url, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...user,
-          // send tags as array; server accepts string or array
-          tags: (user.tags ?? []).map((t) => t.trim()).filter(Boolean),
-        }),
+        body: JSON.stringify(user),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json().catch(() => ({} as any));
       if (res.ok && data?.ok && data?.item) {
         setUser(data.item);
         setSavedMsg("Saved!");
@@ -96,34 +87,8 @@ export default function EditUserClient() {
     }
   }
 
-  async function handleDelete() {
-    if (!id) return;
-    if (!confirm("Delete this user? This cannot be undone.")) return;
-    try {
-      const res = await fetch(`/api/users/${encodeURIComponent(String(id))}`, {
-        method: "DELETE",
-      });
-      if (res.ok) {
-        router.push("/admin/users");
-        router.refresh?.();
-      } else {
-        const data = await res.json().catch(() => ({}));
-        alert(data?.message ?? "Delete failed");
-      }
-    } catch {
-      alert("Delete failed");
-    }
-  }
-
   function updateField<K extends keyof AdminUser>(key: K, value: AdminUser[K]) {
     setUser((prev) => (prev ? { ...prev, [key]: value } : prev));
-  }
-
-  // For the UI, edit tags as a simple comma string
-  const tagsString = (user?.tags ?? []).join(", ");
-  function setTagsFromString(str: string) {
-    const tags = str.split(",").map((t) => t.trim()).filter(Boolean);
-    updateField("tags", tags);
   }
 
   if (loading) {
@@ -161,7 +126,6 @@ export default function EditUserClient() {
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-        {/* name */}
         <div>
           <label className="block text-sm font-medium mb-1">Name</label>
           <input
@@ -171,7 +135,6 @@ export default function EditUserClient() {
           />
         </div>
 
-        {/* email */}
         <div>
           <label className="block text-sm font-medium mb-1">Email</label>
           <input
@@ -181,7 +144,6 @@ export default function EditUserClient() {
           />
         </div>
 
-        {/* role + status */}
         <div className="flex gap-4">
           <div className="flex-1">
             <label className="block text-sm font-medium mb-1">Role</label>
@@ -209,7 +171,6 @@ export default function EditUserClient() {
           </div>
         </div>
 
-        {/* interest */}
         <div>
           <label className="block text-sm font-medium mb-1">Interest (from mobile)</label>
           <input
@@ -220,7 +181,6 @@ export default function EditUserClient() {
           />
         </div>
 
-        {/* source */}
         <div>
           <label className="block text-sm font-medium mb-1">Source (where this came from)</label>
           <input
@@ -231,37 +191,16 @@ export default function EditUserClient() {
           />
         </div>
 
-        {/* tags */}
-        <div>
-          <label className="block text-sm font-medium mb-1">Tags (comma separated)</label>
-          <input
-            value={tagsString}
-            onChange={(e) => setTagsFromString(e.target.value)}
-            placeholder="VIP, Local, Early-Access"
-            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
-          />
-        </div>
-
         <p className="text-xs text-gray-400">Joined: {user.joined ?? "—"}</p>
 
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving}
-            className="inline-flex items-center rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-          >
-            {saving ? "Saving..." : savedMsg ? savedMsg : "Save"}
-          </button>
-
-          <button
-            type="button"
-            onClick={handleDelete}
-            className="inline-flex items-center rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white"
-          >
-            Delete
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={saving}
+          className="inline-flex items-center rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+        >
+          {saving ? "Saving..." : savedMsg ? savedMsg : "Save"}
+        </button>
       </div>
     </main>
   );
