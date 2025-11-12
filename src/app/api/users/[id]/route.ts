@@ -4,9 +4,21 @@ import { listUsers, updateUser } from "../store";
 
 export const dynamic = "force-dynamic";
 
+// Robust id resolver: try params first, then fall back to URL last segment
+function resolveId(req: Request, params?: any) {
+  const fromParams = params?.id;
+  if (typeof fromParams === "string" && fromParams.trim() !== "") {
+    return decodeURIComponent(fromParams.trim());
+  }
+  const url = new URL(req.url);
+  const parts = url.pathname.split("/");
+  const last = parts[parts.length - 1] ?? "";
+  return decodeURIComponent(last.trim());
+}
+
 // GET /api/users/:id
-export async function GET(_req: Request, ctx: any) {
-  const id = decodeURIComponent(String(ctx?.params?.id ?? "").trim());
+export async function GET(req: Request, context: any) {
+  const id = resolveId(req, context?.params);
   if (!id) {
     return NextResponse.json({ ok: false, message: "Missing id" }, { status: 400 });
   }
@@ -29,13 +41,13 @@ export async function GET(_req: Request, ctx: any) {
 }
 
 // PATCH /api/users/:id
-export async function PATCH(req: Request, ctx: any) {
-  const id = decodeURIComponent(String(ctx?.params?.id ?? "").trim());
+export async function PATCH(req: Request, context: any) {
+  const id = resolveId(req, context?.params);
   if (!id) {
     return NextResponse.json({ ok: false, message: "Missing id" }, { status: 400 });
   }
 
-  const body = await req.json();
+  const body = await req.json().catch(() => ({}));
   const updated = await updateUser(id, body);
 
   if (!updated) {
