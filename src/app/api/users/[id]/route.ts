@@ -4,25 +4,19 @@ import { listUsers, updateUser } from "../store";
 
 export const dynamic = "force-dynamic";
 
-// helper: get the id from params OR from the URL path
-function getId(req: Request, params: { id: string }) {
-  // 1) try params first
+// get id from params or from the URL path (fallback)
+function getId(req: Request, params?: { id?: string }) {
   const fromParams = (params?.id ?? "").trim();
   if (fromParams) return fromParams;
 
-  // 2) fallback: read the last segment of the URL
   const url = new URL(req.url);
-  const parts = url.pathname.split("/"); // e.g. ["", "api", "users", "18"]
-  const last = (parts[parts.length - 1] ?? "").trim();
-  return last;
+  const parts = url.pathname.split("/");
+  return (parts[parts.length - 1] ?? "").trim();
 }
 
-// GET /api/users/:id → return one user
-export async function GET(
-  req: Request,
-  { params }: { params: { id: string } }
-) {
-  const id = decodeURIComponent(getId(req, params));
+// GET /api/users/:id
+export async function GET(req: Request, context: any) {
+  const id = decodeURIComponent(getId(req, context?.params));
 
   const all = await listUsers();
   const user = all.find((u) => String(u.id).trim() === id);
@@ -44,16 +38,12 @@ export async function GET(
   return NextResponse.json({ ok: true, item: user });
 }
 
-// PATCH /api/users/:id → update one user
-export async function PATCH(
-  req: Request,
-  { params }: { params: { id: string } }
-) {
-  const id = decodeURIComponent(getId(req, params));
+// PATCH /api/users/:id
+export async function PATCH(req: Request, context: any) {
+  const id = decodeURIComponent(getId(req, context?.params));
   const body = await req.json();
 
   const updated = await updateUser(id, body);
-
   if (!updated) {
     return NextResponse.json(
       { ok: false, message: "User not found" },
