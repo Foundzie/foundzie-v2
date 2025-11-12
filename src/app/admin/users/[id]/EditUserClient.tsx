@@ -3,7 +3,6 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
 
 type AdminUserStatus = "active" | "invited" | "disabled" | "collected";
 type AdminUserRole = "admin" | "editor" | "viewer";
@@ -22,11 +21,7 @@ type AdminUser = {
 const ROLES: AdminUserRole[] = ["admin", "editor", "viewer"];
 const STATUSES: AdminUserStatus[] = ["active", "invited", "disabled", "collected"];
 
-export default function EditUserClient() {
-  const params = useParams<{ id: string }>();
-  const raw = params?.id;
-  const id = Array.isArray(raw) ? raw[0] : raw;
-
+export default function EditUserClient({ id }: { id: string }) {
   const [user, setUser] = useState<AdminUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -40,7 +35,7 @@ export default function EditUserClient() {
         setError(null);
         setUser(null);
 
-        if (!id) {
+        if (!id || String(id).trim() === "") {
           setError("Missing id in route");
           setLoading(false);
           return;
@@ -51,7 +46,7 @@ export default function EditUserClient() {
         const data = await res.json().catch(() => ({}));
 
         if (res.ok && data?.ok && data?.item) {
-          setUser(data.item);
+          setUser(data.item as AdminUser);
         } else {
           setError(data?.message ?? "Failed to load user");
         }
@@ -78,7 +73,7 @@ export default function EditUserClient() {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.ok && data?.item) {
-        setUser(data.item);
+        setUser(data.item as AdminUser);
         setSavedMsg("Saved!");
       } else {
         setError(data?.message ?? "Save failed");
