@@ -1,15 +1,16 @@
 // src/app/api/users/[id]/route.ts
 import { NextResponse } from "next/server";
-import { listUsers, updateUser } from "../store";
+import { listUsers, updateUser, deleteUser } from "../store";
 
 export const dynamic = "force-dynamic";
 
 // Robust id resolver: try params first, then fall back to URL last segment
-function resolveId(req: Request, params?: any) {
+function resolveId(req: Request, params: any) {
   const fromParams = params?.id;
   if (typeof fromParams === "string" && fromParams.trim() !== "") {
     return decodeURIComponent(fromParams.trim());
   }
+
   const url = new URL(req.url);
   const parts = url.pathname.split("/");
   const last = parts[parts.length - 1] ?? "";
@@ -20,7 +21,10 @@ function resolveId(req: Request, params?: any) {
 export async function GET(req: Request, context: any) {
   const id = resolveId(req, context?.params);
   if (!id) {
-    return NextResponse.json({ ok: false, message: "Missing id" }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, message: "Missing id" },
+      { status: 400 }
+    );
   }
 
   const all = await listUsers();
@@ -31,7 +35,10 @@ export async function GET(req: Request, context: any) {
       {
         ok: false,
         message: "User not found",
-        debug: { askedFor: id, foundIds: all.map((u) => String(u.id).trim()) },
+        debug: {
+          askedFor: id,
+          foundIds: all.map((u) => String(u.id).trim()),
+        },
       },
       { status: 404 }
     );
@@ -44,15 +51,43 @@ export async function GET(req: Request, context: any) {
 export async function PATCH(req: Request, context: any) {
   const id = resolveId(req, context?.params);
   if (!id) {
-    return NextResponse.json({ ok: false, message: "Missing id" }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, message: "Missing id" },
+      { status: 400 }
+    );
   }
 
   const body = await req.json().catch(() => ({}));
   const updated = await updateUser(id, body);
 
   if (!updated) {
-    return NextResponse.json({ ok: false, message: "User not found" }, { status: 404 });
+    return NextResponse.json(
+      { ok: false, message: "User not found" },
+      { status: 404 }
+    );
   }
 
   return NextResponse.json({ ok: true, item: updated });
+}
+
+// DELETE /api/users/:id
+export async function DELETE(req: Request, context: any) {
+  const id = resolveId(req, context?.params);
+  if (!id) {
+    return NextResponse.json(
+      { ok: false, message: "Missing id" },
+      { status: 400 }
+    );
+  }
+
+  const removed = await deleteUser(id);
+
+  if (!removed) {
+    return NextResponse.json(
+      { ok: false, message: "User not found" },
+      { status: 404 }
+    );
+  }
+
+  return NextResponse.json({ ok: true });
 }
