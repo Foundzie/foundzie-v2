@@ -1,23 +1,20 @@
 // src/app/api/users/[id]/route.ts
 import { NextResponse } from "next/server";
-import { listUsers, updateUser } from "../store";
+import { listUsers, updateUser, deleteUser } from "../store";
 
 export const dynamic = "force-dynamic";
 
-// get id from params or from the URL path (fallback)
+// get id from params or URL path (fallback)
 function getId(req: Request, params?: { id?: string }) {
-  const fromParams = (params?.id ?? "").trim();
-  if (fromParams) return fromParams;
-
+  if (params?.id && params.id.trim() !== "") return params.id.trim();
   const url = new URL(req.url);
   const parts = url.pathname.split("/");
   return (parts[parts.length - 1] ?? "").trim();
 }
 
 // GET /api/users/:id
-export async function GET(req: Request, context: any) {
-  const id = decodeURIComponent(getId(req, context?.params));
-
+export async function GET(req: Request, ctx: { params?: { id?: string } }) {
+  const id = getId(req, ctx.params);
   const all = await listUsers();
   const user = all.find((u) => String(u.id).trim() === id);
 
@@ -26,30 +23,42 @@ export async function GET(req: Request, context: any) {
       {
         ok: false,
         message: "User not found",
-        debug: {
-          askedFor: id,
-          foundIds: all.map((u) => String(u.id).trim()),
-        },
+        debug: { askedFor: id, foundIds: all.map((u) => String(u.id).trim()) },
       },
       { status: 404 }
     );
   }
-
   return NextResponse.json({ ok: true, item: user });
 }
 
 // PATCH /api/users/:id
-export async function PATCH(req: Request, context: any) {
-  const id = decodeURIComponent(getId(req, context?.params));
-  const body = await req.json();
+export async function PATCH(req: Request, ctx: { params?: { id?: string } }) {
+  const id = getId(req, ctx.params);
+  const body = await req.json().catch(() => ({} as any));
 
-  const updated = await updateUser(id, body);
+  // normalize tags if present
+  const rawTags = body.tags;
+  const tags =
+    Array.isArray(rawTags)
+      ? rawTags.map((t: string) => t.trim()).filter(Boolean)
+      : typeof rawTags === "string"
+        ? rawTags.split(",").map((t: string) => t.trim()).filter(Boolean)
+        : undefined;
+
+  const updated = await updateUser(id, { ...body, ...(tags ? { tags } : {}) });
+
   if (!updated) {
-    return NextResponse.json(
-      { ok: false, message: "User not found" },
-      { status: 404 }
-    );
+    return NextResponse.json({ ok: false, message: "User not found" }, { status: 404 });
   }
-
   return NextResponse.json({ ok: true, item: updated });
+}
+
+// DELETE /api/users/:id
+export async function DELETE(req: Request, ctx: { params?: { id?: string } }) {
+  const id = getId(req, ctx.params);
+  const ok = await deleteUser(id);
+  if (!ok) {
+    return NextResponse.json({ ok: false, message: "User not found" }, { status: 404 });
+  }
+  return NextResponse.json({ ok: true });
 }

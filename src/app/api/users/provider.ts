@@ -1,25 +1,22 @@
 // src/app/api/users/provider.ts
-
-import mockUsers, { type AdminUser } from "@/app/data/users";
+import mockUsers, { type AdminUser as BaseAdminUser } from "@/app/data/users";
 import { createClient } from "redis";
 
-// this is the shape our API needs for partial creates/updates
+// Extend base type with optional tags (keeps old code working)
+export type AdminUser = BaseAdminUser & { tags?: string[] };
 export type AdminUserInput = Partial<AdminUser>;
 
-// this is the interface we can later back with KV / DB
 export interface UserProvider {
   list(): Promise<AdminUser[]>;
   get(id: string): Promise<AdminUser | undefined>;
   create(partial: AdminUserInput): Promise<AdminUser>;
-  update(
-    id: string,
-    partial: AdminUserInput
-  ): Promise<AdminUser | undefined>;
+  update(id: string, partial: AdminUserInput): Promise<AdminUser | undefined>;
+  delete(id: string): Promise<boolean>;
+  bulkUpdate(ids: string[], partial: AdminUserInput): Promise<number>;
 }
 
-/* ---------------- current in-memory implementation ---------------- */
+/* ---------------------- current in-memory implementation ------------------- */
 
-// we still start from mock data
 let users: AdminUser[] = [...mockUsers];
 
 const memoryProvider: UserProvider = {
@@ -27,7 +24,6 @@ const memoryProvider: UserProvider = {
     return users;
   },
   async get(id: string) {
-    // normalize to string on both sides
     return users.find((u) => String(u.id) === String(id));
   },
   async create(partial: AdminUserInput) {
@@ -39,59 +35,61 @@ const memoryProvider: UserProvider = {
       status: partial.status ?? "active",
       joined:
         partial.joined ??
-        new Date().toLocaleString("en-US", {
-          month: "short",
-          year: "numeric",
-        }),
-      // extra admin/mobile fields
+        new Date().toLocaleString("en-US", { month: "short", year: "numeric" }),
       interest: partial.interest ?? "",
       source: partial.source ?? "",
+      tags: (partial.tags ?? []).map((t) => t.trim()).filter(Boolean),
     };
-
-    // newest on top, same as before
     users.unshift(user);
     return user;
   },
   async update(id: string, partial: AdminUserInput) {
-    const index = users.findIndex((u) => String(u.id) === String(id));
-    if (index === -1) return undefined;
+    const idx = users.findIndex((u) => String(u.id) === String(id));
+    if (idx === -1) return undefined;
+    const current = users[idx];
 
-    const current = users[index];
-    const updated: AdminUser = {
-      ...current,
-      ...partial,
-    };
+    const tags =
+      partial.tags === undefined
+        ? current.tags
+        : (partial.tags ?? []).map((t) => t.trim()).filter(Boolean);
 
-    users[index] = updated;
+    const updated: AdminUser = { ...current, ...partial, tags };
+    users[idx] = updated;
     return updated;
+  },
+  async delete(id: string) {
+    const before = users.length;
+    users = users.filter((u) => String(u.id) !== String(id));
+    return users.length < before;
+  },
+  async bulkUpdate(ids: string[], partial: AdminUserInput) {
+    let count = 0;
+    users = users.map((u) => {
+      if (ids.includes(String(u.id))) {
+        count++;
+        return { ...u, ...partial };
+      }
+      return u;
+    });
+    return count;
   },
 };
 
-/* ---------------- Redis-backed implementation ---------------- */
+/* -------------------- Redis-backed (kept compatible) ---------------------- */
 
 const REDIS_URL = process.env.REDIS_URL;
-
-// IMPORTANT: type it as “whatever createClient returns”, not RedisClientType
 let redisClient: ReturnType<typeof createClient> | null = null;
 
 async function getRedisClient() {
-  // if you're running locally with no env, we'll fall back to memory later
   if (!REDIS_URL) return null;
-
   if (redisClient) return redisClient;
-
   const client = createClient({ url: REDIS_URL });
-
-  client.on("error", (err) => {
-    console.error("[redis] error:", err);
-  });
-
+  client.on("error", (err) => console.error("[redis] error:", err));
   await client.connect();
   redisClient = client;
   return client;
 }
 
-// we’ll keep everything under this one key
 const USERS_KEY = "foundzie:users";
 const NEXT_ID_KEY = "foundzie:users:nextId";
 
@@ -102,20 +100,17 @@ async function redisGetAll(): Promise<AdminUser[]> {
   if (!raw) return [];
   return JSON.parse(raw) as AdminUser[];
 }
-
 async function redisSaveAll(list: AdminUser[]) {
   const client = await getRedisClient();
   if (!client) return;
   await client.set(USERS_KEY, JSON.stringify(list));
 }
-
 async function redisGetNextId(): Promise<number> {
   const client = await getRedisClient();
   if (!client) return 1;
   const raw = await client.get(NEXT_ID_KEY);
   return raw ? Number(raw) : 1;
 }
-
 async function redisSetNextId(n: number) {
   const client = await getRedisClient();
   if (!client) return;
@@ -124,97 +119,86 @@ async function redisSetNextId(n: number) {
 
 const redisProvider: UserProvider = {
   async list() {
-    const client = await getRedisClient();
-    if (!client) return memoryProvider.list();
-
-    // get current list
-    let list = await redisGetAll();
-
-    // first time: seed Redis with your mock users
+    const list = await redisGetAll();
     if (list.length === 0) {
-      list = [...mockUsers];
-      await redisSaveAll(list);
+      const seeded: AdminUser[] = mockUsers.map((u) => ({ ...u, tags: [] }));
+      await redisSaveAll(seeded);
       await redisSetNextId(mockUsers.length + 1);
+      return seeded;
     }
-
     return list;
   },
-
   async get(id: string) {
-    const client = await getRedisClient();
-    if (!client) return memoryProvider.get(id);
-
     const list = await redisGetAll();
-    // 👇 normalize both sides
     return list.find((u) => String(u.id) === String(id));
   },
-
   async create(partial: AdminUserInput) {
-    const client = await getRedisClient();
-    if (!client) return memoryProvider.create(partial);
-
-    const list = await redisGetAll();
+    let list = await redisGetAll();
     const nextId = await redisGetNextId();
 
     const user: AdminUser = {
-      id: String(nextId), // store as string
+      id: String(nextId),
       name: partial.name ?? "Anonymous visitor",
       email: partial.email ?? "no-email@example.com",
       role: partial.role ?? "viewer",
       status: partial.status ?? "active",
       joined:
         partial.joined ??
-        new Date().toLocaleString("en-US", {
-          month: "short",
-          year: "numeric",
-        }),
+        new Date().toLocaleString("en-US", { month: "short", year: "numeric" }),
       interest: partial.interest ?? "",
       source: partial.source ?? "",
+      tags: (partial.tags ?? []).map((t) => t.trim()).filter(Boolean),
     };
 
-    // newest first
     list.unshift(user);
-
     await redisSaveAll(list);
     await redisSetNextId(nextId + 1);
-
     return user;
   },
-
   async update(id: string, partial: AdminUserInput) {
-    const client = await getRedisClient();
-    if (!client) return memoryProvider.update(id, partial);
+    let list = await redisGetAll();
+    const idx = list.findIndex((u) => String(u.id) === String(id));
+    if (idx === -1) return undefined;
 
-    const list = await redisGetAll();
-    const index = list.findIndex((u) => String(u.id) === String(id));
-    if (index === -1) return undefined;
+    const current = list[idx];
+    const tags =
+      partial.tags === undefined
+        ? current.tags
+        : (partial.tags ?? []).map((t) => t.trim()).filter(Boolean);
 
-    const current = list[index];
-    const updated: AdminUser = {
-      ...current,
-      ...partial,
-    };
-
-    list[index] = updated;
+    const updated: AdminUser = { ...current, ...partial, tags };
+    list[idx] = updated;
     await redisSaveAll(list);
-
     return updated;
+  },
+  async delete(id: string) {
+    let list = await redisGetAll();
+    const before = list.length;
+    list = list.filter((u) => String(u.id) !== String(id));
+    await redisSaveAll(list);
+    return list.length < before;
+  },
+  async bulkUpdate(ids: string[], partial: AdminUserInput) {
+    let list = await redisGetAll();
+    let count = 0;
+    list = list.map((u) => {
+      if (ids.includes(String(u.id))) {
+        count++;
+        return { ...u, ...partial };
+      }
+      return u;
+    });
+    await redisSaveAll(list);
+    return count;
   },
 };
 
-/* ---------------- export: prefer Redis, else memory ---------------- */
+/* --------- export: prefer Redis if configured, else in-memory ------------- */
+export const userProvider: UserProvider = REDIS_URL ? redisProvider : memoryProvider;
 
-export const userProvider: UserProvider = REDIS_URL
-  ? redisProvider
-  : memoryProvider;
-
-/* ---------------- KV version (future) ----------------
-   When you're ready:
-   1. npm install @vercel/kv
-   2. add KV to your Vercel project (Storage → KV)
-   3. uncomment the import and provider below
-   4. change the export to use kvProvider
-// import { kv } from "@vercel/kv";
-// const kvKey = "foundzie:users";
-// const kvProvider: UserProvider = { ... }
-*/
+/* ---------------- KV version notes (future) --------------------------------
+When ready:
+1) npm install @vercel/kv
+2) add KV to your Vercel project
+3) swap export to kvProvider (same interface)
+--------------------------------------------------------------------------- */
