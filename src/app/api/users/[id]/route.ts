@@ -4,12 +4,12 @@ import { listUsers, updateUser } from "../store";
 
 export const dynamic = "force-dynamic";
 
-type Ctx = { params: { id: string } };
-
-// GET /api/users/:id → return one user
-export async function GET(_req: Request, { params }: Ctx) {
+// GET /api/users/:id
+export async function GET(
+  _req: Request,
+  { params }: { params: { id: string } }
+) {
   const id = decodeURIComponent((params.id ?? "").trim());
-
   if (!id) {
     return NextResponse.json({ ok: false, message: "Missing id" }, { status: 400 });
   }
@@ -31,17 +31,18 @@ export async function GET(_req: Request, { params }: Ctx) {
   return NextResponse.json({ ok: true, item: user });
 }
 
-// PATCH /api/users/:id → update one user
-export async function PATCH(req: Request, { params }: Ctx) {
+// PATCH /api/users/:id
+export async function PATCH(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
   const id = decodeURIComponent((params.id ?? "").trim());
-
   if (!id) {
     return NextResponse.json({ ok: false, message: "Missing id" }, { status: 400 });
   }
 
   const body = await req.json();
   const updated = await updateUser(id, body);
-
   if (!updated) {
     return NextResponse.json({ ok: false, message: "User not found" }, { status: 404 });
   }
