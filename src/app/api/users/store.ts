@@ -1,4 +1,4 @@
-\// src/app/api/users/store.ts
+// src/app/api/users/store.ts
 import type { AdminUser as BaseAdminUser } from "@/app/data/users";
 import {
   userProvider,
