@@ -5,11 +5,8 @@ import { listUsers, updateUser } from "../store";
 export const dynamic = "force-dynamic";
 
 // GET /api/users/:id
-export async function GET(
-  _req: Request,
-  { params }: { params: { id: string } }
-) {
-  const id = decodeURIComponent((params.id ?? "").trim());
+export async function GET(_req: Request, ctx: any) {
+  const id = decodeURIComponent(String(ctx?.params?.id ?? "").trim());
   if (!id) {
     return NextResponse.json({ ok: false, message: "Missing id" }, { status: 400 });
   }
@@ -32,17 +29,15 @@ export async function GET(
 }
 
 // PATCH /api/users/:id
-export async function PATCH(
-  req: Request,
-  { params }: { params: { id: string } }
-) {
-  const id = decodeURIComponent((params.id ?? "").trim());
+export async function PATCH(req: Request, ctx: any) {
+  const id = decodeURIComponent(String(ctx?.params?.id ?? "").trim());
   if (!id) {
     return NextResponse.json({ ok: false, message: "Missing id" }, { status: 400 });
   }
 
   const body = await req.json();
   const updated = await updateUser(id, body);
+
   if (!updated) {
     return NextResponse.json({ ok: false, message: "User not found" }, { status: 404 });
   }
