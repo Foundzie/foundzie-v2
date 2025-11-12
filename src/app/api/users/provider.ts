@@ -27,7 +27,8 @@ const memoryProvider: UserProvider = {
     return users;
   },
   async get(id: string) {
-    return users.find((u) => u.id === id);
+    // normalize to string on both sides
+    return users.find((u) => String(u.id) === String(id));
   },
   async create(partial: AdminUserInput) {
     const user: AdminUser = {
@@ -52,7 +53,7 @@ const memoryProvider: UserProvider = {
     return user;
   },
   async update(id: string, partial: AdminUserInput) {
-    const index = users.findIndex((u) => u.id === id);
+    const index = users.findIndex((u) => String(u.id) === String(id));
     if (index === -1) return undefined;
 
     const current = users[index];
@@ -144,7 +145,8 @@ const redisProvider: UserProvider = {
     if (!client) return memoryProvider.get(id);
 
     const list = await redisGetAll();
-    return list.find((u) => u.id === id);
+    // 👇 normalize both sides
+    return list.find((u) => String(u.id) === String(id));
   },
 
   async create(partial: AdminUserInput) {
@@ -155,7 +157,7 @@ const redisProvider: UserProvider = {
     const nextId = await redisGetNextId();
 
     const user: AdminUser = {
-      id: String(nextId),
+      id: String(nextId), // store as string
       name: partial.name ?? "Anonymous visitor",
       email: partial.email ?? "no-email@example.com",
       role: partial.role ?? "viewer",
@@ -184,7 +186,7 @@ const redisProvider: UserProvider = {
     if (!client) return memoryProvider.update(id, partial);
 
     const list = await redisGetAll();
-    const index = list.findIndex((u) => u.id === id);
+    const index = list.findIndex((u) => String(u.id) === String(id));
     if (index === -1) return undefined;
 
     const current = list[index];

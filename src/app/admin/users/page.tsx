@@ -11,8 +11,8 @@ type AdminUser = {
   role: string;
   status: string;
   joined: string;
-  interest?: string; // may come from /api/users/collect
-  source?: string; // mobile-home etc.
+  interest?: string;
+  source?: string;
 };
 
 export default function AdminUsersPage() {
@@ -120,18 +120,14 @@ export default function AdminUsersPage() {
               <p className="text-xs text-gray-400">{u.email}</p>
               <p className="text-[11px] text-gray-400">Joined {u.joined}</p>
 
-              {/* show interest if present */}
               {u.interest ? (
                 <p className="text-[11px] text-pink-500 mt-1">
                   interest: {u.interest}
                 </p>
               ) : null}
 
-              {/* show source if present */}
               {u.source ? (
-                <p className="text-[11px] text-gray-300">
-                  source: {u.source}
-                </p>
+                <p className="text-[11px] text-gray-300">source: {u.source}</p>
               ) : null}
             </div>
 
@@ -149,7 +145,7 @@ export default function AdminUsersPage() {
               </span>
 
               <Link
-                href={`/admin/users/${u.id}`}
+                href={`/admin/users/${String(u.id)}`}
                 className="text-xs text-purple-600 hover:underline"
               >
                 edit
