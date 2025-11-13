@@ -13,11 +13,14 @@ export interface AdminUser {
   email: string;
   role: AdminUserRole;
   status: AdminUserStatus;
-  joined: string; // display only
+  joined: string;
 
   // NEW optional fields (these are what mobile /collect can send)
   interest?: string;
   source?: string;
+
+  // NEW: admin-entered tags used for targeting
+  tags?: string[];
 }
 
 // your starter users
@@ -29,6 +32,7 @@ export const mockUsers: AdminUser[] = [
     role: "admin",
     status: "active",
     joined: "Oct 2025",
+    tags: ["vip", "chicago", "high-spend"], // example tags
   },
   {
     id: "2",

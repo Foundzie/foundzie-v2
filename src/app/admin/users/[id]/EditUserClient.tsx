@@ -3,7 +3,6 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 
 type AdminUserStatus = "active" | "invited" | "disabled" | "collected";
 type AdminUserRole = "admin" | "editor" | "viewer";
@@ -17,32 +16,30 @@ type AdminUser = {
   joined: string;
   interest?: string;
   source?: string;
+  tags?: string[]; // NEW
 };
 
 const ROLES: AdminUserRole[] = ["admin", "editor", "viewer"];
-const STATUSES: AdminUserStatus[] = [
-  "active",
-  "invited",
-  "disabled",
-  "collected",
-];
+const STATUSES: AdminUserStatus[] = ["active", "invited", "disabled", "collected"];
 
 export default function EditUserClient({ id }: { id: string }) {
-  const router = useRouter();
-
   const [user, setUser] = useState<AdminUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
+
+  // helper: update any field
+  function updateField<K extends keyof AdminUser>(key: K, value: AdminUser[K]) {
+    setUser((prev) => (prev ? { ...prev, [key]: value } : prev));
+  }
 
   useEffect(() => {
     async function load() {
       try {
         setLoading(true);
         setError(null);
-        setUser(null);
+        setSavedMsg(null);
 
         const cleanId = String(id ?? "").trim();
         if (!cleanId) {
@@ -55,7 +52,7 @@ export default function EditUserClient({ id }: { id: string }) {
         const res = await fetch(url, { cache: "no-store" });
         const data = await res.json().catch(() => ({} as any));
 
-        if (res.ok && data?.ok && data?.item) {
+        if (res.ok && data.ok && data.item) {
           setUser(data.item as AdminUser);
         } else {
           setError(data?.message ?? "Failed to load user");
@@ -71,23 +68,24 @@ export default function EditUserClient({ id }: { id: string }) {
   }, [id]);
 
   async function handleSave() {
-    const cleanId = String(id ?? "").trim();
-    if (!user || !cleanId) return;
-
-    setSaving(true);
-    setError(null);
-    setSavedMsg(null);
-
     try {
+      const cleanId = String(id ?? "").trim();
+      if (!cleanId || !user) return;
+
+      setSaving(true);
+      setError(null);
+      setSavedMsg(null);
+
       const url = `/api/users/${encodeURIComponent(cleanId)}`;
       const res = await fetch(url, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(user),
       });
+
       const data = await res.json().catch(() => ({} as any));
 
-      if (res.ok && data?.ok && data?.item) {
+      if (res.ok && data.ok && data.item) {
         setUser(data.item as AdminUser);
         setSavedMsg("Saved!");
       } else {
@@ -101,39 +99,32 @@ export default function EditUserClient({ id }: { id: string }) {
   }
 
   async function handleDelete() {
-    const cleanId = String(id ?? "").trim();
-    if (!cleanId) return;
-
-    const confirmed = window.confirm(
-      "Delete this user? This cannot be undone."
-    );
-    if (!confirmed) return;
-
-    setDeleting(true);
-    setError(null);
-    setSavedMsg(null);
-
     try {
+      const cleanId = String(id ?? "").trim();
+      if (!cleanId) return;
+
+      setSaving(true);
+      setError(null);
+
       const url = `/api/users/${encodeURIComponent(cleanId)}`;
       const res = await fetch(url, { method: "DELETE" });
-      const data = await res.json().catch(() => ({} as any));
 
-      if (res.ok && data?.ok) {
-        // Go back to the users list
-        router.push("/admin/users");
-      } else {
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({} as any));
         setError(data?.message ?? "Delete failed");
+        setSaving(false);
+        return;
       }
+
+      // back to users list
+      window.location.href = "/admin/users";
     } catch {
       setError("Delete failed");
-    } finally {
-      setDeleting(false);
+      setSaving(false);
     }
   }
 
-  function updateField<K extends keyof AdminUser>(key: K, value: AdminUser[K]) {
-    setUser((prev) => (prev ? { ...prev, [key]: value } : prev));
-  }
+  // ── render ────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -141,7 +132,7 @@ export default function EditUserClient({ id }: { id: string }) {
         <Link href="/admin/users" className="text-sm text-purple-700">
           &larr; back to users
         </Link>
-        <p>Loading user…</p>
+        <p>Loading user...</p>
       </main>
     );
   }
@@ -153,7 +144,9 @@ export default function EditUserClient({ id }: { id: string }) {
           &larr; back to users
         </Link>
         <h1 className="text-xl font-semibold">User not found</h1>
-        <p className="text-gray-500">{error ?? `No user with id ${id}`}</p>
+        <p className="text-gray-500">
+          {error ?? `No user with id ${id}`}
+        </p>
       </main>
     );
   }
@@ -171,22 +164,35 @@ export default function EditUserClient({ id }: { id: string }) {
         </p>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+      {error && (
+        <p className="text-sm text-red-600">
+          {error}
+        </p>
+      )}
+
+      {savedMsg && (
+        <p className="text-sm text-green-600">
+          {savedMsg}
+        </p>
+      )}
+
+      <div className="space-y-4 bg-white rounded-xl border border-gray-200 p-5">
         <div>
           <label className="block text-sm font-medium mb-1">Name</label>
           <input
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
             value={user.name}
             onChange={(e) => updateField("name", e.target.value)}
-            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
           />
         </div>
 
         <div>
           <label className="block text-sm font-medium mb-1">Email</label>
           <input
+            type="email"
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
             value={user.email}
             onChange={(e) => updateField("email", e.target.value)}
-            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
           />
         </div>
 
@@ -194,11 +200,11 @@ export default function EditUserClient({ id }: { id: string }) {
           <div className="flex-1">
             <label className="block text-sm font-medium mb-1">Role</label>
             <select
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
               value={user.role}
               onChange={(e) =>
                 updateField("role", e.target.value as AdminUserRole)
               }
-              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
             >
               {ROLES.map((r) => (
                 <option key={r} value={r}>
@@ -211,11 +217,11 @@ export default function EditUserClient({ id }: { id: string }) {
           <div className="flex-1">
             <label className="block text-sm font-medium mb-1">Status</label>
             <select
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
               value={user.status}
               onChange={(e) =>
                 updateField("status", e.target.value as AdminUserStatus)
               }
-              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
             >
               {STATUSES.map((s) => (
                 <option key={s} value={s}>
@@ -238,6 +244,27 @@ export default function EditUserClient({ id }: { id: string }) {
           />
         </div>
 
+        {/* NEW TAGS FIELD */}
+        <div>
+          <label className="block text-sm font-medium mb-1">
+            Tags (comma separated)
+          </label>
+          <input
+            value={user.tags && user.tags.length > 0 ? user.tags.join(", ") : ""}
+            onChange={(e) =>
+              updateField(
+                "tags",
+                e.target.value
+                  .split(",")
+                  .map((t) => t.trim())
+                  .filter(Boolean) as string[]
+              )
+            }
+            placeholder="e.g. vip, chicago, nightlife"
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
+          />
+        </div>
+
         <div>
           <label className="block text-sm font-medium mb-1">
             Source (where this came from)
@@ -250,33 +277,29 @@ export default function EditUserClient({ id }: { id: string }) {
           />
         </div>
 
-        <p className="text-xs text-gray-400">Joined: {user.joined ?? "—"}</p>
+        <p className="text-xs text-gray-400">
+          Joined: {user.joined ?? "-"}
+        </p>
 
-        <div className="flex items-center gap-3 pt-2">
+        <div className="flex items-center justify-between gap-4 pt-2">
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving || deleting}
-            className="inline-flex items-center rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+            disabled={saving}
+            className="inline-flex items-center justify-center rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
           >
-            {saving ? "Saving..." : savedMsg ? savedMsg : "Save"}
+            {saving ? "Saving..." : "Save"}
           </button>
 
           <button
             type="button"
             onClick={handleDelete}
-            disabled={saving || deleting}
-            className="inline-flex items-center rounded-md border border-red-500 px-3 py-2 text-xs font-medium text-red-600 disabled:opacity-60"
+            disabled={saving}
+            className="text-xs text-red-600 border border-red-300 rounded-md px-3 py-1 disabled:opacity-60"
           >
-            {deleting ? "Deleting..." : "Delete user"}
+            Delete user
           </button>
         </div>
-
-        {error && (
-          <p className="text-xs text-red-600 pt-2">
-            {error}
-          </p>
-        )}
       </div>
     </main>
   );

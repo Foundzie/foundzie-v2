@@ -11,28 +11,44 @@ export default function AdminNewUserPage() {
   const [status, setStatus] = useState<"active" | "invited" | "disabled">(
     "active"
   );
+  const [tags, setTags] = useState(""); // NEW
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaved(false);
+    setSaving(true);
 
-    await fetch("/api/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name,
-        email,
-        role,
-        status,
-      }),
-    });
+    try {
+      const parsedTags = tags
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
 
-    setSaved(true);
-    setName("");
-    setEmail("");
-    setRole("viewer");
-    setStatus("active");
+      await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          email,
+          role,
+          status,
+          ...(parsedTags.length ? { tags: parsedTags } : {}),
+        }),
+      });
+
+      setSaved(true);
+      setName("");
+      setEmail("");
+      setRole("viewer");
+      setStatus("active");
+      setTags(""); // reset
+    } catch (err) {
+      console.error("Failed to create user", err);
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -46,7 +62,10 @@ export default function AdminNewUserPage() {
         This will POST to <code>/api/users</code>.
       </p>
 
-      <form onSubmit={handleSubmit} className="space-y-4 bg-gray-50 border border-gray-100 rounded-xl p-5">
+      <form
+        onSubmit={handleSubmit}
+        className="space-y-4 bg-gray-50 border border-gray-100 rounded-xl p-5"
+      >
         <div>
           <label className="block text-xs text-gray-500 mb-1">Name</label>
           <input
@@ -96,15 +115,29 @@ export default function AdminNewUserPage() {
           </div>
         </div>
 
+        {/* NEW: tags field */}
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            Tags (comma separated)
+          </label>
+          <input
+            className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
+            value={tags}
+            onChange={(e) => setTags(e.target.value)}
+            placeholder="e.g. vip, chicago, nightlife"
+          />
+        </div>
+
         <button
           type="submit"
-          className="bg-purple-600 text-white text-sm px-4 py-2 rounded-md"
+          disabled={saving}
+          className="bg-purple-600 text-white text-sm px-4 py-2 rounded-md disabled:opacity-60"
         >
-          Save
+          {saving ? "Saving..." : "Save"}
         </button>
 
         {saved && (
-          <p className="text-xs text-green-600">
+          <p className="text-xs text-green-600 mt-2">
             User added. Go back to Users to see it in the list.
           </p>
         )}

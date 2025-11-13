@@ -1,6 +1,8 @@
 // src/app/admin/users/page.tsx
 "use client";
 
+// src/app/admin/users/page.tsx
+
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
@@ -13,6 +15,7 @@ type AdminUser = {
   joined: string;
   interest?: string;
   source?: string;
+  tags?: string[]; // NEW
 };
 
 export default function AdminUsersPage() {
@@ -23,6 +26,7 @@ export default function AdminUsersPage() {
   useEffect(() => {
     async function load() {
       try {
+        setLoading(true);
         const res = await fetch("/api/users", { cache: "no-store" });
         const data = await res.json();
         setItems(data.items ?? []);
@@ -32,6 +36,7 @@ export default function AdminUsersPage() {
         setLoading(false);
       }
     }
+
     load();
   }, []);
 
@@ -80,6 +85,7 @@ export default function AdminUsersPage() {
         >
           All ({items.length})
         </button>
+
         <button
           onClick={() => setFilter("collected")}
           className={`text-xs px-3 py-1 rounded-full ${
@@ -118,7 +124,7 @@ export default function AdminUsersPage() {
             <div>
               <p className="text-sm font-medium text-gray-900">{u.name}</p>
               <p className="text-xs text-gray-400">{u.email}</p>
-              <p className="text-[11px] text-gray-400">Joined {u.joined}</p>
+              <p className="text-[11px] text-gray-400">Joined: {u.joined}</p>
 
               {u.interest ? (
                 <p className="text-[11px] text-pink-500 mt-1">
@@ -129,6 +135,13 @@ export default function AdminUsersPage() {
               {u.source ? (
                 <p className="text-[11px] text-gray-300">source: {u.source}</p>
               ) : null}
+
+              {/* NEW: tags display */}
+              {u.tags && u.tags.length > 0 && (
+                <p className="text-[11px] text-blue-500 mt-1">
+                  tags: {u.tags.join(", ")}
+                </p>
+              )}
             </div>
 
             <div className="flex gap-4 items-center">
