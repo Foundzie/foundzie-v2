@@ -6,6 +6,7 @@ import Link from "next/link";
 
 type AdminUserStatus = "active" | "invited" | "disabled" | "collected";
 type AdminUserRole = "admin" | "editor" | "viewer";
+type ConciergeStatus = "open" | "in-progress" | "done";
 
 type AdminUser = {
   id: string;
@@ -14,13 +15,19 @@ type AdminUser = {
   role: AdminUserRole;
   status: AdminUserStatus;
   joined: string;
+
   interest?: string;
   source?: string;
-  tags?: string[]; // NEW
+  tags: string[];
+
+  // NEW concierge workflow fields
+  conciergeStatus?: ConciergeStatus;
+  conciergeNote?: string;
 };
 
 const ROLES: AdminUserRole[] = ["admin", "editor", "viewer"];
 const STATUSES: AdminUserStatus[] = ["active", "invited", "disabled", "collected"];
+const CONCIERGE_STATUSES: ConciergeStatus[] = ["open", "in-progress", "done"];
 
 export default function EditUserClient({ id }: { id: string }) {
   const [user, setUser] = useState<AdminUser | null>(null);
@@ -108,9 +115,9 @@ export default function EditUserClient({ id }: { id: string }) {
 
       const url = `/api/users/${encodeURIComponent(cleanId)}`;
       const res = await fetch(url, { method: "DELETE" });
+      const data = await res.json().catch(() => ({} as any));
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({} as any));
+      if (!res.ok || !data.ok) {
         setError(data?.message ?? "Delete failed");
         setSaving(false);
         return;
@@ -124,7 +131,7 @@ export default function EditUserClient({ id }: { id: string }) {
     }
   }
 
-  // ── render ────────────────────────────────────────────────
+  // ----- render -----
 
   if (loading) {
     return (
@@ -144,7 +151,7 @@ export default function EditUserClient({ id }: { id: string }) {
           &larr; back to users
         </Link>
         <h1 className="text-xl font-semibold">User not found</h1>
-        <p className="text-gray-500">
+        <p className="text-sm text-gray-500">
           {error ?? `No user with id ${id}`}
         </p>
       </main>
@@ -152,34 +159,27 @@ export default function EditUserClient({ id }: { id: string }) {
   }
 
   return (
-    <main className="p-8 space-y-6 max-w-lg">
+    <main className="p-8 space-y-4 max-w-lg">
       <Link href="/admin/users" className="text-sm text-purple-700">
         &larr; back to users
       </Link>
 
       <div>
-        <h1 className="text-2xl font-semibold">Edit user</h1>
+        <h1 className="text-2xl font-semibold text-gray-900">Edit user</h1>
         <p className="text-xs text-gray-500">
           Values shown here come from the live in-memory API.
         </p>
       </div>
 
-      {error && (
-        <p className="text-sm text-red-600">
-          {error}
-        </p>
-      )}
-
-      {savedMsg && (
-        <p className="text-sm text-green-600">
-          {savedMsg}
-        </p>
-      )}
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {savedMsg && <p className="text-sm text-green-600">{savedMsg}</p>}
 
       <div className="space-y-4 bg-white rounded-xl border border-gray-200 p-5">
+        {/* basic info */}
         <div>
           <label className="block text-sm font-medium mb-1">Name</label>
           <input
+            type="text"
             className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
             value={user.name}
             onChange={(e) => updateField("name", e.target.value)}
@@ -200,11 +200,11 @@ export default function EditUserClient({ id }: { id: string }) {
           <div className="flex-1">
             <label className="block text-sm font-medium mb-1">Role</label>
             <select
-              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
               value={user.role}
               onChange={(e) =>
                 updateField("role", e.target.value as AdminUserRole)
               }
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
             >
               {ROLES.map((r) => (
                 <option key={r} value={r}>
@@ -217,11 +217,11 @@ export default function EditUserClient({ id }: { id: string }) {
           <div className="flex-1">
             <label className="block text-sm font-medium mb-1">Status</label>
             <select
-              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
               value={user.status}
               onChange={(e) =>
                 updateField("status", e.target.value as AdminUserStatus)
               }
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
             >
               {STATUSES.map((s) => (
                 <option key={s} value={s}>
@@ -232,24 +232,68 @@ export default function EditUserClient({ id }: { id: string }) {
           </div>
         </div>
 
+        {/* concierge workflow */}
+        <div className="flex gap-4">
+          <div className="flex-1">
+            <label className="block text-sm font-medium mb-1">
+              Concierge status
+            </label>
+            <select
+              value={user.conciergeStatus ?? ""}
+              onChange={(e) =>
+                updateField(
+                  "conciergeStatus",
+                  (e.target.value || undefined) as
+                    | ConciergeStatus
+                    | undefined
+                )
+              }
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
+            >
+              <option value="">(none)</option>
+              {CONCIERGE_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">
+            Concierge note (internal)
+          </label>
+          <textarea
+            rows={3}
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
+            value={user.conciergeNote ?? ""}
+            onChange={(e) => updateField("conciergeNote", e.target.value)}
+            placeholder="Internal notes about this concierge request..."
+          />
+        </div>
+
+        {/* mobile fields */}
         <div>
           <label className="block text-sm font-medium mb-1">
             Interest (from mobile)
           </label>
           <input
+            type="text"
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
             value={user.interest ?? ""}
             onChange={(e) => updateField("interest", e.target.value)}
-            placeholder="e.g. brunch"
-            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
+            placeholder="e.g. brunch, nightlife"
           />
         </div>
 
-        {/* NEW TAGS FIELD */}
         <div>
           <label className="block text-sm font-medium mb-1">
             Tags (comma separated)
           </label>
           <input
+            type="text"
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
             value={user.tags && user.tags.length > 0 ? user.tags.join(", ") : ""}
             onChange={(e) =>
               updateField(
@@ -261,7 +305,6 @@ export default function EditUserClient({ id }: { id: string }) {
               )
             }
             placeholder="e.g. vip, chicago, nightlife"
-            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
           />
         </div>
 
@@ -270,16 +313,15 @@ export default function EditUserClient({ id }: { id: string }) {
             Source (where this came from)
           </label>
           <input
+            type="text"
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
             value={user.source ?? ""}
             onChange={(e) => updateField("source", e.target.value)}
             placeholder="mobile-home / popup / campaign-1"
-            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
           />
         </div>
 
-        <p className="text-xs text-gray-400">
-          Joined: {user.joined ?? "-"}
-        </p>
+        <p className="text-xs text-gray-400">Joined: {user.joined ?? "-"}</p>
 
         <div className="flex items-center justify-between gap-4 pt-2">
           <button

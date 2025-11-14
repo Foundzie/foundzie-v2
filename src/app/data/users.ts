@@ -6,6 +6,9 @@ export type AdminUserStatus = "active" | "invited" | "disabled" | "collected";
 // what roles we allow
 export type AdminUserRole = "admin" | "editor" | "viewer";
 
+// concierge workflow status (Milestone C)
+export type ConciergeStatus = "open" | "in-progress" | "done";
+
 // the shape every user will have
 export interface AdminUser {
   id: string;
@@ -15,12 +18,14 @@ export interface AdminUser {
   status: AdminUserStatus;
   joined: string;
 
-  // NEW optional fields (these are what mobile /collect can send)
+  // NEW: mobile + targeting fields
   interest?: string;
   source?: string;
+  tags: string[];
 
-  // NEW: admin-entered tags used for targeting
-  tags?: string[];
+  // NEW: concierge workflow
+  conciergeStatus?: ConciergeStatus;
+  conciergeNote?: string;
 }
 
 // your starter users
@@ -41,6 +46,7 @@ export const mockUsers: AdminUser[] = [
     role: "editor",
     status: "active",
     joined: "Sep 2025",
+    tags: [],
   },
   {
     id: "3",
@@ -49,6 +55,7 @@ export const mockUsers: AdminUser[] = [
     role: "viewer",
     status: "invited",
     joined: "Sep 2025",
+    tags: [],
   },
   {
     id: "4",
@@ -57,6 +64,7 @@ export const mockUsers: AdminUser[] = [
     role: "viewer",
     status: "active",
     joined: "Aug 2025",
+    tags: [],
   },
 ];
 
