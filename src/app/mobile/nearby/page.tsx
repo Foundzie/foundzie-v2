@@ -1,8 +1,7 @@
 // src/app/mobile/nearby/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import { useEffect, useState, FormEvent } from "react";
 import Link from "next/link";
 
 type Place = {
@@ -29,7 +28,7 @@ export default function NearbyPage() {
         const json = await res.json();
         setPlaces((json.data ?? []) as Place[]);
       } catch (e) {
-        console.error("failed to load places", e);
+        console.error("Failed to load places", e);
       } finally {
         setLoading(false);
       }
@@ -42,7 +41,7 @@ export default function NearbyPage() {
     (a, b) => (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999),
   );
 
-  // NEW: send interest → /api/users/collect
+  // send interest -> /api/users/collect
   async function handleSaveInterest(e: FormEvent) {
     e.preventDefault();
     const trimmed = interest.trim();
@@ -74,18 +73,19 @@ export default function NearbyPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white">
+    <main className="min-h-screen bg-slate-950 text-white pb-14">
       <header className="px-4 py-4 border-b border-slate-800">
         <h1 className="text-lg font-semibold">Nearby</h1>
         <p className="text-slate-400 text-sm">Places near your location</p>
       </header>
 
-      {/* NEW: simple interest capture bar */}
+      {/* simple interest capture bar */}
       <section className="px-4 py-3 border-b border-slate-800 space-y-2">
         <p className="text-xs text-slate-400">
           Tell Foundzie what you&apos;re into and we&apos;ll use it to improve
           suggestions.
         </p>
+
         <form onSubmit={handleSaveInterest} className="flex gap-2">
           <input
             value={interest}
@@ -95,12 +95,12 @@ export default function NearbyPage() {
               if (error) setError(null);
             }}
             placeholder="e.g. brunch, nightlife"
-            className="flex-1 rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-xs outline-none focus:border-slate-400"
+            className="w-full bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-slate-400"
           />
           <button
             type="submit"
+            className="px-3 py-2 rounded-md bg-purple-600 text-xs font-medium disabled:opacity-60"
             disabled={saving || interest.trim().length === 0}
-            className="px-3 py-2 rounded-md text-xs font-medium bg-purple-600 disabled:opacity-60"
           >
             {saving ? "Saving..." : "Save"}
           </button>
@@ -112,6 +112,16 @@ export default function NearbyPage() {
           </p>
         )}
         {error && <p className="text-[11px] text-red-400">{error}</p>}
+
+        {/* NEW: entry to concierge flow */}
+        <div className="pt-1">
+          <Link
+            href="/mobile/concierge"
+            className="text-[11px] text-purple-300 underline"
+          >
+            Prefer to talk to a concierge? Tap here.
+          </Link>
+        </div>
       </section>
 
       {loading ? (
@@ -128,9 +138,9 @@ export default function NearbyPage() {
                 <p className="font-medium">{p.name}</p>
                 <p className="text-xs text-slate-400">{p.category}</p>
               </div>
-              <p className="text-xs text-slate-500">
-                {p.distanceMiles ?? "—"} mi
-              </p>
+              <div className="text-xs text-slate-500">
+                {p.distanceMiles ?? "--"} mi
+              </div>
             </Link>
           ))}
         </div>
