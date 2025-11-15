@@ -6,8 +6,19 @@ import type { SosStatus } from "../store";
 
 export async function PATCH(
   req: Request,
-  { params }: { params: { id: string } }
+  context: any
 ) {
+  const { params } = context ?? {};
+  const id = (params?.id ?? "") as string;
+
+  // Basic guard in case id is missing
+  if (!id) {
+    return NextResponse.json(
+      { ok: false, message: "Missing SOS id" },
+      { status: 400 }
+    );
+  }
+
   const body = (await req.json().catch(() => ({}))) as any;
   const status = body.status as SosStatus | undefined;
 
@@ -18,7 +29,8 @@ export async function PATCH(
     );
   }
 
-  const updated = await updateEvent(params.id, { status });
+  const updated = await updateEvent(id, { status });
+
   if (!updated) {
     return NextResponse.json(
       { ok: false, message: "SOS event not found" },
