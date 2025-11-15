@@ -1,14 +1,21 @@
+// src/app/mobile/layout.tsx
 "use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-export default function MobileLayout({ children }: { children: React.ReactNode }) {
+export default function MobileLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const pathname = usePathname();
 
   const NAV = [
     { href: "/mobile", label: "Home" },
     { href: "/mobile/explore", label: "Explore" },
+    // NEW: main chat entry point
+    { href: "/mobile/chat", label: "Chat" },
     { href: "/mobile/notifications", label: "Alerts" },
     { href: "/mobile/profile", label: "Profile" },
     { href: "/mobile/sos", label: "SOS" },
@@ -23,12 +30,12 @@ export default function MobileLayout({ children }: { children: React.ReactNode }
           <Link
             key={item.href}
             href={item.href}
-            className={
-              "text-xs " +
-              (pathname === item.href
+            className={[
+              "text-xs",
+              pathname === item.href
                 ? "text-pink-500 font-semibold"
-                : "text-slate-400")
-            }
+                : "text-slate-400",
+            ].join(" ")}
           >
             {item.label}
           </Link>
