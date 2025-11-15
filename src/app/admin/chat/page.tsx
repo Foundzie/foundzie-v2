@@ -2,41 +2,53 @@
 "use client";
 
 import { useEffect, useState, FormEvent } from "react";
-import Link from "next/link";
-import type { ChatMessage } from "@/app/data/chat";
-
-type Filter = "all" | "visitors" | "concierge";
+import type { ChatMessage } from "../../data/chat";
 
 export default function AdminChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<Filter>("all");
 
-  // Load all chat messages once
-  useEffect(() => {
-    async function loadMessages() {
-      try {
-        setLoading(true);
-        const res = await fetch("/api/chat", { cache: "no-store" });
-        const data = await res.json().catch(() => ({}));
+  // ----- shared loader (initial + polling) -----
+  const loadMessages = async () => {
+    try {
+      if (messages.length === 0) setLoading(true);
 
-        if (Array.isArray(data.items)) {
-          setMessages(data.items as ChatMessage[]);
-        }
-      } catch (err) {
-        console.error("Failed to load chat messages in admin:", err);
-        setError("Could not load chat history.");
-      } finally {
-        setLoading(false);
+      const res = await fetch(`/api/chat?ts=${Date.now()}`, {
+        cache: "no-store",
+      });
+      const data = await res.json().catch(() => ({} as any));
+
+      if (Array.isArray(data.items)) {
+        setMessages(data.items as ChatMessage[]);
       }
+    } catch (err) {
+      console.error("Failed to load chat messages (admin)", err);
+      setError("Could not load chat history.");
+    } finally {
+      setLoading(false);
     }
+  };
 
+  // Initial load
+  useEffect(() => {
     loadMessages();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Poll every 5 seconds
+  useEffect(() => {
+    const id = setInterval(() => {
+      loadMessages();
+    }, 5000);
+
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ----- send reply from admin (concierge) -----
   async function handleSend(e: FormEvent) {
     e.preventDefault();
     const text = input.trim();
@@ -45,8 +57,7 @@ export default function AdminChatPage() {
     setSending(true);
     setError(null);
 
-    // optimistic admin message
-    const tempId = `admin-${Date.now()}`;
+    const tempId = `admin-temp-${Date.now()}`;
     const adminMessage: ChatMessage = {
       id: tempId,
       sender: "concierge",
@@ -54,6 +65,7 @@ export default function AdminChatPage() {
       createdAt: new Date().toISOString(),
     };
 
+    // optimistic add
     setMessages((prev) => [...prev, adminMessage]);
     setInput("");
 
@@ -64,13 +76,12 @@ export default function AdminChatPage() {
         body: JSON.stringify({ text, sender: "concierge" }),
       });
 
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(data.message || "Failed to send reply");
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok || !data.ok) {
+        throw new Error(data.message || "Send failed");
       }
 
-      // replace temp message with real one from backend
+      // replace temp with real saved message
       setMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId);
         const final: ChatMessage[] = [...withoutTemp];
@@ -78,14 +89,12 @@ export default function AdminChatPage() {
         if (data.item) {
           final.push(data.item as ChatMessage);
         }
-
         return final;
       });
     } catch (err) {
-      console.error("Admin send error:", err);
+      console.error("Admin chat send error", err);
       setError("Could not send reply. Please try again.");
-
-      // rollback optimistic message and restore text in box
+      // rollback optimistic
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setInput(text);
     } finally {
@@ -93,203 +102,188 @@ export default function AdminChatPage() {
     }
   }
 
-  const filteredMessages = messages.filter((m) => {
-    if (filter === "visitors") return m.sender === "user";
-    if (filter === "concierge") return m.sender === "concierge";
-    return true;
-  });
-
   return (
-    <div>
-      <header
+    <main style={{ padding: "16px 0" }}>
+      <div
         style={{
-          marginBottom: "16px",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
+          maxWidth: "960px",
+          margin: "0 auto",
+          padding: "0 16px",
         }}
       >
-        <div>
+        <header style={{ marginBottom: "16px" }}>
           <h1 style={{ fontSize: "20px", fontWeight: 600 }}>Chat inbox</h1>
-          <p style={{ fontSize: "13px", color: "#6b7280" }}>
+          <p style={{ fontSize: "12px", color: "#64748b" }}>
             Read recent conversations coming from the mobile chat. Replies you
             send here will appear in the user&apos;s chat.
           </p>
-        </div>
+        </header>
 
-        <Link
-          href="/admin"
-          style={{ fontSize: "12px", color: "#7c3aed", textDecoration: "none" }}
+        <section
+          style={{
+            background: "white",
+            borderRadius: "12px",
+            border: "1px solid #e2e8f0",
+            padding: "16px",
+            minHeight: "340px",
+            display: "flex",
+            flexDirection: "column",
+          }}
         >
-          ← Back to dashboard
-        </Link>
-      </header>
+          <div style={{ marginBottom: "8px", fontSize: "12px", color: "#94a3b8" }}>
+            {/* simple static filter labels for now */}
+            <span>Filter&nbsp;</span>
+            <span
+              style={{
+                padding: "2px 8px",
+                borderRadius: "999px",
+                background: "#f97316",
+                color: "white",
+                fontWeight: 500,
+                fontSize: "11px",
+              }}
+            >
+              All
+            </span>
+            <span style={{ marginLeft: "8px", fontSize: "11px" }}>Visitors</span>
+            <span style={{ marginLeft: "8px", fontSize: "11px" }}>Concierge</span>
+          </div>
 
-      {/* Filters */}
-      <div style={{ marginBottom: "16px", fontSize: "13px" }}>
-        <span style={{ marginRight: "8px" }}>Filter</span>
-        {(
-          [
-            { id: "all", label: "All" },
-            { id: "visitors", label: "Visitors" },
-            { id: "concierge", label: "Concierge" },
-          ] as { id: Filter; label: string }[]
-        ).map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            onClick={() => setFilter(f.id)}
+          {/* messages */}
+          <div
             style={{
-              padding: "4px 10px",
-              borderRadius: "999px",
-              marginRight: "6px",
-              border: "none",
-              fontSize: "12px",
-              cursor: "pointer",
-              backgroundColor:
-                filter === f.id ? "#7c3aed" : "rgba(124,58,237,0.06)",
-              color: filter === f.id ? "white" : "#4b5563",
+              flex: 1,
+              overflowY: "auto",
+              padding: "8px 0",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
             }}
           >
-            {f.label}
-          </button>
-        ))}
-      </div>
+            {loading && (
+              <p style={{ fontSize: "12px", color: "#94a3b8" }}>
+                Loading conversation…
+              </p>
+            )}
 
-      {/* Chat thread */}
-      <section
-        style={{
-          borderRadius: "12px",
-          border: "1px solid #e5e7eb",
-          padding: "16px",
-          minHeight: "260px",
-          display: "flex",
-          flexDirection: "column",
-          gap: "12px",
-          background: "white",
-        }}
-      >
-        {loading && (
-          <p style={{ fontSize: "13px", color: "#6b7280" }}>
-            Loading conversation…
-          </p>
-        )}
+            {!loading && messages.length === 0 && (
+              <p style={{ fontSize: "12px", color: "#94a3b8" }}>
+                No chat messages yet. When users send messages from the mobile
+                app, they will appear here.
+              </p>
+            )}
 
-        {!loading && filteredMessages.length === 0 && (
-          <p style={{ fontSize: "13px", color: "#6b7280" }}>
-            No messages yet. Messages from the mobile chat will appear here.
-          </p>
-        )}
+            {messages.map((msg) => {
+              const isUser = msg.sender === "user";
 
-        {!loading &&
-          filteredMessages.map((msg) => {
-            const isUser = msg.sender === "user";
-            return (
-              <div
-                key={msg.id}
-                style={{
-                  display: "flex",
-                  justifyContent: isUser ? "flex-start" : "flex-end",
-                }}
-              >
+              return (
                 <div
+                  key={msg.id}
                   style={{
-                    maxWidth: "70%",
-                    borderRadius: "16px",
-                    padding: "8px 12px",
-                    fontSize: "13px",
-                    backgroundColor: isUser ? "#f3f4f6" : "#7c3aed",
-                    color: isUser ? "#111827" : "white",
+                    display: "flex",
+                    justifyContent: isUser ? "flex-start" : "flex-end",
                   }}
                 >
-                  <p
+                  <div
                     style={{
-                      fontSize: "10px",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.08em",
-                      marginBottom: "2px",
-                      color: isUser
-                        ? "#6b7280"
-                        : "rgba(249,250,251,0.8)",
+                      maxWidth: "70%",
+                      borderRadius: "999px",
+                      padding: "8px 12px",
+                      fontSize: "12px",
+                      background: isUser ? "#e2e8f0" : "#9333ea",
+                      color: isUser ? "#0f172a" : "white",
                     }}
                   >
-                    {isUser ? "Visitor" : "Concierge"}
-                  </p>
-                  <p style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                    {msg.text}
-                  </p>
-                  <p
-                    style={{
-                      marginTop: "4px",
-                      fontSize: "10px",
-                      color: isUser ? "#9ca3af" : "rgba(249,250,251,0.75)",
-                      textAlign: "right",
-                    }}
-                  >
-                    {new Date(msg.createdAt).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </p>
+                    <div
+                      style={{
+                        fontSize: "10px",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.06em",
+                        marginBottom: "2px",
+                        color: isUser ? "#64748b" : "#f9eaff",
+                      }}
+                    >
+                      {isUser ? "User" : "Concierge"}
+                    </div>
+                    <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                      {msg.text}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "10px",
+                        marginTop: "2px",
+                        opacity: 0.8,
+                        textAlign: "right",
+                      }}
+                    >
+                      {new Date(msg.createdAt).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-      </section>
+              );
+            })}
+          </div>
 
-      {/* Error */}
-      {error && (
-        <p
-          style={{
-            marginTop: "8px",
-            fontSize: "12px",
-            color: "#b91c1c",
-          }}
-        >
-          {error}
-        </p>
-      )}
+          {/* error */}
+          {error && (
+            <p
+              style={{
+                marginTop: "4px",
+                marginBottom: "4px",
+                fontSize: "11px",
+                color: "#ef4444",
+              }}
+            >
+              {error}
+            </p>
+          )}
 
-      {/* Reply box */}
-      <form
-        onSubmit={handleSend}
-        style={{
-          marginTop: "16px",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-        }}
-      >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Type a reply to the visitor…"
-          style={{
-            flex: 1,
-            borderRadius: "999px",
-            border: "1px solid #d1d5db",
-            padding: "8px 12px",
-            fontSize: "13px",
-            outline: "none",
-          }}
-        />
-        <button
-          type="submit"
-          disabled={sending || !input.trim()}
-          style={{
-            padding: "8px 14px",
-            borderRadius: "999px",
-            border: "none",
-            fontSize: "13px",
-            fontWeight: 500,
-            cursor: sending || !input.trim() ? "not-allowed" : "pointer",
-            backgroundColor: sending || !input.trim() ? "#d1d5db" : "#7c3aed",
-            color: "white",
-          }}
-        >
-          {sending ? "Sending…" : "Send"}
-        </button>
-      </form>
-    </div>
+          {/* reply box */}
+          <form
+            onSubmit={handleSend}
+            style={{
+              marginTop: "8px",
+              display: "flex",
+              gap: "8px",
+              alignItems: "center",
+            }}
+          >
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Type a reply to the visitor…"
+              style={{
+                flex: 1,
+                borderRadius: "999px",
+                border: "1px solid #cbd5f5",
+                padding: "8px 12px",
+                fontSize: "12px",
+                outline: "none",
+              }}
+            />
+            <button
+              type="submit"
+              disabled={sending || !input.trim()}
+              style={{
+                borderRadius: "999px",
+                padding: "8px 14px",
+                fontSize: "12px",
+                fontWeight: 500,
+                background: "#f97316",
+                color: "white",
+                opacity: sending || !input.trim() ? 0.6 : 1,
+                cursor:
+                  sending || !input.trim() ? "not-allowed" : "pointer",
+              }}
+            >
+              {sending ? "Sending…" : "Send"}
+            </button>
+          </form>
+        </section>
+      </div>
+    </main>
   );
 }
