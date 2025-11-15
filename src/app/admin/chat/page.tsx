@@ -1,15 +1,16 @@
-// src/app/admin/chat/page.tsx
 "use client";
+
+// src/app/admin/chat/page.tsx
 
 import { useEffect, useState, FormEvent } from "react";
 import type { ChatMessage } from "../../data/chat";
-import mockUsers from "../../data/users";
+import mockUsers, { AdminUser } from "../../data/users";
 
 type ConversationUser = {
   id: string;
   name: string;
   roomId: string;
-  subtitle?: string;
+  subtitle: string;
 };
 
 function buildConversations(): ConversationUser[] {
@@ -25,12 +26,12 @@ export default function AdminChatPage() {
   const conversations = buildConversations();
 
   // pick first user as default
-  const initialRoomId =
-    conversations[0]?.roomId !== undefined ? conversations[0].roomId : "default";
+  const initialRoomId = conversations[0]?.roomId ?? "default";
+  const initialUserId = conversations[0]?.id ?? null;
 
   const [selectedRoomId, setSelectedRoomId] = useState<string>(initialRoomId);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(
-    conversations[0]?.id ?? null,
+    initialUserId
   );
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -39,7 +40,12 @@ export default function AdminChatPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load messages for the selected room
+  // --- NEW: visitor profile state ---
+  const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+
+  /* --------------------- Load chat messages --------------------- */
   useEffect(() => {
     let cancelled = false;
 
@@ -51,6 +57,7 @@ export default function AdminChatPage() {
         const res = await fetch(`/api/chat/${selectedRoomId}?t=${Date.now()}`, {
           cache: "no-store",
         });
+
         const data = await res.json().catch(() => ({} as any));
 
         if (!res.ok) {
@@ -61,28 +68,67 @@ export default function AdminChatPage() {
           setMessages(data.items as ChatMessage[]);
         }
       } catch (err) {
-        console.error("Failed to load chat messages (admin):", err);
         if (!cancelled) {
+          console.error("Failed to load chat messages (admin):", err);
           setError("Could not load chat history.");
         }
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     }
 
     load();
 
-    // Poll every 5 seconds
+    // poll every 5 seconds
     const id = setInterval(load, 5000);
-
     return () => {
       cancelled = true;
       clearInterval(id);
     };
   }, [selectedRoomId]);
 
+  /* --------------------- Load visitor profile --------------------- */
+  useEffect(() => {
+    if (!selectedUserId) {
+      setSelectedUser(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadProfile() {
+      try {
+        setProfileLoading(true);
+        setProfileError(null);
+
+        const res = await fetch(`/api/users/${selectedUserId}`);
+        const data = await res.json().catch(() => ({} as any));
+
+        if (!res.ok || !data.item) {
+          throw new Error((data && data.message) || "Failed to load user");
+        }
+
+        if (!cancelled) {
+          setSelectedUser(data.item as AdminUser);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Failed to load user profile:", err);
+          setProfileError("Could not load user details.");
+        }
+      } finally {
+        if (!cancelled) setProfileLoading(false);
+      }
+    }
+
+    loadProfile();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedUserId]);
+
+  /* --------------------- Send reply --------------------- */
   async function handleSend(e: FormEvent) {
     e.preventDefault();
     const text = input.trim();
@@ -108,13 +154,19 @@ export default function AdminChatPage() {
     try {
       const res = await fetch(`/api/chat/${selectedRoomId}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, sender: "concierge" }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text,
+          sender: "concierge",
+        }),
       });
 
       const data = await res.json().catch(() => ({} as any));
-      if (!res.ok || !data?.item) {
-        throw new Error(data?.message || "Admin send failed");
+
+      if (!res.ok || !data.item) {
+        throw new Error((data && data.message) || "Admin send failed");
       }
 
       // replace temp with real message
@@ -149,6 +201,7 @@ export default function AdminChatPage() {
           padding: "0 16px",
           display: "flex",
           gap: "16px",
+          minHeight: "480px",
         }}
       >
         {/* LEFT: Conversation list */}
@@ -178,13 +231,14 @@ export default function AdminChatPage() {
 
           {conversations.length === 0 && (
             <p style={{ fontSize: "12px", color: "#6b7280" }}>
-              No conversations yet. When users send messages from the mobile app,
-              they will appear here.
+              No conversations yet. When users send messages from the mobile
+              app, they will appear here.
             </p>
           )}
 
           {conversations.map((c) => {
             const isActive = c.roomId === selectedRoomId;
+
             return (
               <button
                 key={c.id}
@@ -196,8 +250,10 @@ export default function AdminChatPage() {
                 style={{
                   textAlign: "left",
                   borderRadius: "9999px",
-                  border: isActive ? "2px solid #f97316" : "1px solid #e5e7eb",
-                  padding: "6px 10px",
+                  border: isActive
+                    ? "2px solid #f97316"
+                    : "1px solid #e5e7eb",
+                  padding: "6px 8px",
                   background: isActive ? "#fef3c7" : "white",
                   cursor: "pointer",
                 }}
@@ -227,73 +283,80 @@ export default function AdminChatPage() {
           })}
         </aside>
 
-        {/* RIGHT: Chat inbox */}
+        {/* RIGHT: Chat + Visitor profile */}
         <section
           style={{
             flex: 1,
-            borderRadius: "12px",
-            border: "1px solid #e2e8f0",
-            background: "white",
-            padding: "16px",
-            minHeight: "340px",
             display: "flex",
-            flexDirection: "column",
+            flexDirection: "row",
+            gap: "12px",
           }}
         >
-          <header style={{ marginBottom: "8px" }}>
-            <h1 style={{ fontSize: "18px", fontWeight: 600 }}>
-              Chat inbox
-            </h1>
-            <p style={{ fontSize: "12px", color: "#6b7280" }}>
-              {currentUser
-                ? `Reading conversation for ${currentUser.name}. Replies you send here will appear in the user's chat.`
-                : "Select a conversation to view and reply."}
-            </p>
-          </header>
-
+          {/* Chat column */}
           <div
             style={{
-              flex: 1,
-              overflow: "auto",
+              flex: 2,
+              borderRadius: "12px",
+              border: "1px solid #e2e8f0",
+              background: "white",
+              padding: "16px",
               display: "flex",
               flexDirection: "column",
-              gap: "8px",
-              padding: "8px 0",
+              minHeight: "340px",
             }}
           >
-            {loading && (
-              <p style={{ fontSize: "12px", color: "#9ca3af" }}>
-                Loading conversation…
+            <header style={{ marginBottom: "8px" }}>
+              <h1 style={{ fontSize: "18px", fontWeight: 600 }}>Chat inbox</h1>
+              <p style={{ fontSize: "12px", color: "#6b7280" }}>
+                {currentUser
+                  ? `Reading conversation for ${currentUser.name}. Replies you send here will appear in the user's chat.`
+                  : "Select a conversation to view and reply."}
               </p>
-            )}
+            </header>
 
-            {!loading && messages.length === 0 && (
-              <p style={{ fontSize: "12px", color: "#9ca3af" }}>
-                No chat messages yet for this user.
-              </p>
-            )}
+            <div
+              style={{
+                flex: 1,
+                overflow: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: "8px",
+                padding: "8px 0",
+              }}
+            >
+              {loading && (
+                <p style={{ fontSize: "12px", color: "#9ca3af" }}>
+                  Loading conversation…
+                </p>
+              )}
 
-            {messages.map((msg) => {
-              const isUser = msg.sender === "user";
-              return (
-                <div
-                  key={msg.id}
-                  style={{
-                    display: "flex",
-                    justifyContent: isUser ? "flex-start" : "flex-end",
-                  }}
-                >
+              {!loading && messages.length === 0 && (
+                <p style={{ fontSize: "12px", color: "#9ca3af" }}>
+                  No chat messages yet for this user.
+                </p>
+              )}
+
+              {messages.map((msg) => {
+                const isUser = msg.sender === "user";
+                return (
                   <div
+                    key={msg.id}
                     style={{
-                      maxWidth: "70%",
-                      borderRadius: "9999px",
-                      padding: "8px 12px",
-                      fontSize: "12px",
-                      background: isUser ? "#e5e7eb" : "#9333ea",
-                      color: isUser ? "#111827" : "white",
+                      display: "flex",
+                      justifyContent: isUser ? "flex-start" : "flex-end",
                     }}
                   >
-                    {!isUser && (
+                    <div
+                      style={{
+                        maxWidth: "70%",
+                        borderRadius: "9999px",
+                        padding: "8px 12px",
+                        fontSize: "12px",
+                        background: isUser ? "#e5e7eb" : "#9333ea",
+                        color: isUser ? "#111827" : "white",
+                      }}
+                    >
+                      {/* sender label */}
                       <div
                         style={{
                           fontSize: "10px",
@@ -303,45 +366,50 @@ export default function AdminChatPage() {
                           color: isUser ? "#64748b" : "#e9d5ff",
                         }}
                       >
-                        Concierge
+                        {isUser ? "Visitor" : "Concierge"}
                       </div>
-                    )}
 
-                    {/* attachment chip */}
-                    {msg.attachmentName && (
+                      {/* attachment chip */}
+                      {msg.attachmentName && (
+                        <div
+                          style={{
+                            fontSize: "10px",
+                            marginTop: "2px",
+                            marginBottom: "2px",
+                            opacity: 0.85,
+                          }}
+                        >
+                          📎 {msg.attachmentName}
+                        </div>
+                      )}
+
+                      <div
+                        style={{
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {msg.text || (msg.attachmentName ? "(attachment)" : "")}
+                      </div>
+
                       <div
                         style={{
                           fontSize: "10px",
-                          marginBottom: "2px",
-                          opacity: 0.85,
+                          marginTop: "2px",
+                          opacity: 0.8,
+                          textAlign: "right",
                         }}
                       >
-                        {msg.attachmentName}
+                        {new Date(msg.createdAt).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
                       </div>
-                    )}
-
-                    <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                      {msg.text ||
-                        (msg.attachmentName ? "(attachment)" : "")}
-                    </div>
-
-                    <div
-                      style={{
-                        fontSize: "10px",
-                        marginTop: "2px",
-                        opacity: 0.8,
-                        textAlign: "right",
-                      }}
-                    >
-                      {new Date(msg.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
                     </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
 
             {error && (
               <p
@@ -354,50 +422,147 @@ export default function AdminChatPage() {
                 {error}
               </p>
             )}
-          </div>
 
-          {/* Reply box */}
-          <form
-            onSubmit={handleSend}
-            style={{
-              marginTop: "8px",
-              display: "flex",
-              gap: "8px",
-              alignItems: "center",
-            }}
-          >
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Type a reply to the visitor…"
+            {/* reply box */}
+            <form
+              onSubmit={handleSend}
               style={{
-                flex: 1,
-                borderRadius: "9999px",
-                border: "1px solid #cbd5f5",
-                padding: "8px 12px",
-                fontSize: "12px",
-                outline: "none",
-              }}
-            />
-            <button
-              type="submit"
-              disabled={sending || !input.trim()}
-              style={{
-                borderRadius: "9999px",
-                padding: "8px 14px",
-                fontSize: "12px",
-                fontWeight: 500,
-                background: "#f97316",
-                color: "white",
-                opacity: sending || !input.trim() ? 0.6 : 1,
-                cursor:
-                  sending || !input.trim() ? "not-allowed" : "pointer",
-                border: "none",
+                marginTop: "8px",
+                display: "flex",
+                gap: "8px",
+                alignItems: "center",
               }}
             >
-              {sending ? "Sending…" : "Send"}
-            </button>
-          </form>
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Type a reply to the visitor…"
+                style={{
+                  flex: 1,
+                  borderRadius: "9999px",
+                  border: "1px solid #cbd5f5",
+                  padding: "8px 12px",
+                  fontSize: "12px",
+                  outline: "none",
+                }}
+              />
+              <button
+                type="submit"
+                disabled={sending || !input.trim()}
+                style={{
+                  borderRadius: "9999px",
+                  padding: "8px 14px",
+                  fontSize: "12px",
+                  fontWeight: 500,
+                  background: "#f97316",
+                  color: "white",
+                  opacity: sending || !input.trim() ? 0.6 : 1,
+                  cursor: sending || !input.trim() ? "not-allowed" : "pointer",
+                  border: "none",
+                }}
+              >
+                {sending ? "Sending…" : "Send"}
+              </button>
+            </form>
+          </div>
+
+          {/* Visitor profile column */}
+          <aside
+            style={{
+              flex: 1,
+              minWidth: "260px",
+              borderRadius: "12px",
+              border: "1px solid #e2e8f0",
+              background: "white",
+              padding: "12px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+            }}
+          >
+            <h2
+              style={{
+                fontSize: "14px",
+                fontWeight: 600,
+                marginBottom: "4px",
+                color: "#1f2933",
+              }}
+            >
+              Visitor profile
+            </h2>
+
+            {profileLoading && (
+              <p style={{ fontSize: "12px", color: "#9ca3af" }}>
+                Loading profile…
+              </p>
+            )}
+
+            {profileError && (
+              <p style={{ fontSize: "12px", color: "#f87171" }}>
+                {profileError}
+              </p>
+            )}
+
+            {!profileLoading && !selectedUser && !profileError && (
+              <p style={{ fontSize: "12px", color: "#6b7280" }}>
+                Select a conversation to see visitor details.
+              </p>
+            )}
+
+            {selectedUser && (
+              <div
+                style={{
+                  fontSize: "12px",
+                  color: "#111827",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "4px",
+                }}
+              >
+                <div style={{ fontWeight: 600 }}>{selectedUser.name}</div>
+                <div style={{ color: "#6b7280" }}>
+                  {selectedUser.email || "no-email@example.com"}
+                </div>
+
+                <div style={{ marginTop: "4px" }}>
+                  <strong>Role:</strong> {selectedUser.role}
+                </div>
+                <div>
+                  <strong>Status:</strong> {selectedUser.status}
+                </div>
+                <div>
+                  <strong>Joined:</strong> {selectedUser.joined}
+                </div>
+                <div>
+                  <strong>Source:</strong>{" "}
+                  {selectedUser.source || "unknown"}
+                </div>
+                <div>
+                  <strong>Interest:</strong>{" "}
+                  {selectedUser.interest || "—"}
+                </div>
+                <div>
+                  <strong>Room ID:</strong> {selectedUser.roomId}
+                </div>
+
+                <div>
+                  <strong>Tags:</strong>{" "}
+                  {selectedUser.tags && selectedUser.tags.length > 0
+                    ? selectedUser.tags.join(", ")
+                    : "none"}
+                </div>
+
+                <div style={{ marginTop: "4px" }}>
+                  <strong>Concierge status:</strong>{" "}
+                  {selectedUser.conciergeStatus}
+                </div>
+                <div>
+                  <strong>Concierge note:</strong>{" "}
+                  {selectedUser.conciergeNote || "—"}
+                </div>
+              </div>
+            )}
+          </aside>
         </section>
       </div>
     </main>
