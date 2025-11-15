@@ -1,79 +1,210 @@
 // src/app/admin/sos/page.tsx
-import Link from "next/link";
-import mockSos, { type SosContact } from "@/app/data/sos";
+"use client";
 
-// extend the shared type with the extra fields we know our data has
-type AdminSosContact = SosContact & {
-  tag?: string;
-  description?: string;
-  distance?: string;
+import Link from "next/link";
+import { useEffect, useState } from "react";
+
+type SosStatus = "new" | "in-progress" | "resolved";
+
+interface SosEvent {
+  id: string;
+  type: string;
+  message: string;
+  status: SosStatus;
+  createdAt: string;
+  location?: string | null;
+  source?: string | null;
+  phone?: string | null;
+}
+
+const statusLabels: Record<SosStatus, string> = {
+  new: "New",
+  "in-progress": "In progress",
+  resolved: "Resolved",
+};
+
+const statusColors: Record<SosStatus, string> = {
+  new: "bg-red-100 text-red-700",
+  "in-progress": "bg-amber-100 text-amber-700",
+  resolved: "bg-emerald-100 text-emerald-700",
 };
 
 export default function AdminSosPage() {
-  // tell TS that this array has those extra optional fields
-  const sosList = mockSos as AdminSosContact[];
+  const [items, setItems] = useState<SosEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"all" | SosStatus>("all");
+
+  async function loadEvents() {
+    try {
+      const res = await fetch("/api/sos", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Failed to load SOS events");
+
+      const list = Array.isArray(data.items) ? (data.items as SosEvent[]) : [];
+      setItems(list);
+      setError(null);
+    } catch (err: any) {
+      console.error("SOS load error", err);
+      setError(err?.message || "Could not load SOS events.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadEvents();
+    const id = setInterval(loadEvents, 5000); // simple polling for now
+    return () => clearInterval(id);
+  }, []);
+
+  async function changeStatus(id: string, status: SosStatus) {
+    // optimistic update
+    setItems((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, status } : e))
+    );
+
+    try {
+      const res = await fetch("/api/sos", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, status }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(data.message || "Failed to update status");
+      }
+    } catch (err) {
+      console.error("Status update error", err);
+      // reload from server to undo bad optimistic change if needed
+      loadEvents();
+    }
+  }
+
+  const visible =
+    filter === "all"
+      ? items
+      : items.filter((e) => e.status === filter);
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900 p-6">
       <div className="max-w-5xl mx-auto space-y-6">
-        <header className="flex items-center justify-between">
+        <header className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold">SOS / Emergency</h1>
-            <p className="text-slate-500 text-sm">
-              This is the same SOS list your mobile users see.
+            <p className="text-sm text-slate-500">
+              Live SOS alerts coming from the mobile app. Update status as you
+              handle each case.
             </p>
           </div>
+
           <Link
             href="/admin/dashboard"
-            className="text-sm text-pink-500 underline"
+            className="text-sm text-pink-600 underline"
           >
-            ← Back to admin
+            ← Back to dashboard
           </Link>
         </header>
 
-        <section className="bg-white rounded-xl shadow-sm border border-slate-200">
-          <ul className="divide-y divide-slate-100">
-            {sosList.map((item) => (
-              <li
-                key={item.id}
-                className="flex items-center justify-between p-4 gap-4"
-              >
-                <div>
-                  <p className="font-medium flex items-center gap-2">
-                    {item.name}
-                    {item.tag ? (
-                      <span className="text-xs rounded-full bg-slate-100 px-2 py-0.5 uppercase tracking-wide">
-                        {item.tag}
-                      </span>
-                    ) : null}
-                  </p>
+        {/* filters */}
+        <div className="flex gap-2 text-xs">
+          {(["all", "new", "in-progress", "resolved"] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              className={[
+                "px-3 py-1 rounded-full border",
+                filter === f
+                  ? "bg-pink-600 text-white border-pink-600"
+                  : "bg-white text-slate-600 border-slate-200",
+              ].join(" ")}
+            >
+              {f === "all" ? "All" : statusLabels[f]}
+            </button>
+          ))}
+        </div>
 
-                  {item.description ? (
-                    <p className="text-xs text-slate-400">{item.description}</p>
-                  ) : null}
+        <section className="bg-white rounded-xl shadow-sm border border-slate-200 divide-y divide-slate-100">
+          {loading && (
+            <p className="p-4 text-sm text-slate-500">Loading SOS events…</p>
+          )}
 
-                  {item.distance ? (
-                    <p className="text-xs text-slate-400 mt-1">
-                      {item.distance}
-                    </p>
-                  ) : null}
+          {!loading && visible.length === 0 && !error && (
+            <p className="p-4 text-sm text-slate-500">
+              No SOS events yet. When a user sends an SOS from the app, it will
+              appear here instantly.
+            </p>
+          )}
+
+          {error && (
+            <p className="p-4 text-sm text-red-500 font-medium">{error}</p>
+          )}
+
+          {visible.map((item) => (
+            <div
+              key={item.id}
+              className="p-4 flex items-start justify-between gap-4"
+            >
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold">
+                    {item.type.toUpperCase()}
+                  </span>
+                  <span
+                    className={`text-[11px] px-2 py-0.5 rounded-full ${statusColors[item.status]}`}
+                  >
+                    {statusLabels[item.status]}
+                  </span>
                 </div>
 
-                <div className="text-right">
-                  {item.phone ? (
+                <p className="text-sm text-slate-800 whitespace-pre-wrap break-words">
+                  {item.message}
+                </p>
+
+                <p className="text-[11px] text-slate-400">
+                  {new Date(item.createdAt).toLocaleString()}
+                  {item.source ? ` • Source: ${item.source}` : null}
+                </p>
+
+                {item.location && (
+                  <p className="text-[11px] text-slate-500">
+                    Location: {item.location}
+                  </p>
+                )}
+
+                {item.phone && (
+                  <p className="text-[11px] text-slate-500">
+                    Caller phone:{" "}
                     <a
                       href={`tel:${item.phone}`}
-                      className="inline-flex items-center justify-center rounded-md bg-pink-500 text-white text-sm px-3 py-1.5"
+                      className="text-pink-600 underline"
                     >
-                      Call {item.phone}
+                      {item.phone}
                     </a>
-                  ) : (
-                    <span className="text-xs text-slate-300">no phone</span>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-col items-end gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => changeStatus(item.id, "in-progress")}
+                  className="px-3 py-1 rounded-full border border-amber-500 text-amber-700 hover:bg-amber-50"
+                >
+                  Mark in progress
+                </button>
+                <button
+                  type="button"
+                  onClick={() => changeStatus(item.id, "resolved")}
+                  className="px-3 py-1 rounded-full border border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+                >
+                  Resolve
+                </button>
+              </div>
+            </div>
+          ))}
         </section>
       </div>
     </main>
