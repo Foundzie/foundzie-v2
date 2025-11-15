@@ -1,12 +1,14 @@
 // src/app/api/chat/provider.ts
-import type { ChatMessage, ChatSender } from "@/app/data/chat";
-import { initialMessages } from "@/app/data/chat";
+import type { ChatMessage, ChatSender } from "../../data/chat";
+import { initialMessages } from "../../data/chat";
 
 let messages: ChatMessage[] = [...initialMessages];
 
 export type NewMessageInput = {
   sender: ChatSender;
   text: string;
+  attachmentName?: string | null;
+  attachmentKind?: "image" | "file" | null;
 };
 
 export const chatProvider = {
@@ -20,7 +22,10 @@ export const chatProvider = {
       sender: input.sender,
       text: input.text,
       createdAt: new Date().toISOString(),
+      attachmentName: input.attachmentName ?? null,
+      attachmentKind: input.attachmentKind ?? null,
     };
+
     messages = [...messages, msg];
     return msg;
   },

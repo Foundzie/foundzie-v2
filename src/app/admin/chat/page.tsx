@@ -11,34 +11,32 @@ export default function AdminChatPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // ----- shared loader (initial + polling) -----
+  // shared loader (initial + polling)
   const loadMessages = async () => {
     try {
       if (messages.length === 0) setLoading(true);
-
-      const res = await fetch(`/api/chat?ts=${Date.now()}`, {
+      const res = await fetch(`/api/chat?t=${Date.now()}`, {
         cache: "no-store",
       });
-      const data = await res.json().catch(() => ({} as any));
-
+      const data = await res.json().catch(() => ({}));
       if (Array.isArray(data.items)) {
         setMessages(data.items as ChatMessage[]);
       }
     } catch (err) {
-      console.error("Failed to load chat messages (admin)", err);
+      console.error("Failed to load chat messages (admin):", err);
       setError("Could not load chat history.");
     } finally {
       setLoading(false);
     }
   };
 
-  // Initial load
+  // initial load
   useEffect(() => {
     loadMessages();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Poll every 5 seconds
+  // poll every 5 seconds
   useEffect(() => {
     const id = setInterval(() => {
       loadMessages();
@@ -48,7 +46,7 @@ export default function AdminChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ----- send reply from admin (concierge) -----
+  // send reply from admin (concierge)
   async function handleSend(e: FormEvent) {
     e.preventDefault();
     const text = input.trim();
@@ -63,6 +61,8 @@ export default function AdminChatPage() {
       sender: "concierge",
       text,
       createdAt: new Date().toISOString(),
+      attachmentName: null,
+      attachmentKind: null,
     };
 
     // optimistic add
@@ -78,22 +78,22 @@ export default function AdminChatPage() {
 
       const data = await res.json().catch(() => ({} as any));
       if (!res.ok || !data.ok) {
-        throw new Error(data.message || "Send failed");
+        throw new Error(data.message || "Admin send failed");
       }
 
       // replace temp with real saved message
       setMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId);
         const final: ChatMessage[] = [...withoutTemp];
-
         if (data.item) {
           final.push(data.item as ChatMessage);
         }
         return final;
       });
     } catch (err) {
-      console.error("Admin chat send error", err);
+      console.error("Admin chat send error:", err);
       setError("Could not send reply. Please try again.");
+
       // rollback optimistic
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setInput(text);
@@ -112,10 +112,12 @@ export default function AdminChatPage() {
         }}
       >
         <header style={{ marginBottom: "16px" }}>
-          <h1 style={{ fontSize: "20px", fontWeight: 600 }}>Chat inbox</h1>
+          <h1 style={{ fontSize: "20px", fontWeight: 600 }}>
+            Chat inbox
+          </h1>
           <p style={{ fontSize: "12px", color: "#64748b" }}>
-            Read recent conversations coming from the mobile chat. Replies you
-            send here will appear in the user&apos;s chat.
+            Read recent conversations coming from the mobile chat. Replies
+            you send here will appear in the user's chat.
           </p>
         </header>
 
@@ -130,13 +132,19 @@ export default function AdminChatPage() {
             flexDirection: "column",
           }}
         >
-          <div style={{ marginBottom: "8px", fontSize: "12px", color: "#94a3b8" }}>
-            {/* simple static filter labels for now */}
+          {/* filter row (static text for now) */}
+          <div
+            style={{
+              marginBottom: "8px",
+              fontSize: "12px",
+              color: "#94a3b8",
+            }}
+          >
             <span>Filter&nbsp;</span>
             <span
               style={{
                 padding: "2px 8px",
-                borderRadius: "999px",
+                borderRadius: "9999px",
                 background: "#f97316",
                 color: "white",
                 fontWeight: 500,
@@ -145,8 +153,12 @@ export default function AdminChatPage() {
             >
               All
             </span>
-            <span style={{ marginLeft: "8px", fontSize: "11px" }}>Visitors</span>
-            <span style={{ marginLeft: "8px", fontSize: "11px" }}>Concierge</span>
+            <span style={{ marginLeft: "8px", fontSize: "11px" }}>
+              Visitors
+            </span>
+            <span style={{ marginLeft: "8px", fontSize: "11px" }}>
+              Concierge
+            </span>
           </div>
 
           {/* messages */}
@@ -162,20 +174,19 @@ export default function AdminChatPage() {
           >
             {loading && (
               <p style={{ fontSize: "12px", color: "#94a3b8" }}>
-                Loading conversation…
+                Loading conversation...
               </p>
             )}
 
             {!loading && messages.length === 0 && (
               <p style={{ fontSize: "12px", color: "#94a3b8" }}>
-                No chat messages yet. When users send messages from the mobile
-                app, they will appear here.
+                No chat messages yet. When users send messages from the
+                mobile app, they will appear here.
               </p>
             )}
 
             {messages.map((msg) => {
               const isUser = msg.sender === "user";
-
               return (
                 <div
                   key={msg.id}
@@ -200,14 +211,34 @@ export default function AdminChatPage() {
                         textTransform: "uppercase",
                         letterSpacing: "0.06em",
                         marginBottom: "2px",
-                        color: isUser ? "#64748b" : "#f9eaff",
+                        color: isUser ? "#64748b" : "#e9d5ff",
                       }}
                     >
                       {isUser ? "User" : "Concierge"}
                     </div>
-                    <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                      {msg.text}
+
+                    {/* attachment chip */}
+                    {msg.attachmentName && (
+                      <div
+                        style={{
+                          fontSize: "10px",
+                          marginBottom: "2px",
+                          opacity: 0.85,
+                        }}
+                      >
+                        📎 {msg.attachmentName}
+                      </div>
+                    )}
+
+                    <div
+                      style={{
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {msg.text || (msg.attachmentName ? "(attachment)" : "")}
                     </div>
+
                     <div
                       style={{
                         fontSize: "10px",
@@ -231,10 +262,9 @@ export default function AdminChatPage() {
           {error && (
             <p
               style={{
-                marginTop: "4px",
-                marginBottom: "4px",
                 fontSize: "11px",
                 color: "#ef4444",
+                marginTop: "4px",
               }}
             >
               {error}
@@ -254,10 +284,10 @@ export default function AdminChatPage() {
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Type a reply to the visitor…"
+              placeholder="Type a reply to the visitor..."
               style={{
                 flex: 1,
-                borderRadius: "999px",
+                borderRadius: "9999px",
                 border: "1px solid #cbd5f5",
                 padding: "8px 12px",
                 fontSize: "12px",
@@ -268,7 +298,7 @@ export default function AdminChatPage() {
               type="submit"
               disabled={sending || !input.trim()}
               style={{
-                borderRadius: "999px",
+                borderRadius: "9999px",
                 padding: "8px 14px",
                 fontSize: "12px",
                 fontWeight: 500,
@@ -279,7 +309,7 @@ export default function AdminChatPage() {
                   sending || !input.trim() ? "not-allowed" : "pointer",
               }}
             >
-              {sending ? "Sending…" : "Send"}
+              {sending ? "Sending..." : "Send"}
             </button>
           </form>
         </section>
