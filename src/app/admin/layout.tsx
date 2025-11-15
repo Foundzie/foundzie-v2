@@ -1,16 +1,22 @@
+// src/app/admin/layout.tsx
 import "../globals.css";
+import Link from "next/link";
 
 export const metadata = {
   title: "Foundzie Admin",
   description: "Control center for Foundzie global concierge system",
 };
 
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
+export default function AdminLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <div
       style={{
         minHeight: "100vh",
-        background: "#f3f4f6", // light grey background
+        background: "#faf4f6", // light grey background
         color: "#111827", // darker text for visibility
       }}
     >
@@ -28,9 +34,44 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           zIndex: 100,
         }}
       >
-        <div style={{ fontWeight: 700, color: "#4f46e5", fontSize: "18px" }}>
-          Foundzie Admin
+        {/* Left side: title + simple nav */}
+        <div>
+          <div
+            style={{
+              fontWeight: 700,
+              color: "#f44e65",
+              fontSize: "18px",
+            }}
+          >
+            Foundzie Admin
+          </div>
+          <nav
+            style={{
+              display: "flex",
+              gap: "10px",
+              marginTop: "4px",
+              fontSize: "13px",
+            }}
+          >
+            <Link href="/admin" style={{ color: "#6b7280" }}>
+              Dashboard
+            </Link>
+            <span style={{ color: "#9ca3af" }}>•</span>
+            <Link href="/admin/users" style={{ color: "#6b7280" }}>
+              Users
+            </Link>
+            <span style={{ color: "#9ca3af" }}>•</span>
+            <Link href="/admin/notifications" style={{ color: "#6b7280" }}>
+              Notifications
+            </Link>
+            <span style={{ color: "#9ca3af" }}>•</span>
+            <Link href="/admin/chat" style={{ color: "#f44e65", fontWeight: 600 }}>
+              Chat
+            </Link>
+          </nav>
         </div>
+
+        {/* Right side: fake admin avatar */}
         <div
           style={{
             display: "flex",
@@ -42,7 +83,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         >
           <span>Admin</span>
           <img
-            src="https://ui-avatars.com/api/?name=Admin&background=4f46e5&color=fff"
+            src="https://ui-avatars.com/api/?name=Admin&background=f44e65&color=fff"
             alt="Admin Avatar"
             style={{ width: "32px", height: "32px", borderRadius: "50%" }}
           />

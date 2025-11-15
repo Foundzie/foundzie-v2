@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useState, FormEvent } from "react";
-import type { ChatMessage } from "@/app/data/chat";
+import type { ChatMessage } from "../../data/chat";
 
 export default function MobileChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
