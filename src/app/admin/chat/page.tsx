@@ -1,21 +1,37 @@
 // src/app/admin/chat/page.tsx
-
 "use client";
 
-// src/app/admin/chat/page.tsx
 import { useEffect, useState, FormEvent } from "react";
-import type { ChatMessage } from "@/app/data/chat";
+import type { ChatMessage } from "../../data/chat";
+import mockUsers from "../../data/users";
 
-type ChatRoomSummary = {
+type ConversationUser = {
   id: string;
-  lastMessage?: ChatMessage;
-  lastAt?: string;
-  lastSender?: "user" | "concierge";
+  name: string;
+  roomId: string;
+  subtitle?: string;
 };
 
+function buildConversations(): ConversationUser[] {
+  return mockUsers.map((u) => ({
+    id: u.id,
+    name: u.name,
+    roomId: u.roomId,
+    subtitle: u.interest || u.source || "",
+  }));
+}
+
 export default function AdminChatPage() {
-  const [rooms, setRooms] = useState<ChatRoomSummary[]>([]);
-  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const conversations = buildConversations();
+
+  // pick first user as default
+  const initialRoomId =
+    conversations[0]?.roomId !== undefined ? conversations[0].roomId : "default";
+
+  const [selectedRoomId, setSelectedRoomId] = useState<string>(initialRoomId);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(
+    conversations[0]?.id ?? null,
+  );
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -23,84 +39,52 @@ export default function AdminChatPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // ---- load rooms ----
-  const loadRooms = async () => {
-    try {
-      const res = await fetch(`/api/chat?t=${Date.now()}`, {
-        cache: "no-store",
-      });
-      const data = await res.json().catch(() => ({} as any));
-      if (Array.isArray(data.rooms)) {
-        setRooms(data.rooms as ChatRoomSummary[]);
+  // Load messages for the selected room
+  useEffect(() => {
+    let cancelled = false;
 
-        if (!activeRoomId && data.rooms.length > 0) {
-          setActiveRoomId(data.rooms[0].id as string);
+    async function load() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const res = await fetch(`/api/chat/${selectedRoomId}?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        const data = await res.json().catch(() => ({} as any));
+
+        if (!res.ok) {
+          throw new Error((data && data.message) || "Failed to load messages");
+        }
+
+        if (!cancelled && Array.isArray(data.items)) {
+          setMessages(data.items as ChatMessage[]);
+        }
+      } catch (err) {
+        console.error("Failed to load chat messages (admin):", err);
+        if (!cancelled) {
+          setError("Could not load chat history.");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
         }
       }
-    } catch (err) {
-      console.error("Failed to load chat rooms:", err);
     }
-  };
 
-  // ---- load messages for current room ----
-  const loadMessages = async (roomId: string) => {
-    if (!roomId) return;
+    load();
 
-    try {
-      if (messages.length === 0) setLoading(true);
+    // Poll every 5 seconds
+    const id = setInterval(load, 5000);
 
-      const res = await fetch(`/api/chat/${roomId}?t=${Date.now()}`, {
-        cache: "no-store",
-      });
-      const data = await res.json().catch(() => ({} as any));
-      if (Array.isArray(data.items)) {
-        setMessages(data.items as ChatMessage[]);
-      }
-    } catch (err) {
-      console.error("Failed to load chat messages (admin):", err);
-      setError("Could not load chat history.");
-    } finally {
-      setLoading(false);
-    }
-  };
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [selectedRoomId]);
 
-  // Initial: load rooms
-  useEffect(() => {
-    loadRooms();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Whenever activeRoomId changes, load that room's messages
-  useEffect(() => {
-    if (activeRoomId) {
-      loadMessages(activeRoomId);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRoomId]);
-
-  // Poll every 5 seconds (rooms + messages for active room)
-  useEffect(() => {
-    const id = setInterval(() => {
-      loadRooms();
-      if (activeRoomId) {
-        loadMessages(activeRoomId);
-      }
-    }, 5000);
-
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRoomId]);
-
-  const activeRoomLabel = (id: string | null) =>
-    !id ? "No room selected" : id === "demo-visitor-1" ? "Demo visitor" : id;
-
-  // Admin sends reply
   async function handleSend(e: FormEvent) {
     e.preventDefault();
-
-    const roomId = activeRoomId;
-    if (!roomId) return;
-
     const text = input.trim();
     if (!text || sending) return;
 
@@ -108,7 +92,7 @@ export default function AdminChatPage() {
     setError(null);
 
     const tempId = `admin-temp-${Date.now()}`;
-    const adminMessage: ChatMessage = {
+    const tempMessage: ChatMessage = {
       id: tempId,
       sender: "concierge",
       text,
@@ -118,36 +102,31 @@ export default function AdminChatPage() {
     };
 
     // optimistic add
-    setMessages((prev) => [...prev, adminMessage]);
+    setMessages((prev) => [...prev, tempMessage]);
     setInput("");
 
     try {
-      const res = await fetch(`/api/chat/${roomId}`, {
+      const res = await fetch(`/api/chat/${selectedRoomId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, sender: "concierge" }),
       });
-      const data = await res.json().catch(() => ({} as any));
 
-      if (!res.ok || !data.ok) {
-        throw new Error(data.message || "Admin send failed");
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok || !data?.item) {
+        throw new Error(data?.message || "Admin send failed");
       }
 
-      // replace temp with real saved message
+      // replace temp with real message
       setMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId);
-        const final: ChatMessage[] = [...withoutTemp];
-
-        if (data.item) {
-          final.push(data.item as ChatMessage);
-        }
-        return final;
+        return [...withoutTemp, data.item as ChatMessage];
       });
     } catch (err) {
-      console.error("Admin chat send error", err);
+      console.error("Admin chat send error:", err);
       setError("Could not send reply. Please try again.");
 
-      // rollback optimistic
+      // rollback optimistic message
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setInput(text);
     } finally {
@@ -155,182 +134,166 @@ export default function AdminChatPage() {
     }
   }
 
+  const currentUser =
+    conversations.find((c) => c.id === selectedUserId) ??
+    conversations.find((c) => c.roomId === selectedRoomId) ??
+    conversations[0] ??
+    null;
+
   return (
     <main style={{ padding: "16px 0" }}>
       <div
         style={{
-          maxWidth: "1100px",
+          maxWidth: "960px",
           margin: "0 auto",
           padding: "0 16px",
           display: "flex",
           gap: "16px",
         }}
       >
-        {/* LEFT: room list */}
+        {/* LEFT: Conversation list */}
         <aside
           style={{
             width: "260px",
+            minHeight: "340px",
             borderRadius: "12px",
             border: "1px solid #e2e8f0",
+            background: "white",
+            padding: "12px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "8px",
+          }}
+        >
+          <h2
+            style={{
+              fontSize: "14px",
+              fontWeight: 600,
+              marginBottom: "4px",
+              color: "#1f2933",
+            }}
+          >
+            Conversations
+          </h2>
+
+          {conversations.length === 0 && (
+            <p style={{ fontSize: "12px", color: "#6b7280" }}>
+              No conversations yet. When users send messages from the mobile app,
+              they will appear here.
+            </p>
+          )}
+
+          {conversations.map((c) => {
+            const isActive = c.roomId === selectedRoomId;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => {
+                  setSelectedRoomId(c.roomId);
+                  setSelectedUserId(c.id);
+                }}
+                style={{
+                  textAlign: "left",
+                  borderRadius: "9999px",
+                  border: isActive ? "2px solid #f97316" : "1px solid #e5e7eb",
+                  padding: "6px 10px",
+                  background: isActive ? "#fef3c7" : "white",
+                  cursor: "pointer",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    color: "#111827",
+                  }}
+                >
+                  {c.name}
+                </div>
+                {c.subtitle && (
+                  <div
+                    style={{
+                      fontSize: "11px",
+                      color: "#6b7280",
+                      marginTop: "2px",
+                    }}
+                  >
+                    {c.subtitle}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </aside>
+
+        {/* RIGHT: Chat inbox */}
+        <section
+          style={{
+            flex: 1,
+            borderRadius: "12px",
+            border: "1px solid #e2e8f0",
+            background: "white",
             padding: "16px",
             minHeight: "340px",
             display: "flex",
             flexDirection: "column",
-            gap: "8px",
-            background: "#ffffff",
           }}
         >
-          <h2 style={{ fontSize: "16px", fontWeight: 600, marginBottom: "4px" }}>
-            Conversations
-          </h2>
-          <p style={{ fontSize: "11px", color: "#64748b", marginBottom: "8px" }}>
-            One room per visitor. Select a room to view and reply.
-          </p>
-
-          {rooms.length === 0 && (
-            <p style={{ fontSize: "12px", color: "#94a3b8" }}>
-              No conversations yet.
+          <header style={{ marginBottom: "8px" }}>
+            <h1 style={{ fontSize: "18px", fontWeight: 600 }}>
+              Chat inbox
+            </h1>
+            <p style={{ fontSize: "12px", color: "#6b7280" }}>
+              {currentUser
+                ? `Reading conversation for ${currentUser.name}. Replies you send here will appear in the user's chat.`
+                : "Select a conversation to view and reply."}
             </p>
-          )}
+          </header>
 
           <div
             style={{
+              flex: 1,
+              overflow: "auto",
               display: "flex",
               flexDirection: "column",
-              gap: "6px",
-              flex: 1,
-              overflowY: "auto",
+              gap: "8px",
+              padding: "8px 0",
             }}
           >
-            {rooms.map((room) => {
-              const isActive = room.id === activeRoomId;
-              const previewText =
-                room.lastMessage?.text ||
-                room.lastMessage?.attachmentName ||
-                "No messages yet";
+            {loading && (
+              <p style={{ fontSize: "12px", color: "#9ca3af" }}>
+                Loading conversation…
+              </p>
+            )}
 
+            {!loading && messages.length === 0 && (
+              <p style={{ fontSize: "12px", color: "#9ca3af" }}>
+                No chat messages yet for this user.
+              </p>
+            )}
+
+            {messages.map((msg) => {
+              const isUser = msg.sender === "user";
               return (
-                <button
-                  key={room.id}
-                  onClick={() => setActiveRoomId(room.id)}
+                <div
+                  key={msg.id}
                   style={{
-                    textAlign: "left",
-                    borderRadius: "8px",
-                    border: isActive ? "1px solid #a855f7" : "1px solid #e2e8f0",
-                    padding: "8px 10px",
-                    background: isActive ? "#f5f3ff" : "#ffffff",
-                    cursor: "pointer",
+                    display: "flex",
+                    justifyContent: isUser ? "flex-start" : "flex-end",
                   }}
                 >
                   <div
                     style={{
+                      maxWidth: "70%",
+                      borderRadius: "9999px",
+                      padding: "8px 12px",
                       fontSize: "12px",
-                      fontWeight: 600,
-                      marginBottom: "2px",
-                      color: "#0f172a",
+                      background: isUser ? "#e5e7eb" : "#9333ea",
+                      color: isUser ? "#111827" : "white",
                     }}
                   >
-                    {activeRoomLabel(room.id)}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "11px",
-                      color: "#64748b",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {previewText}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </aside>
-
-        {/* RIGHT: chat panel */}
-        <section style={{ flex: 1 }}>
-          <header style={{ marginBottom: "16px" }}>
-            <h1
-              style={{
-                fontSize: "20px",
-                fontWeight: 600,
-                color: "#0f172a",
-              }}
-            >
-              Chat inbox
-            </h1>
-            <p style={{ fontSize: "12px", color: "#64748b" }}>
-              Reading conversation for{" "}
-              <span style={{ fontWeight: 600 }}>
-                {activeRoomLabel(activeRoomId)}
-              </span>
-              . Replies you send here will appear in the user&apos;s chat.
-            </p>
-          </header>
-
-          <section
-            style={{
-              background: "white",
-              borderRadius: "12px",
-              border: "1px solid #e2e8f0",
-              padding: "16px",
-              minHeight: "340px",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            {/* messages list */}
-            <div
-              style={{
-                flex: 1,
-                overflow: "auto",
-                padding: "8px 0",
-                display: "flex",
-                flexDirection: "column",
-                gap: "8px",
-              }}
-            >
-              {loading && (
-                <p style={{ fontSize: "12px", color: "#94a3b8" }}>
-                  Loading conversation...
-                </p>
-              )}
-
-              {!loading && !activeRoomId && (
-                <p style={{ fontSize: "12px", color: "#94a3b8" }}>
-                  Select a room on the left to start chatting.
-                </p>
-              )}
-
-              {!loading && activeRoomId && messages.length === 0 && (
-                <p style={{ fontSize: "12px", color: "#94a3b8" }}>
-                  No chat messages yet for this room.
-                </p>
-              )}
-
-              {messages.map((msg) => {
-                const isUser = msg.sender === "user";
-
-                return (
-                  <div
-                    key={msg.id}
-                    style={{
-                      display: "flex",
-                      justifyContent: isUser ? "flex-start" : "flex-end",
-                    }}
-                  >
-                    <div
-                      style={{
-                        maxWidth: "70%",
-                        borderRadius: "999px",
-                        padding: "8px 12px",
-                        fontSize: "12px",
-                        background: isUser ? "#e2e8f0" : "#9333ea",
-                        color: isUser ? "#0f172a" : "white",
-                      }}
-                    >
+                    {!isUser && (
                       <div
                         style={{
                           fontSize: "10px",
@@ -340,115 +303,101 @@ export default function AdminChatPage() {
                           color: isUser ? "#64748b" : "#e9d5ff",
                         }}
                       >
-                        {isUser ? "User" : "Concierge"}
+                        Concierge
                       </div>
+                    )}
 
-                      {/* attachment chip */}
-                      {msg.attachmentName && (
-                        <div
-                          style={{
-                            fontSize: "10px",
-                            marginBottom: "2px",
-                            opacity: 0.85,
-                          }}
-                        >
-                          {msg.attachmentName}
-                        </div>
-                      )}
-
-                      <div
-                        style={{
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                        }}
-                      >
-                        {msg.text ||
-                          (msg.attachmentName ? "(attachment)" : "")}
-                      </div>
-
+                    {/* attachment chip */}
+                    {msg.attachmentName && (
                       <div
                         style={{
                           fontSize: "10px",
-                          marginTop: "2px",
-                          opacity: 0.8,
-                          textAlign: "right",
+                          marginBottom: "2px",
+                          opacity: 0.85,
                         }}
                       >
-                        {new Date(msg.createdAt).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
+                        {msg.attachmentName}
                       </div>
+                    )}
+
+                    <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                      {msg.text ||
+                        (msg.attachmentName ? "(attachment)" : "")}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "10px",
+                        marginTop: "2px",
+                        opacity: 0.8,
+                        textAlign: "right",
+                      }}
+                    >
+                      {new Date(msg.createdAt).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
                     </div>
                   </div>
-                );
-              })}
-            </div>
+                </div>
+              );
+            })}
 
-            {/* error */}
             {error && (
               <p
                 style={{
                   fontSize: "11px",
-                  color: "#ef4444",
+                  color: "#f87171",
                   marginTop: "4px",
                 }}
               >
                 {error}
               </p>
             )}
+          </div>
 
-            {/* reply box */}
-            <form onSubmit={handleSend} style={{ marginTop: "8px" }}>
-              <div
-                style={{
-                  display: "flex",
-                  gap: "8px",
-                  alignItems: "center",
-                }}
-              >
-                <input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  disabled={!activeRoomId}
-                  placeholder={
-                    activeRoomId
-                      ? "Type a reply to the visitor..."
-                      : "Select a room to reply..."
-                  }
-                  style={{
-                    flex: 1,
-                    borderRadius: "9999px",
-                    border: "1px solid #cbd5f5",
-                    padding: "8px 12px",
-                    fontSize: "12px",
-                    outline: "none",
-                  }}
-                />
-                <button
-                  type="submit"
-                  disabled={
-                    sending || !input.trim() || !activeRoomId
-                  }
-                  style={{
-                    borderRadius: "9999px",
-                    padding: "8px 14px",
-                    fontSize: "12px",
-                    fontWeight: 500,
-                    background: "#f97316",
-                    color: "white",
-                    opacity: sending || !input.trim() || !activeRoomId ? 0.6 : 1,
-                    cursor:
-                      sending || !input.trim() || !activeRoomId
-                        ? "not-allowed"
-                        : "pointer",
-                  }}
-                >
-                  {sending ? "Sending..." : "Send"}
-                </button>
-              </div>
-            </form>
-          </section>
+          {/* Reply box */}
+          <form
+            onSubmit={handleSend}
+            style={{
+              marginTop: "8px",
+              display: "flex",
+              gap: "8px",
+              alignItems: "center",
+            }}
+          >
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Type a reply to the visitor…"
+              style={{
+                flex: 1,
+                borderRadius: "9999px",
+                border: "1px solid #cbd5f5",
+                padding: "8px 12px",
+                fontSize: "12px",
+                outline: "none",
+              }}
+            />
+            <button
+              type="submit"
+              disabled={sending || !input.trim()}
+              style={{
+                borderRadius: "9999px",
+                padding: "8px 14px",
+                fontSize: "12px",
+                fontWeight: 500,
+                background: "#f97316",
+                color: "white",
+                opacity: sending || !input.trim() ? 0.6 : 1,
+                cursor:
+                  sending || !input.trim() ? "not-allowed" : "pointer",
+                border: "none",
+              }}
+            >
+              {sending ? "Sending…" : "Send"}
+            </button>
+          </form>
         </section>
       </div>
     </main>

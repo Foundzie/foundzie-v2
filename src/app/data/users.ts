@@ -1,15 +1,15 @@
 // src/app/data/users.ts
 
-// what statuses we allow everywhere
+// What statuses we allow everywhere
 export type AdminUserStatus = "active" | "invited" | "disabled" | "collected";
 
-// what roles we allow
+// What roles we allow
 export type AdminUserRole = "admin" | "editor" | "viewer";
 
-// concierge workflow status (Milestone C)
+// Concierge workflow status
 export type ConciergeStatus = "open" | "in-progress" | "done";
 
-// the shape every user will have
+// The shape every user will have
 export interface AdminUser {
   id: string;
   name: string;
@@ -18,7 +18,7 @@ export interface AdminUser {
   status: AdminUserStatus;
   joined: string;
 
-  // NEW: mobile + targeting fields
+  // NEW: mobile + targeting fields (same idea as before)
   interest?: string;
   source?: string;
   tags: string[];
@@ -26,9 +26,12 @@ export interface AdminUser {
   // NEW: concierge workflow
   conciergeStatus?: ConciergeStatus;
   conciergeNote?: string;
+
+  // NEW: one-to-one chat room id
+  roomId: string;
 }
 
-// your starter users
+// Your starter users
 export const mockUsers: AdminUser[] = [
   {
     id: "1",
@@ -37,7 +40,12 @@ export const mockUsers: AdminUser[] = [
     role: "admin",
     status: "active",
     joined: "Oct 2025",
-    tags: ["vip", "chicago", "high-spend"], // example tags
+    interest: "Nightlife in Chicago",
+    source: "mobile-concierge",
+    tags: ["vip", "chicago", "high-spend", "concierge-request"],
+    conciergeStatus: "open",
+    conciergeNote: "",
+    roomId: "user-1",
   },
   {
     id: "2",
@@ -46,16 +54,26 @@ export const mockUsers: AdminUser[] = [
     role: "editor",
     status: "active",
     joined: "Sep 2025",
-    tags: [],
+    interest: "Family activities in suburbs",
+    source: "mobile-concierge",
+    tags: ["family", "suburbs"],
+    conciergeStatus: "open",
+    conciergeNote: "",
+    roomId: "user-2",
   },
   {
     id: "3",
-    name: "Diego Martínez",
+    name: "Diego Martinez",
     email: "diego@example.com",
     role: "viewer",
     status: "invited",
     joined: "Sep 2025",
+    interest: "",
+    source: "web",
     tags: [],
+    conciergeStatus: "open",
+    conciergeNote: "",
+    roomId: "user-3",
   },
   {
     id: "4",
@@ -64,9 +82,14 @@ export const mockUsers: AdminUser[] = [
     role: "viewer",
     status: "active",
     joined: "Aug 2025",
+    interest: "",
+    source: "web",
     tags: [],
+    conciergeStatus: "open",
+    conciergeNote: "",
+    roomId: "user-4",
   },
 ];
 
-// export both ways
+// Export both ways
 export default mockUsers;
