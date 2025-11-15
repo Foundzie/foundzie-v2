@@ -1,19 +1,30 @@
 // src/app/api/chat/store.ts
+
+// src/app/api/chat/store.ts
 import type { ChatMessage } from "@/app/data/chat";
-import { chatProvider, type NewMessageInput } from "./provider";
+import {
+  chatProvider,
+  type NewMessageInput,
+  type ChatRoomSummary,
+} from "./provider";
 
-export type { ChatMessage };
+export type { ChatMessage, ChatRoomSummary };
 
-export async function listMessages(): Promise<ChatMessage[]> {
-  return chatProvider.list();
+export async function listMessages(roomId: string): Promise<ChatMessage[]> {
+  return chatProvider.list(roomId);
 }
 
 export async function addMessage(
-  input: NewMessageInput,
+  roomId: string,
+  input: NewMessageInput
 ): Promise<ChatMessage> {
-  return chatProvider.add(input);
+  return chatProvider.add(roomId, input);
 }
 
-export async function resetMessages(): Promise<void> {
-  return chatProvider.reset();
+export async function resetMessages(roomId?: string): Promise<void> {
+  return chatProvider.reset(roomId);
+}
+
+export async function listRooms(): Promise<ChatRoomSummary[]> {
+  return chatProvider.listRooms();
 }

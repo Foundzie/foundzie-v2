@@ -11,24 +11,26 @@ import { addMessage } from "../chat/store";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/sos  -> list all SOS events
+// GET /api/sos -> list all SOS events
 export async function GET() {
   const items = await listEvents();
   return NextResponse.json({ items });
 }
 
-// POST /api/sos  -> create a new SOS event from mobile
+// POST /api/sos -> create a new SOS event from mobile
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as any;
 
   const rawMessage =
     typeof body.message === "string" ? body.message.trim() : "";
-  const type = typeof body.type === "string" ? body.type : "general";
+  const type =
+    typeof body.type === "string" ? body.type.trim() : "general";
   const location =
     typeof body.location === "string" ? body.location.trim() : "";
-  const phone = typeof body.phone === "string" ? body.phone.trim() : "";
+  const phone =
+    typeof body.phone === "string" ? body.phone.trim() : "";
   const source =
-    typeof body.source === "string" ? body.source : "mobile-sos";
+    typeof body.source === "string" ? body.source.trim() : "mobile-sos";
 
   if (!rawMessage) {
     return NextResponse.json(
@@ -47,16 +49,20 @@ export async function POST(req: Request) {
   });
 
   // 2) also drop a system-style message into the chat history
-  const chatText = `🚨 SOS sent: "${rawMessage}". A concierge is being notified and will assist you.`;
-  await addMessage({
+  // For now we use a single default room id
+  const chatText = `⚠️ SOS sent: "${rawMessage}". A concierge is being notified and will assist you.`;
+
+  await addMessage("default", {
     sender: "concierge",
     text: chatText,
+    attachmentName: null,
+    attachmentKind: null,
   });
 
   return NextResponse.json({ ok: true, item: sos });
 }
 
-// PATCH /api/sos  -> update status of an SOS event
+// PATCH /api/sos -> update status of an SOS event
 export async function PATCH(req: Request) {
   const body = (await req.json().catch(() => ({}))) as any;
 
@@ -78,6 +84,7 @@ export async function PATCH(req: Request) {
   }
 
   const updated = await updateEvent(id, { status });
+
   if (!updated) {
     return NextResponse.json(
       { ok: false, message: "SOS event not found" },

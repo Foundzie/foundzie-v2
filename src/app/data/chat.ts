@@ -8,17 +8,17 @@ export interface ChatMessage {
   text: string;
   createdAt: string; // ISO string
 
-  // NEW – mock attachment support (metadata only, no real file storage yet)
+  // NEW: mock attachment support (metadata only, no real file storage yet)
   attachmentName?: string | null;
   attachmentKind?: "image" | "file" | null;
 }
 
-// Starter messages shown on first load
+// Starter messages shown on first load for any new room
 export const initialMessages: ChatMessage[] = [
   {
     id: "welcome-1",
     sender: "concierge",
-    text: "Hi, I'm Foundzie. Tell me what you need help with today.",
+    text: "Hi, I’m Foundzie. Tell me what you need help with today.",
     createdAt: new Date().toISOString(),
     attachmentName: null,
     attachmentKind: null,

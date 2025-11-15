@@ -1,8 +1,12 @@
 // src/app/mobile/chat/page.tsx
+
 "use client";
 
+// src/app/mobile/chat/page.tsx
 import { useEffect, useState, FormEvent } from "react";
-import type { ChatMessage } from "../../data/chat";
+import type { ChatMessage } from "@/app/data/chat";
+
+const ROOM_ID = "demo-visitor-1"; // later: replace with real user/session id
 
 export default function MobileChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -12,14 +16,17 @@ export default function MobileChatPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // shared loader (used by initial load + polling)
+  // Shared loader (initial + polling)
   const loadMessages = async () => {
     try {
       if (messages.length === 0) setLoading(true);
-      const res = await fetch(`/api/chat?t=${Date.now()}`, {
-        cache: "no-store",
-      });
-      const data = await res.json().catch(() => ({}));
+
+      const res = await fetch(
+        `/api/chat/${ROOM_ID}?t=${Date.now()}`,
+        { cache: "no-store" }
+      );
+      const data = await res.json().catch(() => ({} as any));
+
       if (Array.isArray(data.items)) {
         setMessages(data.items as ChatMessage[]);
       }
@@ -31,13 +38,13 @@ export default function MobileChatPage() {
     }
   };
 
-  // initial load
+  // Initial load
   useEffect(() => {
     loadMessages();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // poll every 5 seconds
+  // Poll every 5 seconds
   useEffect(() => {
     const id = setInterval(() => {
       loadMessages();
@@ -47,12 +54,11 @@ export default function MobileChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // send message (with optimistic UI)
+  // Send message (with optimistic UI)
   async function handleSend(e: FormEvent) {
     e.preventDefault();
-    const text = input.trim();
 
-    // must have either text or an attachment
+    const text = input.trim();
     if ((!text && !attachmentName) || sending) return;
 
     setSending(true);
@@ -62,10 +68,10 @@ export default function MobileChatPage() {
     const userMessage: ChatMessage = {
       id: tempId,
       sender: "user",
-      text,
+      text: text || "",
       createdAt: new Date().toISOString(),
-      attachmentName: attachmentName,
-      attachmentKind: attachmentName ? "image" : null,
+      attachmentName,
+      attachmentKind: attachmentName ? "image" : null, // mock
     };
 
     // optimistic add
@@ -76,10 +82,10 @@ export default function MobileChatPage() {
       const body: any = { text, sender: "user" as const };
       if (attachmentName) {
         body.attachmentName = attachmentName;
-        body.attachmentKind = "image"; // for now we treat as image/file mock
+        body.attachmentKind = "image"; // treat as image/file mock
       }
 
-      const res = await fetch("/api/chat", {
+      const res = await fetch(`/api/chat/${ROOM_ID}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -90,23 +96,25 @@ export default function MobileChatPage() {
         throw new Error(data.message || "Chat send failed");
       }
 
-      // replace temp with real + concierge reply (if any)
+      // Replace temp with real one + concierge reply (if any)
       setMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId);
         const final: ChatMessage[] = [...withoutTemp];
+
         if (data.item) {
           final.push(data.item as ChatMessage);
         }
         if (data.reply) {
           final.push(data.reply as ChatMessage);
         }
+
         return final;
       });
 
-      // clear attachment after successful send
+      // Clear attachment after successful send
       setAttachmentName(null);
     } catch (err) {
-      console.error("Chat send error:", err);
+      console.error("Chat send error", err);
       setError("Could not send message. Please try again.");
 
       // rollback optimistic message
@@ -140,6 +148,7 @@ export default function MobileChatPage() {
 
         {messages.map((msg) => {
           const isUser = msg.sender === "user";
+
           return (
             <div
               key={msg.id}
@@ -162,13 +171,14 @@ export default function MobileChatPage() {
                 {/* attachment chip, if any */}
                 {msg.attachmentName && (
                   <p className="text-[10px] mb-1 italic opacity-90">
-                    📎 {msg.attachmentName}
+                    {msg.attachmentName}
                   </p>
                 )}
 
                 <p className="whitespace-pre-wrap break-words">
                   {msg.text || (msg.attachmentName ? "(attachment)" : "")}
                 </p>
+
                 <p className="mt-1 text-[10px] text-slate-400 text-right">
                   {new Date(msg.createdAt).toLocaleTimeString([], {
                     hour: "2-digit",
@@ -189,12 +199,12 @@ export default function MobileChatPage() {
       )}
 
       {/* input + attach */}
-      <section className="border-t border-slate-800 p-3 space-y-1">
+      <section className="border-t border-slate-800 px-4 pb-3 space-y-1">
         {/* attachment preview chip */}
         {attachmentName && (
           <div className="flex items-center gap-2 text-[11px] text-slate-300 mb-1">
             <span className="px-2 py-[2px] rounded-full bg-slate-700">
-              📎 {attachmentName}
+              {attachmentName}
             </span>
             <button
               type="button"
@@ -206,12 +216,8 @@ export default function MobileChatPage() {
           </div>
         )}
 
-        <form
-          onSubmit={handleSend}
-          className="flex items-center gap-2"
-        >
-          {/* attach button */}
-          <div>
+        <form onSubmit={handleSend} className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <input
               id="mobile-chat-file"
               type="file"
@@ -227,7 +233,7 @@ export default function MobileChatPage() {
               htmlFor="mobile-chat-file"
               className="px-2 py-1 text-[11px] rounded-full border border-slate-700 cursor-pointer"
             >
-              📎 Attach
+              Attach
             </label>
           </div>
 
