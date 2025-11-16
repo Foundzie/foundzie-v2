@@ -40,10 +40,30 @@ export default function AdminChatPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // --- NEW: visitor profile state ---
+  // --- Visitor profile state (live user from API) ---
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
+
+  // draft fields you can edit in the sidebar
+  const [profileDraft, setProfileDraft] = useState<{
+    interest: string;
+    source: string;
+    tagsText: string; // comma-separated tags
+    conciergeStatus: string;
+    conciergeNote: string;
+  }>({
+    interest: "",
+    source: "",
+    tagsText: "",
+    conciergeStatus: "",
+    conciergeNote: "",
+  });
+
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileSaveMessage, setProfileSaveMessage] = useState<string | null>(
+    null
+  );
 
   /* --------------------- Load chat messages --------------------- */
   useEffect(() => {
@@ -91,6 +111,14 @@ export default function AdminChatPage() {
   useEffect(() => {
     if (!selectedUserId) {
       setSelectedUser(null);
+      setProfileDraft({
+        interest: "",
+        source: "",
+        tagsText: "",
+        conciergeStatus: "",
+        conciergeNote: "",
+      });
+      setProfileSaveMessage(null);
       return;
     }
 
@@ -100,6 +128,7 @@ export default function AdminChatPage() {
       try {
         setProfileLoading(true);
         setProfileError(null);
+        setProfileSaveMessage(null);
 
         const res = await fetch(`/api/users/${selectedUserId}`);
         const data = await res.json().catch(() => ({} as any));
@@ -109,7 +138,16 @@ export default function AdminChatPage() {
         }
 
         if (!cancelled) {
-          setSelectedUser(data.item as AdminUser);
+          const user = data.item as AdminUser;
+          setSelectedUser(user);
+          setProfileDraft({
+            interest: user.interest ?? "",
+            source: user.source ?? "",
+            tagsText: (user.tags ?? []).join(", "),
+              conciergeStatus: user.conciergeStatus ?? "open",
+
+            conciergeNote: user.conciergeNote ?? "",
+          });
         }
       } catch (err) {
         if (!cancelled) {
@@ -127,6 +165,61 @@ export default function AdminChatPage() {
       cancelled = true;
     };
   }, [selectedUserId]);
+
+  /* --------------------- Save visitor profile --------------------- */
+  async function handleProfileSave(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedUserId || !selectedUser || profileSaving) return;
+
+    setProfileSaving(true);
+    setProfileError(null);
+    setProfileSaveMessage(null);
+
+    const payload = {
+      interest: profileDraft.interest.trim(),
+      source: profileDraft.source.trim(),
+      conciergeStatus:
+        profileDraft.conciergeStatus || selectedUser.conciergeStatus,
+      conciergeNote: profileDraft.conciergeNote,
+      tags: profileDraft.tagsText
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean),
+    };
+
+    try {
+      const res = await fetch(`/api/users/${selectedUserId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({} as any));
+
+      if (!res.ok || !data.item) {
+        throw new Error((data && data.message) || "Profile update failed");
+      }
+
+      const updated = data.item as AdminUser;
+      setSelectedUser(updated);
+      setProfileDraft({
+        interest: updated.interest ?? "",
+        source: updated.source ?? "",
+        tagsText: (updated.tags ?? []).join(", "),
+          conciergeStatus: updated.conciergeStatus ?? "open",
+
+        conciergeNote: updated.conciergeNote ?? "",
+      });
+      setProfileSaveMessage("Profile saved.");
+    } catch (err) {
+      console.error("Failed to save visitor profile:", err);
+      setProfileError("Could not save visitor profile.");
+    } finally {
+      setProfileSaving(false);
+    }
+  }
 
   /* --------------------- Send reply --------------------- */
   async function handleSend(e: FormEvent) {
@@ -389,7 +482,8 @@ export default function AdminChatPage() {
                           wordBreak: "break-word",
                         }}
                       >
-                        {msg.text || (msg.attachmentName ? "(attachment)" : "")}
+                        {msg.text ||
+                          (msg.attachmentName ? "(attachment)" : "")}
                       </div>
 
                       <div
@@ -510,15 +604,17 @@ export default function AdminChatPage() {
             )}
 
             {selectedUser && (
-              <div
+              <form
+                onSubmit={handleProfileSave}
                 style={{
                   fontSize: "12px",
                   color: "#111827",
                   display: "flex",
                   flexDirection: "column",
-                  gap: "4px",
+                  gap: "6px",
                 }}
               >
+                {/* read-only basics */}
                 <div style={{ fontWeight: 600 }}>{selectedUser.name}</div>
                 <div style={{ color: "#6b7280" }}>
                   {selectedUser.email || "no-email@example.com"}
@@ -534,33 +630,161 @@ export default function AdminChatPage() {
                   <strong>Joined:</strong> {selectedUser.joined}
                 </div>
                 <div>
-                  <strong>Source:</strong>{" "}
-                  {selectedUser.source || "unknown"}
-                </div>
-                <div>
-                  <strong>Interest:</strong>{" "}
-                  {selectedUser.interest || "—"}
-                </div>
-                <div>
                   <strong>Room ID:</strong> {selectedUser.roomId}
                 </div>
 
-                <div>
-                  <strong>Tags:</strong>{" "}
-                  {selectedUser.tags && selectedUser.tags.length > 0
-                    ? selectedUser.tags.join(", ")
-                    : "none"}
-                </div>
+                {/* editable fields */}
+                <label style={{ marginTop: "4px" }}>
+                  <div style={{ fontWeight: 600 }}>Interest</div>
+                  <input
+                    value={profileDraft.interest}
+                    onChange={(e) =>
+                      setProfileDraft((d) => ({
+                        ...d,
+                        interest: e.target.value,
+                      }))
+                    }
+                    placeholder="e.g. Nightlife in Chicago"
+                    style={{
+                      width: "100%",
+                      borderRadius: "8px",
+                      border: "1px solid #e5e7eb",
+                      padding: "4px 6px",
+                      fontSize: "12px",
+                    }}
+                  />
+                </label>
 
-                <div style={{ marginTop: "4px" }}>
-                  <strong>Concierge status:</strong>{" "}
-                  {selectedUser.conciergeStatus}
-                </div>
-                <div>
-                  <strong>Concierge note:</strong>{" "}
-                  {selectedUser.conciergeNote || "—"}
-                </div>
-              </div>
+                <label>
+                  <div style={{ fontWeight: 600 }}>Source</div>
+                  <input
+                    value={profileDraft.source}
+                    onChange={(e) =>
+                      setProfileDraft((d) => ({
+                        ...d,
+                        source: e.target.value,
+                      }))
+                    }
+                    placeholder="e.g. mobile-concierge, web, ad campaign…"
+                    style={{
+                      width: "100%",
+                      borderRadius: "8px",
+                      border: "1px solid #e5e7eb",
+                      padding: "4px 6px",
+                      fontSize: "12px",
+                    }}
+                  />
+                </label>
+
+                <label>
+                  <div style={{ fontWeight: 600 }}>Tags</div>
+                  <input
+                    value={profileDraft.tagsText}
+                    onChange={(e) =>
+                      setProfileDraft((d) => ({
+                        ...d,
+                        tagsText: e.target.value,
+                      }))
+                    }
+                    placeholder="vip, chicago, nightlife"
+                    style={{
+                      width: "100%",
+                      borderRadius: "8px",
+                      border: "1px solid #e5e7eb",
+                      padding: "4px 6px",
+                      fontSize: "12px",
+                    }}
+                  />
+                  <div style={{ fontSize: "10px", color: "#9ca3af" }}>
+                    Comma-separated (no need to worry about spaces).
+                  </div>
+                </label>
+
+                <label>
+                  <div style={{ fontWeight: 600 }}>Concierge status</div>
+                  <select
+                    value={profileDraft.conciergeStatus}
+                    onChange={(e) =>
+                      setProfileDraft((d) => ({
+                        ...d,
+                        conciergeStatus: e.target.value,
+                      }))
+                    }
+                    style={{
+                      width: "100%",
+                      borderRadius: "8px",
+                      border: "1px solid #e5e7eb",
+                      padding: "4px 6px",
+                      fontSize: "12px",
+                      background: "white",
+                    }}
+                  >
+                    <option value="">Select status…</option>
+                    <option value="open">Open</option>
+                    <option value="in-progress">In progress</option>
+                    <option value="done">Done</option>
+                  </select>
+                </label>
+
+                <label>
+                  <div style={{ fontWeight: 600 }}>Concierge note</div>
+                  <textarea
+                    value={profileDraft.conciergeNote}
+                    onChange={(e) =>
+                      setProfileDraft((d) => ({
+                        ...d,
+                        conciergeNote: e.target.value,
+                      }))
+                    }
+                    rows={3}
+                    placeholder="Internal notes for this guest…"
+                    style={{
+                      width: "100%",
+                      borderRadius: "8px",
+                      border: "1px solid #e5e7eb",
+                      padding: "4px 6px",
+                      fontSize: "12px",
+                      resize: "vertical",
+                    }}
+                  />
+                </label>
+
+                {profileSaveMessage && (
+                  <div
+                    style={{ fontSize: "11px", color: "#16a34a", marginTop: 2 }}
+                  >
+                    {profileSaveMessage}
+                  </div>
+                )}
+
+                {profileError && (
+                  <div
+                    style={{ fontSize: "11px", color: "#f97316", marginTop: 2 }}
+                  >
+                    {profileError}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={profileSaving}
+                  style={{
+                    marginTop: "6px",
+                    alignSelf: "flex-start",
+                    borderRadius: "9999px",
+                    padding: "6px 12px",
+                    fontSize: "12px",
+                    fontWeight: 500,
+                    background: "#4f46e5",
+                    color: "white",
+                    opacity: profileSaving ? 0.6 : 1,
+                    cursor: profileSaving ? "not-allowed" : "pointer",
+                    border: "none",
+                  }}
+                >
+                  {profileSaving ? "Saving…" : "Save profile"}
+                </button>
+              </form>
             )}
           </aside>
         </section>
