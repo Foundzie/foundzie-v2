@@ -4,14 +4,17 @@
 import { useState } from "react";
 import Link from "next/link";
 
+type NotificationType = "system" | "offer" | "event" | "chat";
+
 export default function AdminNewNotificationPage() {
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState("");
-  const [type, setType] = useState<"system" | "offer" | "event" | "chat">(
-    "system"
-  );
+  const [type, setType] = useState<NotificationType>("system");
   const [actionLabel, setActionLabel] = useState("");
   const [actionHref, setActionHref] = useState("");
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [mediaKind, setMediaKind] =
+    useState<"image" | "gif" | "other" | "">("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -31,17 +34,20 @@ export default function AdminNewNotificationPage() {
         type,
         actionLabel,
         actionHref,
+        mediaUrl: mediaUrl || undefined,
+        mediaKind: mediaKind || undefined,
       }),
     });
 
     if (res.ok) {
       setSaved(true);
-      // optional: clear form
       setTitle("");
       setMessage("");
       setType("system");
       setActionLabel("");
       setActionHref("");
+      setMediaUrl("");
+      setMediaKind("");
     } else {
       alert("Could not save notification (mock API).");
     }
@@ -110,7 +116,7 @@ export default function AdminNewNotificationPage() {
             <select
               value={type}
               onChange={(e) =>
-                setType(e.target.value as "system" | "offer" | "event" | "chat")
+                setType(e.target.value as NotificationType)
               }
               className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
             >
@@ -144,6 +150,44 @@ export default function AdminNewNotificationPage() {
                 className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
                 placeholder="/mobile/explore"
               />
+            </div>
+          </div>
+
+          {/* NEW: media fields */}
+          <div className="grid grid-cols-1 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Media URL (optional)
+              </label>
+              <input
+                value={mediaUrl}
+                onChange={(e) => setMediaUrl(e.target.value)}
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+                placeholder="https://example.com/image.jpg"
+              />
+              <p className="text-[10px] text-gray-400 mt-1">
+                Image or GIF URL to show inside the alert details.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Media kind
+              </label>
+              <select
+                value={mediaKind}
+                onChange={(e) =>
+                  setMediaKind(
+                    e.target.value as "image" | "gif" | "other" | ""
+                  )
+                }
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+              >
+                <option value="">None</option>
+                <option value="image">Image</option>
+                <option value="gif">GIF</option>
+                <option value="other">Other</option>
+              </select>
             </div>
           </div>
 

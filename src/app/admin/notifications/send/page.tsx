@@ -1,3 +1,4 @@
+// src/app/admin/notifications/send/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -18,7 +19,6 @@ export default function AdminSendNotificationMock() {
     setLoading(true);
 
     try {
-      // send to the shared endpoint we just created
       const res = await fetch("/api/notifications", {
         method: "POST",
         headers: {
@@ -27,10 +27,11 @@ export default function AdminSendNotificationMock() {
         body: JSON.stringify({
           title,
           message,
-          // pick a type based on audience, just like before
           type: audience === "segment" ? "offer" : "system",
           time: "just now",
           unread: true,
+          actionLabel: "View",
+          actionHref: "/mobile/explore",
         }),
       });
 

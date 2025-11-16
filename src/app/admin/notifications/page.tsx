@@ -12,9 +12,11 @@ interface AppNotification {
   title: string;
   message: string;
   time: string;
-  unread: boolean;
+  unread?: boolean;
   actionLabel?: string;
   actionHref?: string;
+  mediaUrl?: string;
+  mediaKind?: "image" | "gif" | "other";
 }
 
 export default function AdminNotificationsPage() {
@@ -74,32 +76,39 @@ export default function AdminNotificationsPage() {
             ) : (
               items.map((n) => (
                 <li
-                    key={n.id}
-                    className="flex items-center justify-between px-4 py-3"
-                  >
-                    <div>
-                      <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
-                        {n.title}
-                        <span className="text-[10px] uppercase tracking-wide bg-gray-100 text-gray-600 px-2 py-[2px] rounded">
-                          {n.type}
+                  key={n.id}
+                  className={`flex items-center justify-between px-4 py-3 ${
+                    n.unread ? "bg-purple-50" : ""
+                  }`}
+                >
+                  <div>
+                    <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                      {n.title}
+                      <span className="text-[10px] uppercase tracking-wide bg-gray-100 text-gray-600 px-2 py-[2px] rounded">
+                        {n.type}
+                      </span>
+                      {n.unread && (
+                        <span className="text-[10px] text-purple-600 font-semibold">
+                          • unread
                         </span>
-                      </p>
-                      <p className="text-xs text-gray-500">{n.message}</p>
-                      <p className="text-[10px] text-gray-400 mt-1">
-                        {n.time} · {n.unread ? "unread" : "read"}
-                      </p>
-                    </div>
+                      )}
+                    </p>
+                    <p className="text-xs text-gray-500">{n.message}</p>
+                    <p className="text-[10px] text-gray-400 mt-1">
+                      {n.time}
+                    </p>
+                  </div>
 
-                    <div className="flex items-center gap-3">
-                      <Link
-                        href={`/admin/notifications/${n.id}`}
-                        className="text-xs text-purple-600 hover:underline"
-                      >
-                        Edit
-                      </Link>
-                    </div>
-                  </li>
-                ))
+                  <div className="flex items-center gap-3">
+                    <Link
+                      href={`/admin/notifications/${n.id}`}
+                      className="text-xs text-purple-600 hover:underline"
+                    >
+                      Edit
+                    </Link>
+                  </div>
+                </li>
+              ))
             )}
           </ul>
         </div>

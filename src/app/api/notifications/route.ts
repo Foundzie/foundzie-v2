@@ -16,15 +16,30 @@ export async function POST(req: Request) {
   if (data.id) {
     const idx = mockNotifications.findIndex((n) => n.id === data.id);
     if (idx !== -1) {
+      const existing = mockNotifications[idx];
+
       mockNotifications[idx] = {
-        ...mockNotifications[idx],
-        title: data.title ?? mockNotifications[idx].title,
-        message: data.message ?? mockNotifications[idx].message,
-        type: data.type ?? mockNotifications[idx].type,
-        actionLabel: data.actionLabel ?? mockNotifications[idx].actionLabel,
-        actionHref: data.actionHref ?? mockNotifications[idx].actionHref,
+        ...existing,
+        title: data.title ?? existing.title,
+        message: data.message ?? existing.message,
+        type: data.type ?? existing.type,
+        actionLabel:
+          data.actionLabel !== undefined
+            ? data.actionLabel
+            : existing.actionLabel,
+        actionHref:
+          data.actionHref !== undefined
+            ? data.actionHref
+            : existing.actionHref,
+        mediaUrl:
+          data.mediaUrl !== undefined ? data.mediaUrl : existing.mediaUrl,
+        mediaKind:
+          data.mediaKind !== undefined ? data.mediaKind : existing.mediaKind,
         time: now,
+        unread:
+          typeof data.unread === "boolean" ? data.unread : existing.unread,
       };
+
       return NextResponse.json({ ok: true, updated: true });
     }
   }
@@ -36,9 +51,11 @@ export async function POST(req: Request) {
     message: data.message ?? "",
     type: data.type ?? "system",
     time: now,
-    unread: true,
+    unread: typeof data.unread === "boolean" ? data.unread : true,
     actionLabel: data.actionLabel ?? "",
     actionHref: data.actionHref ?? "",
+    mediaUrl: data.mediaUrl ?? "",
+    mediaKind: data.mediaKind ?? null,
   };
 
   // put new stuff at the top, just like your send form does
