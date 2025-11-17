@@ -62,12 +62,19 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true, item: sos });
 }
 
-// PATCH /api/sos -> update status of an SOS event
+// PATCH /api/sos -> update status of an SOS event (+ optional note)
 export async function PATCH(req: Request) {
   const body = (await req.json().catch(() => ({}))) as any;
 
   const id = typeof body.id === "string" ? body.id : "";
   const status = body.status as SosStatus | undefined;
+
+  const note =
+    typeof body.note === "string" ? body.note.trim() : "";
+  const by =
+    typeof body.by === "string" && body.by.trim()
+      ? body.by.trim()
+      : "Admin";
 
   if (!id) {
     return NextResponse.json(
@@ -83,7 +90,18 @@ export async function PATCH(req: Request) {
     );
   }
 
-  const updated = await updateEvent(id, { status });
+  const patch: {
+    status: SosStatus;
+    newActionText?: string;
+    newActionBy?: string;
+  } = { status };
+
+  if (note) {
+    patch.newActionText = note;
+    patch.newActionBy = by;
+  }
+
+  const updated = await updateEvent(id, patch);
 
   if (!updated) {
     return NextResponse.json(

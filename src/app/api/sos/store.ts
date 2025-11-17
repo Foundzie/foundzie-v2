@@ -2,15 +2,25 @@
 
 export type SosStatus = "new" | "in-progress" | "resolved";
 
+export interface SosAction {
+  id: string;
+  at: string; // ISO timestamp
+  text: string;
+  by?: string | null;
+}
+
 export interface SosEvent {
   id: string;
-  type: string;          // "police" | "medical" | "fire" | "general" | etc.
+  type: string; // "police" | "medical" | "fire" | "general" | etc.
   message: string;
   status: SosStatus;
-  createdAt: string;     // ISO string
+  createdAt: string; // ISO string
   location?: string | null;
   source?: string | null;
   phone?: string | null;
+
+  // New: action log (admin notes)
+  actions: SosAction[];
 }
 
 // simple in-memory list (reset on server restart)
@@ -37,19 +47,43 @@ export async function addEvent(input: {
     location: input.location ?? null,
     source: input.source ?? "mobile-sos",
     phone: input.phone ?? null,
+    actions: [], // start with empty action log
   };
 
   events = [event, ...events];
   return event;
 }
 
+type UpdatePatch = {
+  status?: SosStatus;
+  newActionText?: string;
+  newActionBy?: string;
+};
+
 export async function updateEvent(
   id: string,
-  patch: Partial<Pick<SosEvent, "status">>
+  patch: UpdatePatch
 ): Promise<SosEvent | null> {
   const idx = events.findIndex((e) => e.id === id);
   if (idx === -1) return null;
 
-  events[idx] = { ...events[idx], ...patch };
-  return events[idx];
+  const current = events[idx];
+
+  const updated: SosEvent = {
+    ...current,
+    status: patch.status ?? current.status,
+    actions: [...(current.actions ?? [])],
+  };
+
+  if (patch.newActionText && patch.newActionText.trim()) {
+    updated.actions.push({
+      id: crypto.randomUUID(),
+      at: new Date().toISOString(),
+      text: patch.newActionText.trim(),
+      by: patch.newActionBy ?? null,
+    });
+  }
+
+  events[idx] = updated;
+  return updated;
 }

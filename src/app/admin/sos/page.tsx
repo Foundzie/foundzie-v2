@@ -6,6 +6,13 @@ import { useEffect, useState } from "react";
 
 type SosStatus = "new" | "in-progress" | "resolved";
 
+interface SosAction {
+  id: string;
+  at: string;
+  text: string;
+  by?: string | null;
+}
+
 interface SosEvent {
   id: string;
   type: string;
@@ -15,6 +22,7 @@ interface SosEvent {
   location?: string | null;
   source?: string | null;
   phone?: string | null;
+  actions?: SosAction[];
 }
 
 const statusLabels: Record<SosStatus, string> = {
@@ -58,17 +66,46 @@ export default function AdminSosPage() {
     return () => clearInterval(id);
   }, []);
 
-  async function changeStatus(id: string, status: SosStatus) {
-    // optimistic update
+  async function changeStatus(item: SosEvent, status: SosStatus) {
+    // Ask admin for an optional note
+    const note = window.prompt(
+      "Add a brief note about what you did (optional):",
+      ""
+    );
+
+    // Optimistic update
     setItems((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, status } : e))
+      prev.map((e) => {
+        if (e.id !== item.id) return e;
+
+        const actions = e.actions ? [...e.actions] : [];
+        if (note && note.trim()) {
+          actions.push({
+            id: "temp-" + Date.now().toString(),
+            at: new Date().toISOString(),
+            text: note.trim(),
+            by: "Admin",
+          });
+        }
+
+        return {
+          ...e,
+          status,
+          actions,
+        };
+      })
     );
 
     try {
       const res = await fetch("/api/sos", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, status }),
+        body: JSON.stringify({
+          id: item.id,
+          status,
+          note: note || "",
+          by: "Admin",
+        }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -142,69 +179,83 @@ export default function AdminSosPage() {
             <p className="p-4 text-sm text-red-500 font-medium">{error}</p>
           )}
 
-          {visible.map((item) => (
-            <div
-              key={item.id}
-              className="p-4 flex items-start justify-between gap-4"
-            >
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold">
-                    {item.type.toUpperCase()}
-                  </span>
-                  <span
-                    className={`text-[11px] px-2 py-0.5 rounded-full ${statusColors[item.status]}`}
-                  >
-                    {statusLabels[item.status]}
-                  </span>
+          {visible.map((item) => {
+            const actions = item.actions ?? [];
+            const lastAction =
+              actions.length > 0 ? actions[actions.length - 1] : null;
+
+            return (
+              <div
+                key={item.id}
+                className="p-4 flex items-start justify-between gap-4"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">
+                      {item.type.toUpperCase()}
+                    </span>
+                    <span
+                      className={`text-[11px] px-2 py-0.5 rounded-full ${statusColors[item.status]}`}
+                    >
+                      {statusLabels[item.status]}
+                    </span>
+                  </div>
+
+                  <p className="text-sm text-slate-800 whitespace-pre-wrap break-words">
+                    {item.message}
+                  </p>
+
+                  <p className="text-[11px] text-slate-400">
+                    {new Date(item.createdAt).toLocaleString()}
+                    {item.source ? ` • Source: ${item.source}` : null}
+                  </p>
+
+                  {item.location && (
+                    <p className="text-[11px] text-slate-500">
+                      Location: {item.location}
+                    </p>
+                  )}
+
+                  {item.phone && (
+                    <p className="text-[11px] text-slate-500">
+                      Caller phone:{" "}
+                      <a
+                        href={`tel:${item.phone}`}
+                        className="text-pink-600 underline"
+                      >
+                        {item.phone}
+                      </a>
+                    </p>
+                  )}
+
+                  {lastAction && (
+                    <p className="text-[11px] text-slate-500">
+                      <span className="font-semibold">Last note:</span>{" "}
+                      {lastAction.text}
+                      {lastAction.by ? ` — ${lastAction.by}` : ""}
+                    </p>
+                  )}
                 </div>
 
-                <p className="text-sm text-slate-800 whitespace-pre-wrap break-words">
-                  {item.message}
-                </p>
-
-                <p className="text-[11px] text-slate-400">
-                  {new Date(item.createdAt).toLocaleString()}
-                  {item.source ? ` • Source: ${item.source}` : null}
-                </p>
-
-                {item.location && (
-                  <p className="text-[11px] text-slate-500">
-                    Location: {item.location}
-                  </p>
-                )}
-
-                {item.phone && (
-                  <p className="text-[11px] text-slate-500">
-                    Caller phone:{" "}
-                    <a
-                      href={`tel:${item.phone}`}
-                      className="text-pink-600 underline"
-                    >
-                      {item.phone}
-                    </a>
-                  </p>
-                )}
+                <div className="flex flex-col items-end gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => changeStatus(item, "in-progress")}
+                    className="px-3 py-1 rounded-full border border-amber-500 text-amber-700 hover:bg-amber-50"
+                  >
+                    Mark in progress
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => changeStatus(item, "resolved")}
+                    className="px-3 py-1 rounded-full border border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+                  >
+                    Resolve
+                  </button>
+                </div>
               </div>
-
-              <div className="flex flex-col items-end gap-2 text-xs">
-                <button
-                  type="button"
-                  onClick={() => changeStatus(item.id, "in-progress")}
-                  className="px-3 py-1 rounded-full border border-amber-500 text-amber-700 hover:bg-amber-50"
-                >
-                  Mark in progress
-                </button>
-                <button
-                  type="button"
-                  onClick={() => changeStatus(item.id, "resolved")}
-                  className="px-3 py-1 rounded-full border border-emerald-600 text-emerald-700 hover:bg-emerald-50"
-                >
-                  Resolve
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </section>
       </div>
     </main>
