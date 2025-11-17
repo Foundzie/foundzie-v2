@@ -45,6 +45,7 @@ export default function AdminLayout({
           >
             Foundzie Admin
           </div>
+
           <nav
             style={{
               display: "flex",
@@ -57,15 +58,28 @@ export default function AdminLayout({
               Dashboard
             </Link>
             <span style={{ color: "#9ca3af" }}>•</span>
+
             <Link href="/admin/users" style={{ color: "#6b7280" }}>
               Users
             </Link>
             <span style={{ color: "#9ca3af" }}>•</span>
+
             <Link href="/admin/notifications" style={{ color: "#6b7280" }}>
               Notifications
             </Link>
             <span style={{ color: "#9ca3af" }}>•</span>
-            <Link href="/admin/chat" style={{ color: "#f44e65", fontWeight: 600 }}>
+
+            {/* NEW: SOS link */}
+            <Link href="/admin/sos" style={{ color: "#6b7280" }}>
+              SOS
+            </Link>
+            <span style={{ color: "#9ca3af" }}>•</span>
+
+            {/* Chat stays highlighted as you had it */}
+            <Link
+              href="/admin/chat"
+              style={{ color: "#f44e65", fontWeight: 600 }}
+            >
               Chat
             </Link>
           </nav>
