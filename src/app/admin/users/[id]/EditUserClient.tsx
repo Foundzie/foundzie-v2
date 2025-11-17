@@ -20,10 +20,33 @@ type AdminUser = {
   source?: string;
   tags: string[];
 
-  // NEW concierge workflow fields
   conciergeStatus?: ConciergeStatus;
   conciergeNote?: string;
+
+  roomId?: string;
 };
+
+type SosStatus = "new" | "in-progress" | "resolved";
+
+interface SosAction {
+  id: string;
+  at: string;
+  text: string;
+  by?: string | null;
+}
+
+interface SosEvent {
+  id: string;
+  type: string;
+  message: string;
+  status: SosStatus;
+  createdAt: string;
+  location?: string | null;
+  source?: string | null;
+  phone?: string | null;
+  userId?: string | null;
+  actions?: SosAction[];
+}
 
 const ROLES: AdminUserRole[] = ["admin", "editor", "viewer"];
 const STATUSES: AdminUserStatus[] = ["active", "invited", "disabled", "collected"];
@@ -36,9 +59,35 @@ export default function EditUserClient({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
+  // SOS history for this user
+  const [sosItems, setSosItems] = useState<SosEvent[]>([]);
+  const [sosLoading, setSosLoading] = useState(true);
+  const [sosError, setSosError] = useState<string | null>(null);
+
   // helper: update any field
   function updateField<K extends keyof AdminUser>(key: K, value: AdminUser[K]) {
     setUser((prev) => (prev ? { ...prev, [key]: value } : prev));
+  }
+
+  async function loadSosForUser(userId: string) {
+    try {
+      setSosLoading(true);
+      setSosError(null);
+
+      const url = `/api/sos?userId=${encodeURIComponent(userId)}`;
+      const res = await fetch(url, { cache: "no-store" });
+      const data = await res.json().catch(() => ({} as any));
+
+      if (res.ok && Array.isArray(data.items)) {
+        setSosItems(data.items as SosEvent[]);
+      } else {
+        setSosError(data?.message ?? "Failed to load SOS history");
+      }
+    } catch {
+      setSosError("Failed to load SOS history");
+    } finally {
+      setSosLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -61,6 +110,8 @@ export default function EditUserClient({ id }: { id: string }) {
 
         if (res.ok && data.ok && data.item) {
           setUser(data.item as AdminUser);
+          // Once user is loaded, fetch SOS events linked to this user
+          await loadSosForUser(cleanId);
         } else {
           setError(data?.message ?? "Failed to load user");
         }
@@ -123,7 +174,6 @@ export default function EditUserClient({ id }: { id: string }) {
         return;
       }
 
-      // back to users list
       window.location.href = "/admin/users";
     } catch {
       setError("Delete failed");
@@ -322,6 +372,84 @@ export default function EditUserClient({ id }: { id: string }) {
         </div>
 
         <p className="text-xs text-gray-400">Joined: {user.joined ?? "-"}</p>
+
+        {/* SOS history panel */}
+        <div className="mt-6 border-t border-gray-100 pt-4">
+          <h2 className="text-sm font-semibold text-gray-900 mb-2">
+            SOS history for this user
+          </h2>
+
+          {sosLoading && (
+            <p className="text-xs text-gray-400">Loading SOS history…</p>
+          )}
+
+          {sosError && (
+            <p className="text-xs text-red-500">{sosError}</p>
+          )}
+
+          {!sosLoading && !sosError && sosItems.length === 0 && (
+            <p className="text-xs text-gray-400">
+              No SOS events linked to this user yet.
+            </p>
+          )}
+
+          <div className="space-y-3">
+            {sosItems.map((ev) => {
+              const actions = ev.actions ?? [];
+              const lastAction =
+                actions.length > 0 ? actions[actions.length - 1] : null;
+
+              const badgeClass =
+                ev.status === "new"
+                  ? "bg-red-100 text-red-700"
+                  : ev.status === "in-progress"
+                  ? "bg-amber-100 text-amber-700"
+                  : "bg-emerald-100 text-emerald-700";
+
+              const statusLabel =
+                ev.status === "new"
+                  ? "New"
+                  : ev.status === "in-progress"
+                  ? "In progress"
+                  : "Resolved";
+
+              return (
+                <div
+                  key={ev.id}
+                  className="border border-gray-100 rounded-md px-3 py-2 bg-gray-50"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold text-gray-800">
+                      {ev.type.toUpperCase()}
+                    </span>
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded-full ${badgeClass}`}
+                    >
+                      {statusLabel}
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-gray-800 whitespace-pre-wrap break-words">
+                    {ev.message}
+                  </p>
+
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    {new Date(ev.createdAt).toLocaleString()}
+                    {ev.source ? ` • Source: ${ev.source}` : ""}
+                  </p>
+
+                  {lastAction && (
+                    <p className="text-[10px] text-gray-500 mt-1">
+                      <span className="font-semibold">Last note:</span>{" "}
+                      {lastAction.text}
+                      {lastAction.by ? ` — ${lastAction.by}` : ""}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
 
         <div className="flex items-center justify-between gap-4 pt-2">
           <button

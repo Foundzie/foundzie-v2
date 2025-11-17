@@ -11,10 +11,18 @@ import { addMessage } from "../chat/store";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/sos -> list all SOS events
-export async function GET() {
+// GET /api/sos -> list all SOS events (optionally filtered by userId)
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const userIdParam = url.searchParams.get("userId");
+  const userId = userIdParam ? userIdParam.trim() : "";
+
   const items = await listEvents();
-  return NextResponse.json({ items });
+  const filtered = userId
+    ? items.filter((e) => (e.userId ?? "") === userId)
+    : items;
+
+  return NextResponse.json({ items: filtered });
 }
 
 // POST /api/sos -> create a new SOS event from mobile
@@ -32,6 +40,11 @@ export async function POST(req: Request) {
   const source =
     typeof body.source === "string" ? body.source.trim() : "mobile-sos";
 
+  const userId =
+    typeof body.userId === "string" && body.userId.trim()
+      ? body.userId.trim()
+      : "";
+
   if (!rawMessage) {
     return NextResponse.json(
       { ok: false, message: "Missing SOS message" },
@@ -46,6 +59,7 @@ export async function POST(req: Request) {
     location,
     phone,
     source,
+    ...(userId ? { userId } : {}),
   });
 
   // 2) also drop a system-style message into the chat history
@@ -62,7 +76,7 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true, item: sos });
 }
 
-// PATCH /api/sos -> update status of an SOS event (+ optional note)
+// PATCH /api/sos -> update status of an SOS event (+ optional note + optional user link)
 export async function PATCH(req: Request) {
   const body = (await req.json().catch(() => ({}))) as any;
 
@@ -75,6 +89,11 @@ export async function PATCH(req: Request) {
     typeof body.by === "string" && body.by.trim()
       ? body.by.trim()
       : "Admin";
+
+  const userId =
+    typeof body.userId === "string" && body.userId.trim()
+      ? body.userId.trim()
+      : undefined;
 
   if (!id) {
     return NextResponse.json(
@@ -94,11 +113,16 @@ export async function PATCH(req: Request) {
     status: SosStatus;
     newActionText?: string;
     newActionBy?: string;
+    userId?: string | null;
   } = { status };
 
   if (note) {
     patch.newActionText = note;
     patch.newActionBy = by;
+  }
+
+  if (userId !== undefined) {
+    patch.userId = userId;
   }
 
   const updated = await updateEvent(id, patch);

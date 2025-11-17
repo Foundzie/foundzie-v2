@@ -22,6 +22,7 @@ interface SosEvent {
   location?: string | null;
   source?: string | null;
   phone?: string | null;
+  userId?: string | null;
   actions?: SosAction[];
 }
 
@@ -67,7 +68,6 @@ export default function AdminSosPage() {
   }, []);
 
   async function changeStatus(item: SosEvent, status: SosStatus) {
-    // Ask admin for an optional note
     const note = window.prompt(
       "Add a brief note about what you did (optional):",
       ""
@@ -105,6 +105,7 @@ export default function AdminSosPage() {
           status,
           note: note || "",
           by: "Admin",
+          // keep userId as-is on the server if already linked
         }),
       });
 
@@ -225,6 +226,20 @@ export default function AdminSosPage() {
                       >
                         {item.phone}
                       </a>
+                    </p>
+                  )}
+
+                  {item.userId && (
+                    <p className="text-[11px] text-slate-500">
+                      Linked user:{" "}
+                      <Link
+                        href={`/admin/users/${encodeURIComponent(
+                          item.userId
+                        )}`}
+                        className="text-pink-600 underline"
+                      >
+                        #{item.userId}
+                      </Link>
                     </p>
                   )}
 

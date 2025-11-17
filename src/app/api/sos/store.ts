@@ -19,7 +19,10 @@ export interface SosEvent {
   source?: string | null;
   phone?: string | null;
 
-  // New: action log (admin notes)
+  // Link to admin user (if known)
+  userId?: string | null;
+
+  // Action log (admin notes)
   actions: SosAction[];
 }
 
@@ -37,6 +40,7 @@ export async function addEvent(input: {
   location?: string;
   source?: string;
   phone?: string;
+  userId?: string;
 }): Promise<SosEvent> {
   const event: SosEvent = {
     id: crypto.randomUUID(),
@@ -47,6 +51,7 @@ export async function addEvent(input: {
     location: input.location ?? null,
     source: input.source ?? "mobile-sos",
     phone: input.phone ?? null,
+    userId: input.userId ?? null,
     actions: [], // start with empty action log
   };
 
@@ -58,6 +63,7 @@ type UpdatePatch = {
   status?: SosStatus;
   newActionText?: string;
   newActionBy?: string;
+  userId?: string | null;
 };
 
 export async function updateEvent(
@@ -74,6 +80,10 @@ export async function updateEvent(
     status: patch.status ?? current.status,
     actions: [...(current.actions ?? [])],
   };
+
+  if (patch.userId !== undefined) {
+    updated.userId = patch.userId;
+  }
 
   if (patch.newActionText && patch.newActionText.trim()) {
     updated.actions.push({
