@@ -1,0 +1,28 @@
+// src/app/api/agent/route.ts
+
+import { NextResponse } from "next/server";
+import {
+  FOUNDZIE_SYSTEM_PROMPT,
+  coreTools,
+} from "@/lib/agent/spec";
+import { toolImplementations } from "@/lib/agent/tools";
+
+export const dynamic = "force-dynamic";
+
+// POST /api/agent
+// For now, this is a stub so we can wire UI + backend
+// without breaking your build. Next step: add real OpenAI integration.
+export async function POST(req: Request) {
+  const body = await req.json().catch(() => ({}));
+
+  console.log("[agent] stub received:", body);
+
+  return NextResponse.json({
+    ok: true,
+    message:
+      "Foundzie agent backend stub is live. OpenAI integration will be wired in the next milestone.",
+    systemPromptPreview: FOUNDZIE_SYSTEM_PROMPT.slice(0, 200),
+    availableTools: Object.keys(coreTools),
+    implementedTools: Object.keys(toolImplementations),
+  });
+}
