@@ -1,4 +1,3 @@
-// src/app/admin/users/new/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -7,11 +6,12 @@ import { useState } from "react";
 export default function AdminNewUserPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [role, setRole] = useState<"admin" | "editor" | "viewer">("viewer");
   const [status, setStatus] = useState<"active" | "invited" | "disabled">(
     "active"
   );
-  const [tags, setTags] = useState(""); // NEW
+  const [tags, setTags] = useState("");
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -26,24 +26,33 @@ export default function AdminNewUserPage() {
         .map((t) => t.trim())
         .filter(Boolean);
 
+      const body: any = {
+        name,
+        email,
+        role,
+        status,
+      };
+
+      if (parsedTags.length) {
+        body.tags = parsedTags;
+      }
+      if (phone.trim()) {
+        body.phone = phone.trim();
+      }
+
       await fetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          email,
-          role,
-          status,
-          ...(parsedTags.length ? { tags: parsedTags } : {}),
-        }),
+        body: JSON.stringify(body),
       });
 
       setSaved(true);
       setName("");
       setEmail("");
+      setPhone("");
       setRole("viewer");
       setStatus("active");
-      setTags(""); // reset
+      setTags("");
     } catch (err) {
       console.error("Failed to create user", err);
     } finally {
@@ -87,6 +96,20 @@ export default function AdminNewUserPage() {
           />
         </div>
 
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Phone</label>
+          <input
+            type="tel"
+            className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="+1 (312) 555-0000"
+          />
+          <p className="text-[11px] text-gray-400 mt-1">
+            Optional. Used for concierge calls only.
+          </p>
+        </div>
+
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Role</label>
@@ -115,7 +138,6 @@ export default function AdminNewUserPage() {
           </div>
         </div>
 
-        {/* NEW: tags field */}
         <div>
           <label className="block text-xs text-gray-500 mb-1">
             Tags (comma separated)

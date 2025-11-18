@@ -1,4 +1,3 @@
-// src/app/admin/users/[id]/EditUserClient.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -24,6 +23,7 @@ type AdminUser = {
   conciergeNote?: string;
 
   roomId?: string;
+  phone?: string | null;
 };
 
 type SosStatus = "new" | "in-progress" | "resolved";
@@ -63,6 +63,10 @@ export default function EditUserClient({ id }: { id: string }) {
   const [sosItems, setSosItems] = useState<SosEvent[]>([]);
   const [sosLoading, setSosLoading] = useState(true);
   const [sosError, setSosError] = useState<string | null>(null);
+
+  // call button state
+  const [calling, setCalling] = useState(false);
+  const [callMsg, setCallMsg] = useState<string | null>(null);
 
   // helper: update any field
   function updateField<K extends keyof AdminUser>(key: K, value: AdminUser[K]) {
@@ -109,7 +113,12 @@ export default function EditUserClient({ id }: { id: string }) {
         const data = await res.json().catch(() => ({} as any));
 
         if (res.ok && data.ok && data.item) {
-          setUser(data.item as AdminUser);
+          const item = data.item as AdminUser;
+          // make sure tags is always an array
+          if (!Array.isArray(item.tags)) {
+            item.tags = [];
+          }
+          setUser(item);
           // Once user is loaded, fetch SOS events linked to this user
           await loadSosForUser(cleanId);
         } else {
@@ -144,7 +153,9 @@ export default function EditUserClient({ id }: { id: string }) {
       const data = await res.json().catch(() => ({} as any));
 
       if (res.ok && data.ok && data.item) {
-        setUser(data.item as AdminUser);
+        const item = data.item as AdminUser;
+        if (!Array.isArray(item.tags)) item.tags = [];
+        setUser(item);
         setSavedMsg("Saved!");
       } else {
         setError(data?.message ?? "Save failed");
@@ -178,6 +189,49 @@ export default function EditUserClient({ id }: { id: string }) {
     } catch {
       setError("Delete failed");
       setSaving(false);
+    }
+  }
+
+  async function handleCallUser() {
+    if (!user?.phone || user.phone.trim() === "") {
+      setCallMsg("Add a phone number first, then try calling.");
+      return;
+    }
+
+    try {
+      setCalling(true);
+      setCallMsg(null);
+
+      const note =
+        window.prompt("Add a brief note for this call (optional):") ?? "";
+
+      const res = await fetch("/api/calls/outbound", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: user.phone.trim(),
+          userId: user.id,
+          note: note.trim() || undefined,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({} as any));
+
+      if (!res.ok || !data.ok) {
+        setCallMsg(data?.message ?? "Call request failed");
+        return;
+      }
+
+      const callId = data.callId ?? data.callID ?? data.id;
+      setCallMsg(
+        callId
+          ? `Call request logged (id: ${String(callId)}).`
+          : "Call request logged."
+      );
+    } catch {
+      setCallMsg("Call request failed");
+    } finally {
+      setCalling(false);
     }
   }
 
@@ -223,6 +277,7 @@ export default function EditUserClient({ id }: { id: string }) {
 
       {error && <p className="text-sm text-red-600">{error}</p>}
       {savedMsg && <p className="text-sm text-green-600">{savedMsg}</p>}
+      {callMsg && <p className="text-xs text-blue-600">{callMsg}</p>}
 
       <div className="space-y-4 bg-white rounded-xl border border-gray-200 p-5">
         {/* basic info */}
@@ -244,6 +299,26 @@ export default function EditUserClient({ id }: { id: string }) {
             value={user.email}
             onChange={(e) => updateField("email", e.target.value)}
           />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">Phone</label>
+          <input
+            type="tel"
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
+            value={user.phone ?? ""}
+            onChange={(e) =>
+              updateField(
+                "phone",
+                e.target.value.trim() === "" ? null : e.target.value
+              )
+            }
+            placeholder="+1 (312) 555-0000"
+          />
+          <p className="text-[11px] text-gray-400 mt-1">
+            Used when Foundzie concierge calls this user.{" "}
+            <span className="font-medium">Users never call each other.</span>
+          </p>
         </div>
 
         <div className="flex gap-4">
@@ -293,9 +368,7 @@ export default function EditUserClient({ id }: { id: string }) {
               onChange={(e) =>
                 updateField(
                   "conciergeStatus",
-                  (e.target.value || undefined) as
-                    | ConciergeStatus
-                    | undefined
+                  (e.target.value || undefined) as ConciergeStatus | undefined
                 )
               }
               className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm bg-white"
@@ -452,14 +525,29 @@ export default function EditUserClient({ id }: { id: string }) {
         </div>
 
         <div className="flex items-center justify-between gap-4 pt-2">
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving}
-            className="inline-flex items-center justify-center rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-          >
-            {saving ? "Saving..." : "Save"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="inline-flex items-center justify-center rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+            >
+              {saving ? "Saving..." : "Save"}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleCallUser}
+              disabled={calling || !user.phone}
+              className="inline-flex items-center justify-center rounded-md border border-purple-300 px-3 py-2 text-xs font-medium text-purple-700 disabled:opacity-50"
+            >
+              {calling
+                ? "Calling..."
+                : user.phone
+                ? `Call ${user.phone}`
+                : "Add phone to call"}
+            </button>
+          </div>
 
           <button
             type="button"

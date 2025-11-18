@@ -1,4 +1,3 @@
-// src/app/admin/users/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -18,6 +17,7 @@ type AdminUser = {
   tags?: string[];
   conciergeStatus?: ConciergeStatus;
   conciergeNote?: string;
+  phone?: string | null;
 };
 
 type FilterTab = "all" | "collected" | "concierge";
@@ -143,7 +143,7 @@ export default function AdminUsersPage() {
         )}
 
         {shown.map((u) => {
-          const parsedPhone = parsePhoneFromInterest(u.interest);
+          const parsedPhone = u.phone ?? parsePhoneFromInterest(u.interest);
 
           return (
             <div
@@ -155,15 +155,15 @@ export default function AdminUsersPage() {
                 <p className="text-xs text-gray-400">{u.email}</p>
                 <p className="text-[11px] text-gray-400">Joined: {u.joined}</p>
 
-                {u.interest && (
-                  <p className="text-[11px] text-pink-500 mt-1">
-                    interest: {u.interest}
+                {parsedPhone && (
+                  <p className="text-[11px] text-emerald-600 mt-0.5">
+                    Phone: {parsedPhone}
                   </p>
                 )}
 
-                {parsedPhone && (
-                  <p className="text-[11px] text-emerald-600">
-                    Phone (parsed): {parsedPhone}
+                {u.interest && (
+                  <p className="text-[11px] text-pink-500 mt-1">
+                    interest: {u.interest}
                   </p>
                 )}
 
