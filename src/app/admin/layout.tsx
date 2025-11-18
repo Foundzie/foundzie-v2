@@ -69,13 +69,19 @@ export default function AdminLayout({
             </Link>
             <span style={{ color: "#9ca3af" }}>•</span>
 
-            {/* NEW: SOS link */}
+            {/* NEW: Calls nav item */}
+            <Link href="/admin/calls" style={{ color: "#6b7280" }}>
+              Calls
+            </Link>
+            <span style={{ color: "#9ca3af" }}>•</span>
+
+            {/* SOS link */}
             <Link href="/admin/sos" style={{ color: "#6b7280" }}>
               SOS
             </Link>
             <span style={{ color: "#9ca3af" }}>•</span>
 
-            {/* Chat stays highlighted as you had it */}
+            {/* Chat stays highlighted */}
             <Link
               href="/admin/chat"
               style={{ color: "#f44e65", fontWeight: 600 }}

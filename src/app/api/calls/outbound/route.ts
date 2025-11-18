@@ -1,6 +1,7 @@
 // src/app/api/calls/outbound/route.ts
 import { NextResponse } from "next/server";
 import { getUser } from "../../users/store";
+import { addCallLog } from "../store";
 
 export const dynamic = "force-dynamic";
 
@@ -10,17 +11,17 @@ export const dynamic = "force-dynamic";
 //  - { phone: "+13315551234", note?: "Manual number" }
 // If userId is provided, we try to load the user's phone first.
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({} as any));
+  const body = await req.json().catch(() => ({} as unknown));
 
   const userId =
-    typeof body.userId === "string" ? body.userId.trim() : "";
+    typeof (body as any).userId === "string" ? (body as any).userId.trim() : "";
   const note =
-    typeof body.note === "string" ? body.note.trim() : "";
+    typeof (body as any).note === "string" ? (body as any).note.trim() : "";
 
   let phone =
-    typeof body.phone === "string" ? body.phone.trim() : "";
+    typeof (body as any).phone === "string" ? (body as any).phone.trim() : "";
 
-  let user = null;
+  let user: Awaited<ReturnType<typeof getUser>> | null = null;
 
   if (userId) {
     user = await getUser(userId);
@@ -42,10 +43,7 @@ export async function POST(req: Request) {
 
   const callId = `debug-call-${Date.now()}`;
 
-  // For now we just log and return a fake call id.
-  // 🔧 When you're ready for real Twilio:
-  //  - add twilio client here
-  //  - use environment variables for credentials and from-number
+  // Log the request (this is where Twilio will hook in later)
   console.log("[calls] outbound request", {
     userId: user ? user.id : null,
     phone,
@@ -53,13 +51,25 @@ export async function POST(req: Request) {
     callId,
   });
 
+  // NEW: store in call logs
+  const log = await addCallLog({
+    id: callId,
+    userId: user ? String(user.id) : null,
+    userName: user ? user.name : null,
+    phone,
+    note,
+    direction: "outbound",
+  });
+
   return NextResponse.json({
     ok: true,
-    callId,
-    phone,
-    userId: user ? user.id : null,
-    note,
-    // This line reminds us where Twilio will plug in next milestone
+    callId: log.id,
+    phone: log.phone,
+    userId: log.userId,
+    userName: log.userName,
+    note: log.note,
+    createdAt: log.createdAt,
+    // Reminder for future Twilio work
     debug: "Twilio outbound voice integration goes here in the next step.",
   });
 }
