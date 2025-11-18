@@ -65,6 +65,12 @@ export default function AdminChatPage() {
     null
   );
 
+  // --- Agent debug panel state (talks to /api/agent) ---
+  const [agentInput, setAgentInput] = useState("");
+  const [agentResult, setAgentResult] = useState<string | null>(null);
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentError, setAgentError] = useState<string | null>(null);
+
   /* --------------------- Load chat messages --------------------- */
   useEffect(() => {
     let cancelled = false;
@@ -78,14 +84,21 @@ export default function AdminChatPage() {
           cache: "no-store",
         });
 
-        const data = await res.json().catch(() => ({} as any));
+        const data = await res.json().catch(() => ({} as unknown));
 
         if (!res.ok) {
-          throw new Error((data && data.message) || "Failed to load messages");
+          const message =
+            typeof data === "object" && data && "message" in data
+              ? String((data as { message?: unknown }).message)
+              : "Failed to load messages";
+          throw new Error(message);
         }
 
-        if (!cancelled && Array.isArray(data.items)) {
-          setMessages(data.items as ChatMessage[]);
+        if (!cancelled && typeof data === "object" && data && "items" in data) {
+          const items = (data as { items?: unknown }).items;
+          if (Array.isArray(items)) {
+            setMessages(items as ChatMessage[]);
+          }
         }
       } catch (err) {
         if (!cancelled) {
@@ -131,21 +144,29 @@ export default function AdminChatPage() {
         setProfileSaveMessage(null);
 
         const res = await fetch(`/api/users/${selectedUserId}`);
-        const data = await res.json().catch(() => ({} as any));
+        const data = await res.json().catch(() => ({} as unknown));
 
-        if (!res.ok || !data.item) {
-          throw new Error((data && data.message) || "Failed to load user");
+        if (!res.ok || typeof data !== "object" || !data) {
+          const message =
+            typeof data === "object" && data && "message" in data
+              ? String((data as { message?: unknown }).message)
+              : "Failed to load user";
+          throw new Error(message);
+        }
+
+        const maybeItem = (data as { item?: unknown }).item;
+        if (!maybeItem || typeof maybeItem !== "object") {
+          throw new Error("Failed to load user");
         }
 
         if (!cancelled) {
-          const user = data.item as AdminUser;
+          const user = maybeItem as AdminUser;
           setSelectedUser(user);
           setProfileDraft({
             interest: user.interest ?? "",
             source: user.source ?? "",
             tagsText: (user.tags ?? []).join(", "),
-              conciergeStatus: user.conciergeStatus ?? "open",
-
+            conciergeStatus: user.conciergeStatus ?? "open",
             conciergeNote: user.conciergeNote ?? "",
           });
         }
@@ -196,20 +217,28 @@ export default function AdminChatPage() {
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json().catch(() => ({} as any));
+      const data = await res.json().catch(() => ({} as unknown));
 
-      if (!res.ok || !data.item) {
-        throw new Error((data && data.message) || "Profile update failed");
+      if (!res.ok || typeof data !== "object" || !data) {
+        const message =
+          typeof data === "object" && data && "message" in data
+            ? String((data as { message?: unknown }).message)
+            : "Profile update failed";
+        throw new Error(message);
       }
 
-      const updated = data.item as AdminUser;
+      const maybeItem = (data as { item?: unknown }).item;
+      if (!maybeItem || typeof maybeItem !== "object") {
+        throw new Error("Profile update failed");
+      }
+
+      const updated = maybeItem as AdminUser;
       setSelectedUser(updated);
       setProfileDraft({
         interest: updated.interest ?? "",
         source: updated.source ?? "",
         tagsText: (updated.tags ?? []).join(", "),
-          conciergeStatus: updated.conciergeStatus ?? "open",
-
+        conciergeStatus: updated.conciergeStatus ?? "open",
         conciergeNote: updated.conciergeNote ?? "",
       });
       setProfileSaveMessage("Profile saved.");
@@ -221,7 +250,7 @@ export default function AdminChatPage() {
     }
   }
 
-  /* --------------------- Send reply --------------------- */
+  /* --------------------- Send reply (normal chat) --------------------- */
   async function handleSend(e: FormEvent) {
     e.preventDefault();
     const text = input.trim();
@@ -256,16 +285,26 @@ export default function AdminChatPage() {
         }),
       });
 
-      const data = await res.json().catch(() => ({} as any));
+      const data = await res.json().catch(() => ({} as unknown));
 
-      if (!res.ok || !data.item) {
-        throw new Error((data && data.message) || "Admin send failed");
+      if (!res.ok || typeof data !== "object" || !data) {
+        const message =
+          typeof data === "object" && data && "message" in data
+            ? String((data as { message?: unknown }).message)
+            : "Admin send failed";
+        throw new Error(message);
+      }
+
+      const maybeItem = (data as { item?: unknown }).item;
+
+      if (!maybeItem || typeof maybeItem !== "object") {
+        throw new Error("Admin send failed");
       }
 
       // replace temp with real message
       setMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId);
-        return [...withoutTemp, data.item as ChatMessage];
+        return [...withoutTemp, maybeItem as ChatMessage];
       });
     } catch (err) {
       console.error("Admin chat send error:", err);
@@ -276,6 +315,50 @@ export default function AdminChatPage() {
       setInput(text);
     } finally {
       setSending(false);
+    }
+  }
+
+  /* --------------------- Agent debug: call /api/agent --------------------- */
+  async function handleAgentTest(e: FormEvent) {
+    e.preventDefault();
+    const text = agentInput.trim();
+    if (!text || agentLoading) return;
+
+    setAgentLoading(true);
+    setAgentError(null);
+    setAgentResult(null);
+
+    const payload = {
+      source: "admin" as const,
+      input: text,
+      userId: selectedUserId,
+      roomId: selectedRoomId,
+    };
+
+    try {
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = (await res.json().catch(() => null)) as unknown;
+
+      if (!res.ok) {
+        const message =
+          typeof data === "object" && data && "message" in data
+            ? String((data as { message?: unknown }).message)
+            : "Agent request failed";
+        throw new Error(message);
+      }
+
+      const pretty = JSON.stringify(data, null, 2);
+      setAgentResult(pretty);
+    } catch (err) {
+      console.error("Agent debug call failed:", err);
+      setAgentError("Could not reach /api/agent. Check server logs.");
+    } finally {
+      setAgentLoading(false);
     }
   }
 
@@ -551,13 +634,123 @@ export default function AdminChatPage() {
                   background: "#f97316",
                   color: "white",
                   opacity: sending || !input.trim() ? 0.6 : 1,
-                  cursor: sending || !input.trim() ? "not-allowed" : "pointer",
+                  cursor: sending || !input.trim()
+                    ? "not-allowed"
+                    : "pointer",
                   border: "none",
                 }}
               >
                 {sending ? "Sending…" : "Send"}
               </button>
             </form>
+
+            {/* Agent debug panel */}
+            <div
+              style={{
+                marginTop: "12px",
+                paddingTop: "12px",
+                borderTop: "1px solid #e5e7eb",
+              }}
+            >
+              <h2
+                style={{
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  marginBottom: "4px",
+                  color: "#111827",
+                }}
+              >
+                Agent debug (calls /api/agent)
+              </h2>
+              <p
+                style={{
+                  fontSize: "11px",
+                  color: "#6b7280",
+                  marginBottom: "6px",
+                }}
+              >
+                Send a test prompt to the Foundzie agent backend. This still
+                uses the stubbed response (OpenAI will be wired in next
+                milestone).
+              </p>
+
+              <form
+                onSubmit={handleAgentTest}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "6px",
+                  marginBottom: "6px",
+                }}
+              >
+                <textarea
+                  value={agentInput}
+                  onChange={(e) => setAgentInput(e.target.value)}
+                  rows={3}
+                  placeholder="Ask Foundzie something, e.g. 'Open an SOS case for this user' or 'Send a broadcast notification.'"
+                  style={{
+                    width: "100%",
+                    borderRadius: "8px",
+                    border: "1px solid #e5e7eb",
+                    padding: "6px 8px",
+                    fontSize: "12px",
+                    resize: "vertical",
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={agentLoading || !agentInput.trim()}
+                  style={{
+                    alignSelf: "flex-start",
+                    borderRadius: "9999px",
+                    padding: "6px 12px",
+                    fontSize: "12px",
+                    fontWeight: 500,
+                    background: "#0f766e",
+                    color: "white",
+                    opacity: agentLoading || !agentInput.trim() ? 0.6 : 1,
+                    cursor:
+                      agentLoading || !agentInput.trim()
+                        ? "not-allowed"
+                        : "pointer",
+                    border: "none",
+                  }}
+                >
+                  {agentLoading ? "Calling /api/agent…" : "Test agent call"}
+                </button>
+              </form>
+
+              {agentError && (
+                <p
+                  style={{
+                    fontSize: "11px",
+                    color: "#f97316",
+                    marginBottom: "4px",
+                  }}
+                >
+                  {agentError}
+                </p>
+              )}
+
+              {agentResult && (
+                <pre
+                  style={{
+                    marginTop: "4px",
+                    maxHeight: "160px",
+                    overflow: "auto",
+                    fontSize: "11px",
+                    background: "#f9fafb",
+                    borderRadius: "8px",
+                    padding: "8px",
+                    border: "1px solid #e5e7eb",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {agentResult}
+                </pre>
+              )}
+            </div>
           </div>
 
           {/* Visitor profile column */}
@@ -751,7 +944,11 @@ export default function AdminChatPage() {
 
                 {profileSaveMessage && (
                   <div
-                    style={{ fontSize: "11px", color: "#16a34a", marginTop: 2 }}
+                    style={{
+                      fontSize: "11px",
+                      color: "#16a34a",
+                      marginTop: 2,
+                    }}
                   >
                     {profileSaveMessage}
                   </div>
@@ -759,7 +956,11 @@ export default function AdminChatPage() {
 
                 {profileError && (
                   <div
-                    style={{ fontSize: "11px", color: "#f97316", marginTop: 2 }}
+                    style={{
+                      fontSize: "11px",
+                      color: "#f97316",
+                      marginTop: 2,
+                    }}
                   >
                     {profileError}
                   </div>
