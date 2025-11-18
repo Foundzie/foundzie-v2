@@ -8,6 +8,7 @@ type CollectBody = {
   name?: string;
   firstName?: string;
   email?: string;
+  phone?: string;
   interest?: string;
   source?: string;
   tags?: string[] | string;
@@ -36,6 +37,7 @@ export async function POST(req: Request) {
   const newUser = await createUser({
     name: body.name ?? body.firstName ?? "Anonymous visitor",
     email: body.email ?? "no-email@example.com",
+    phone: body.phone ?? null,
     role: "viewer",
     status: "collected",
     interest: body.interest ?? "",

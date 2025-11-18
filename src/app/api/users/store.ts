@@ -5,8 +5,11 @@ import {
   type AdminUserInput,
 } from "./provider";
 
-// Our API returns the base user + optional tags (non-breaking)
-export type AdminUser = BaseAdminUser & { tags?: string[] };
+// Our API returns the base user + optional tags + phone (non-breaking)
+export type AdminUser = BaseAdminUser & {
+  tags?: string[];
+  phone?: string | null;
+};
 
 export async function listUsers(): Promise<AdminUser[]> {
   return userProvider.list();

@@ -16,16 +16,19 @@ export async function POST(req: Request) {
 
   // allow comma string or array for tags
   const rawTags = body.tags;
-  const tags: string[] =
-    Array.isArray(rawTags)
-      ? rawTags.map((t: string) => t.trim()).filter(Boolean)
-      : typeof rawTags === "string"
-        ? rawTags.split(",").map((t: string) => t.trim()).filter(Boolean)
-        : [];
+  const tags: string[] = Array.isArray(rawTags)
+    ? rawTags.map((t: string) => t.trim()).filter(Boolean)
+    : typeof rawTags === "string"
+    ? rawTags
+        .split(",")
+        .map((t: string) => t.trim())
+        .filter(Boolean)
+    : [];
 
   const newUser = await createUser({
     name: body.name,
     email: body.email,
+    phone: body.phone ?? null,
     role: body.role ?? "viewer",
     status: body.status ?? "active",
     joined: body.joined,

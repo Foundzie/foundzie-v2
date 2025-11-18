@@ -5,8 +5,11 @@ import mockUsers, {
 } from "@/app/data/users";
 import { createClient } from "redis";
 
-// Extend base type with optional tags (keeps old code working)
-export type AdminUser = BaseAdminUser & { tags?: string[] };
+// Extend base type with optional tags + phone
+export type AdminUser = BaseAdminUser & {
+  tags?: string[];
+  phone?: string | null;
+};
 export type AdminUserInput = Partial<AdminUser>;
 
 export interface UserProvider {
@@ -51,6 +54,7 @@ const memoryProvider: UserProvider = {
       interest: partial.interest ?? "",
       source: partial.source ?? "",
       tags: (partial.tags ?? []).map((t) => t.trim()).filter(Boolean),
+      phone: partial.phone ?? null,
       // 🔑 make sure every new user gets a roomId
       roomId: partial.roomId ?? `user-${nextId}`,
     };
@@ -74,6 +78,7 @@ const memoryProvider: UserProvider = {
       ...current,
       ...partial,
       tags,
+      phone: partial.phone ?? current.phone ?? null,
       // keep existing roomId unless explicitly overridden
       roomId: partial.roomId ?? current.roomId,
     };
@@ -104,6 +109,8 @@ const memoryProvider: UserProvider = {
         ...u,
         ...partial,
         tags,
+        phone:
+          partial.phone !== undefined ? partial.phone : u.phone ?? null,
         roomId: partial.roomId ?? u.roomId,
       };
 
@@ -173,6 +180,7 @@ const redisProvider: UserProvider = {
       const seeded: AdminUser[] = mockUsers.map((u) => ({
         ...u,
         tags: u.tags ?? [],
+        phone: u.phone ?? null,
       }));
       list = seeded;
       await redisSaveAll(list);
@@ -206,7 +214,7 @@ const redisProvider: UserProvider = {
       interest: partial.interest ?? "",
       source: partial.source ?? "",
       tags: (partial.tags ?? []).map((t) => t.trim()).filter(Boolean),
-      // 🔑 roomId for Redis-backed users too
+      phone: partial.phone ?? null,
       roomId: partial.roomId ?? `user-${nextId}`,
     };
 
@@ -233,6 +241,7 @@ const redisProvider: UserProvider = {
       ...current,
       ...partial,
       tags,
+      phone: partial.phone ?? current.phone ?? null,
       roomId: partial.roomId ?? current.roomId,
     };
 
@@ -267,6 +276,8 @@ const redisProvider: UserProvider = {
         ...u,
         ...partial,
         tags,
+        phone:
+          partial.phone !== undefined ? partial.phone : u.phone ?? null,
         roomId: partial.roomId ?? u.roomId,
       };
 

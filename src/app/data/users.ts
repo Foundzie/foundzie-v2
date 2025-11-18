@@ -23,6 +23,9 @@ export interface AdminUser {
   source?: string;
   tags: string[];
 
+  // NEW: phone (can be null if we don't know it yet)
+  phone?: string | null;
+
   // NEW: concierge workflow
   conciergeStatus?: ConciergeStatus;
   conciergeNote?: string;
@@ -46,6 +49,7 @@ export const mockUsers: AdminUser[] = [
     conciergeStatus: "open",
     conciergeNote: "",
     roomId: "user-1",
+    phone: null,
   },
   {
     id: "2",
@@ -60,6 +64,7 @@ export const mockUsers: AdminUser[] = [
     conciergeStatus: "open",
     conciergeNote: "",
     roomId: "user-2",
+    phone: null,
   },
   {
     id: "3",
@@ -74,6 +79,7 @@ export const mockUsers: AdminUser[] = [
     conciergeStatus: "open",
     conciergeNote: "",
     roomId: "user-3",
+    phone: null,
   },
   {
     id: "4",
@@ -88,6 +94,7 @@ export const mockUsers: AdminUser[] = [
     conciergeStatus: "open",
     conciergeNote: "",
     roomId: "user-4",
+    phone: null,
   },
 ];
 
