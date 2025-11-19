@@ -1,3 +1,5 @@
+// src/lib/agent/spec.ts
+
 // ================================================
 // Foundzie Agent Spec (Milestone K - Step 1, v2)
 // Uses the detailed Foundzie V1.5 prompt

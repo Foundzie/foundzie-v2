@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listMessages, addMessage } from "../store";
 import type { ChatMessage } from "@/app/data/chat";
+import { runFoundzieAgent } from "@/lib/agent/runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -56,17 +57,48 @@ export async function POST(req: NextRequest, context: any) {
     attachmentKind,
   });
 
-  // Simple automatic concierge reply when a "user" sends something
   let reply: ChatMessage | null = null;
-  if (sender === "user") {
-    const replyText = `Got it: ${rawText || attachmentName}. A concierge (or Foundzie) will follow up shortly.`;
 
-    reply = await addMessage(roomId, {
-      sender: "concierge",
-      text: replyText,
-      attachmentName: null,
-      attachmentKind: null,
-    });
+  // Only trigger the agent when a *user* sends something.
+  if (sender === "user") {
+    const agentInput =
+      rawText ||
+      (attachmentName ? `User sent attachment: ${attachmentName}` : "");
+
+    try {
+      const agentResult = await runFoundzieAgent({
+        input: agentInput,
+        roomId,
+        // If you later pass real user IDs from the client, they will show up here.
+        userId: typeof body.userId === "string" ? body.userId : undefined,
+        source: "mobile",
+      });
+
+      const replyText =
+        agentResult.replyText ||
+        `Got it: ${rawText || attachmentName}. A concierge (or Foundzie) will follow up shortly.`;
+
+      reply = await addMessage(roomId, {
+        sender: "concierge",
+        text: replyText,
+        attachmentName: null,
+        attachmentKind: null,
+      });
+    } catch (err) {
+      console.error("[chat] Agent stub failed:", err);
+
+      // Safe fallback: behave like the old hard-coded reply
+      const fallbackText = `Got it: ${
+        rawText || attachmentName
+      }. A concierge (or Foundzie) will follow up shortly.`;
+
+      reply = await addMessage(roomId, {
+        sender: "concierge",
+        text: fallbackText,
+        attachmentName: null,
+        attachmentKind: null,
+      });
+    }
   }
 
   return NextResponse.json({
