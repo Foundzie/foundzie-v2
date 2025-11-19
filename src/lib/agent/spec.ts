@@ -256,20 +256,24 @@ export const coreTools: AgentToolDefinition[] = [
     },
   },
   {
-    name: "send_user_notification",
-    description: "Send a mobile notification to the user.",
+    name: "broadcast_notification",
+    description:
+      "Broadcast a notification to many users in the Foundzie mobile app (currently mock/demo only).",
     parameters: {
       type: "object",
       properties: {
-        userId: { type: "string" },
         title: { type: "string" },
-        body: { type: "string" },
-        kind: {
+        message: { type: "string" },
+        actionLabel: { type: "string" },
+        actionHref: { type: "string" },
+        mediaUrl: { type: "string" },
+        mediaKind: {
           type: "string",
-          enum: ["info", "reminder", "booking", "sos"],
+          enum: ["image", "gif", "link", "other"],
         },
+        unread: { type: "boolean" },
       },
-      required: ["userId", "title", "body"],
+      required: ["title", "message"],
     },
   },
 ];
