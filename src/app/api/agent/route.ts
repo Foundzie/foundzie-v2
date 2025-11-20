@@ -7,40 +7,37 @@ import { toolImplementations } from "@/lib/agent/tools";
 
 export const dynamic = "force-dynamic";
 
+// POST /api/agent
+// Body shape (from Admin debug panel):
+//   { input: string, roomId?: string, userId?: string }
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as any;
 
-  const input =
-    typeof body.input === "string"
-      ? body.input
-      : typeof body.text === "string"
-      ? body.text
-      : "";
+  const inputRaw =
+    typeof body.input === "string" && body.input.trim().length > 0
+      ? body.input.trim()
+      : "Admin sent an empty prompt.";
 
   const roomId =
-    typeof body.roomId === "string" && body.roomId.trim()
+    typeof body.roomId === "string" && body.roomId.trim().length > 0
       ? body.roomId.trim()
       : "admin-debug";
 
   const userId =
-    typeof body.userId === "string" && body.userId.trim()
+    typeof body.userId === "string" && body.userId.trim().length > 0
       ? body.userId.trim()
       : null;
 
-  if (!input.trim()) {
-    return NextResponse.json(
-      { ok: false, message: "Missing input for agent." },
-      { status: 400 }
-    );
-  }
-
   const agentResult = await runFoundzieAgent({
-    input,
+    input: inputRaw,
     roomId,
     userId,
     source: "admin",
-    toolsMode: "debug", // let the model use tools in this endpoint
+    toolsMode: "debug", // admin debug is allowed to call tools
   });
+
+  const availableTools = coreTools.map((t) => t.name);
+  const implementedTools = Object.keys(toolImplementations);
 
   return NextResponse.json({
     ok: true,
@@ -48,7 +45,15 @@ export async function POST(req: NextRequest) {
     usedTools: agentResult.usedTools,
     debug: agentResult.debug,
     systemPromptPreview: agentResult.debug?.systemPromptPreview,
-    availableTools: coreTools.map((t) => t.name),
-    implementedTools: Object.keys(toolImplementations),
+    availableTools,
+    implementedTools,
+  });
+}
+
+// Optional: simple GET for sanity checks
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    message: "Foundzie agent endpoint is live.",
   });
 }

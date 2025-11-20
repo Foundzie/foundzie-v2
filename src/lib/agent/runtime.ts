@@ -1,7 +1,10 @@
 // src/lib/agent/runtime.ts
 
 import OpenAI from "openai";
-import { FOUNDZIE_SYSTEM_PROMPT, coreTools } from "@/lib/agent/spec";
+import {
+  FOUNDZIE_SYSTEM_PROMPT,
+  coreTools,
+} from "@/lib/agent/spec";
 import { toolImplementations } from "@/lib/agent/tools";
 
 export type AgentSource = "mobile" | "admin" | "system";
@@ -12,9 +15,9 @@ export interface AgentRequestPayload {
   userId?: string | null;
   source?: AgentSource;
 
-  // How we want tools to behave
-  // - "off"   → no tools, just text
-  // - "debug" → allow tools, return tool info in debug panel
+  // How we want tools to behave:
+  // - "off"   → no tools, just text reply
+  // - "debug" → allow tools, return tool info in debug panel (admin)
   toolsMode?: "off" | "debug";
 }
 
@@ -23,31 +26,35 @@ export interface AgentResult {
   usedTools: string[];
   debug?: {
     systemPromptPreview: string;
-    mode: "stub" | "openai";
+    mode: "stub" | "openai" | "error";
     toolResults?: Array<{ name: string; result: unknown }>;
+    hasKey?: boolean;
+    rawError?: string;
   };
 }
 
-// ---- OpenAI client setup ----------------------------------------
+// -----------------------------------------------------
+// OpenAI client wiring + basic visibility debug
+// -----------------------------------------------------
+const hasOpenAiKey =
+  typeof process !== "undefined" &&
+  typeof process.env.OPENAI_API_KEY === "string" &&
+  process.env.OPENAI_API_KEY.trim().length > 0;
 
-const apiKey = process.env.OPENAI_API_KEY;
+console.log("[agent runtime] has OPENAI_API_KEY?", hasOpenAiKey);
 
-// We create the client if (and only if) the key exists.
-// No typeof process check – Vercel provides process.env for us.
-let openai: OpenAI | null = null;
-
-if (apiKey) {
-  openai = new OpenAI({ apiKey });
-} else {
-  console.warn(
-    "[agent runtime] OPENAI_API_KEY is missing. Falling back to stub agent."
-  );
-}
+const openai = hasOpenAiKey
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY! })
+  : null;
 
 /**
- * Fallback stub behavior (what you had before).
+ * Fallback stub behavior (what you had before), but with
+ * a bit more debug info so we can see *why* we’re stubbing.
  */
-async function runStubAgent(req: AgentRequestPayload): Promise<AgentResult> {
+async function runStubAgent(
+  req: AgentRequestPayload,
+  reason?: string
+): Promise<AgentResult> {
   const trimmed = req.input.trim() || "a blank message";
 
   const replyText =
@@ -60,17 +67,21 @@ async function runStubAgent(req: AgentRequestPayload): Promise<AgentResult> {
     debug: {
       systemPromptPreview: FOUNDZIE_SYSTEM_PROMPT.slice(0, 200),
       mode: "stub",
+      hasKey: hasOpenAiKey,
+      rawError: reason ? String(reason) : undefined,
     },
   };
 }
 
 /**
- * Real OpenAI-powered agent with optional tool calls.
+ * Real OpenAI-powered agent.
+ * Includes optional tool calls (in toolsMode "debug").
  */
 async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
   if (!openai) {
-    // Safety – if key was missing at boot, just use stub.
-    return runStubAgent(req);
+    // Shouldn’t normally happen, because runFoundzieAgent checks too,
+    // but we keep this for extra safety.
+    return runStubAgent(req, "no_openai_client");
   }
 
   const userText = req.input.trim() || "User sent a blank message.";
@@ -85,10 +96,11 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
 
   const finalUserContent = userText + contextSuffix;
 
+  // Decide if tools are enabled for this request
   const toolsMode = req.toolsMode ?? "off";
   const useTools = toolsMode === "debug";
 
-  // Convert our tools into OpenAI tool schema
+  // Convert our coreTools → OpenAI tool schema
   const openAiTools: any[] = coreTools.map((t) => ({
     type: "function",
     function: {
@@ -164,7 +176,8 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
       }
 
       const toolName: string = call.function.name;
-      const impl = (toolImplementations as Record<string, any>)[toolName];
+      const impl =
+        (toolImplementations as Record<string, any>)[toolName];
 
       if (!impl) {
         console.warn(
@@ -210,6 +223,7 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
       systemPromptPreview: FOUNDZIE_SYSTEM_PROMPT.slice(0, 200),
       mode: "openai",
       toolResults,
+      hasKey: hasOpenAiKey,
     },
   };
 }
@@ -221,14 +235,14 @@ export async function runFoundzieAgent(
   req: AgentRequestPayload
 ): Promise<AgentResult> {
   try {
-    if (!openai) {
-      // Missing key at boot → stub.
-      return runStubAgent(req);
+    if (!hasOpenAiKey || !openai) {
+      // Clear reason so we can see it in admin debug JSON if needed
+      return runStubAgent(req, "missing_or_empty_OPENAI_API_KEY");
     }
 
     return await runOpenAiAgent(req);
   } catch (err) {
     console.error("[agent runtime] OpenAI error, falling back to stub:", err);
-    return runStubAgent(req);
+    return runStubAgent(req, err instanceof Error ? err.message : String(err));
   }
 }
