@@ -15,7 +15,7 @@ export interface AgentRequestPayload {
   userId?: string | null;
   source?: AgentSource;
 
-  // NEW: how we want tools to behave
+  // How we want tools to behave:
   // - "off"   → no tools, just text
   // - "debug" → allow tools, return tool info in debug panel
   toolsMode?: "off" | "debug";
@@ -31,11 +31,28 @@ export interface AgentResult {
   };
 }
 
-// Single OpenAI client (server-side only)
-const openai =
-  typeof process !== "undefined" && process.env.OPENAI_API_KEY
-    ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-    : null;
+/**
+ * Lazy OpenAI client.
+ * We create it the first time we need it, using the runtime env var.
+ */
+let cachedOpenAI: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI | null {
+  const key = process.env.OPENAI_API_KEY;
+
+  if (!key) {
+    console.warn(
+      "[agent runtime] Missing OPENAI_API_KEY; using stub agent instead."
+    );
+    return null;
+  }
+
+  if (!cachedOpenAI) {
+    cachedOpenAI = new OpenAI({ apiKey: key });
+  }
+
+  return cachedOpenAI;
+}
 
 /**
  * Fallback stub behavior (what you had before).
@@ -62,11 +79,10 @@ async function runStubAgent(req: AgentRequestPayload): Promise<AgentResult> {
  * Includes *optional* tool calls, but uses very loose typing (`any`)
  * so TypeScript stops yelling.
  */
-async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
-  if (!openai) {
-    return runStubAgent(req);
-  }
-
+async function runOpenAiAgent(
+  req: AgentRequestPayload,
+  openai: OpenAI
+): Promise<AgentResult> {
   const userText = req.input.trim() || "User sent a blank message.";
 
   const contextBits: string[] = [];
@@ -127,7 +143,11 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
     replyText =
       parts
         .map((p) =>
-          typeof p === "string" ? p : typeof p?.text === "string" ? p.text : ""
+          typeof p === "string"
+            ? p
+            : typeof (p as any)?.text === "string"
+            ? (p as any).text
+            : ""
         )
         .join(" ")
         .trim() || "";
@@ -145,21 +165,18 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
   const toolResults: Array<{ name: string; result: unknown }> = [];
 
   if (useTools && message.tool_calls && message.tool_calls.length > 0) {
-    // message.tool_calls type is annoying; treat as any[] so TS is quiet
     const toolCalls = message.tool_calls as any[];
 
     for (const rawCall of toolCalls) {
       const call: any = rawCall;
 
-      // Some safety checks
       if (!call || call.type !== "function" || !call.function) {
         console.warn("[agent runtime] Unsupported tool call shape:", call);
         continue;
       }
 
       const toolName: string = call.function.name;
-      const impl =
-        (toolImplementations as Record<string, any>)[toolName];
+      const impl = (toolImplementations as Record<string, any>)[toolName];
 
       if (!impl) {
         console.warn(
@@ -216,10 +233,13 @@ export async function runFoundzieAgent(
   req: AgentRequestPayload
 ): Promise<AgentResult> {
   try {
+    const openai = getOpenAIClient();
     if (!openai) {
+      // No key → stub
       return runStubAgent(req);
     }
-    return await runOpenAiAgent(req);
+
+    return await runOpenAiAgent(req, openai);
   } catch (err) {
     console.error("[agent runtime] OpenAI error, falling back to stub:", err);
     return runStubAgent(req);
