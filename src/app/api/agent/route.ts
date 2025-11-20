@@ -1,56 +1,54 @@
 // src/app/api/agent/route.ts
-import { NextResponse } from "next/server";
-import { FOUNDZIE_SYSTEM_PROMPT, coreTools } from "@/lib/agent/spec";
-import { toolImplementations } from "@/lib/agent/tools";
+
+import { NextRequest, NextResponse } from "next/server";
 import { runFoundzieAgent } from "@/lib/agent/runtime";
+import { coreTools } from "@/lib/agent/spec";
+import { toolImplementations } from "@/lib/agent/tools";
 
 export const dynamic = "force-dynamic";
 
-// POST /api/agent
-// Used by the admin "Agent debug" panel.
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as any;
 
   const input =
-    typeof body.input === "string" && body.input.trim()
-      ? body.input.trim()
-      : "Test from /api/agent with empty input.";
+    typeof body.input === "string"
+      ? body.input
+      : typeof body.text === "string"
+      ? body.text
+      : "";
 
   const roomId =
     typeof body.roomId === "string" && body.roomId.trim()
       ? body.roomId.trim()
-      : undefined;
+      : "admin-debug";
 
   const userId =
     typeof body.userId === "string" && body.userId.trim()
       ? body.userId.trim()
-      : undefined;
+      : null;
 
-  const source =
-    body.source === "admin" || body.source === "mobile" || body.source === "system"
-      ? body.source
-      : "admin";
-
-  console.log("[agent] debug call:", { input, roomId, userId, source });
+  if (!input.trim()) {
+    return NextResponse.json(
+      { ok: false, message: "Missing input for agent." },
+      { status: 400 }
+    );
+  }
 
   const agentResult = await runFoundzieAgent({
     input,
     roomId,
     userId,
-    source,
-    // IMPORTANT: only the admin debug panel runs with tools enabled for now
-    toolsMode: "debug",
+    source: "admin",
+    toolsMode: "debug", // let the model use tools in this endpoint
   });
-
-  const availableTools = coreTools.map((t) => t.name);
 
   return NextResponse.json({
     ok: true,
     agentReply: agentResult.replyText,
     usedTools: agentResult.usedTools,
     debug: agentResult.debug,
-    systemPromptPreview: FOUNDZIE_SYSTEM_PROMPT.slice(0, 200),
-    availableTools,
+    systemPromptPreview: agentResult.debug?.systemPromptPreview,
+    availableTools: coreTools.map((t) => t.name),
     implementedTools: Object.keys(toolImplementations),
   });
 }
