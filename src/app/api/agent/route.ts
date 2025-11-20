@@ -1,5 +1,4 @@
 // src/app/api/agent/route.ts
-
 import { NextResponse } from "next/server";
 import { FOUNDZIE_SYSTEM_PROMPT, coreTools } from "@/lib/agent/spec";
 import { toolImplementations } from "@/lib/agent/tools";
@@ -9,7 +8,6 @@ export const dynamic = "force-dynamic";
 
 // POST /api/agent
 // Used by the admin "Agent debug" panel.
-// Now actually calls runFoundzieAgent (OpenAI if configured, stub otherwise).
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as any;
 
@@ -19,10 +17,14 @@ export async function POST(req: Request) {
       : "Test from /api/agent with empty input.";
 
   const roomId =
-    typeof body.roomId === "string" ? body.roomId : undefined;
+    typeof body.roomId === "string" && body.roomId.trim()
+      ? body.roomId.trim()
+      : undefined;
 
   const userId =
-    typeof body.userId === "string" ? body.userId : undefined;
+    typeof body.userId === "string" && body.userId.trim()
+      ? body.userId.trim()
+      : undefined;
 
   const source =
     body.source === "admin" || body.source === "mobile" || body.source === "system"
@@ -36,9 +38,10 @@ export async function POST(req: Request) {
     roomId,
     userId,
     source,
+    // IMPORTANT: only the admin debug panel runs with tools enabled for now
+    toolsMode: "debug",
   });
 
-  // Still return metadata so you can see tools + prompt fragment in the debug UI
   const availableTools = coreTools.map((t) => t.name);
 
   return NextResponse.json({
