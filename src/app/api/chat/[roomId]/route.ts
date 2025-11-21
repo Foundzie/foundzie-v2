@@ -11,6 +11,68 @@ export const dynamic = "force-dynamic";
 // We'll still safely pull `roomId` from context.params.
 type RoomParams = { roomId: string };
 
+// --------- Emergency / confirmation helpers (Option C) ----------
+
+function isEmergencyText(text: string): boolean {
+  const t = text.toLowerCase();
+
+  const triggers = [
+    "emergency",
+    "sos",
+    "i am in danger",
+    "i'm in danger",
+    "im in danger",
+    "real danger",
+    "im in real danger",
+    "someone is trying to break in",
+    "trying to break in",
+    "breaking in",
+    "they are outside my house",
+    "they're outside my house",
+    "they are trying to kill me",
+    "they're trying to kill me",
+    "want to hurt myself",
+    "want to kill myself",
+    "want to die",
+    "don't want to live",
+    "dont want to live",
+    "being abused",
+    "i'm being abused",
+    "domestic violence",
+    "call the police",
+    "call 911",
+    "need help right now",
+    "help me right now",
+  ];
+
+  return triggers.some((phrase) => t.includes(phrase));
+}
+
+function isConfirmationText(text: string): boolean {
+  const t = text.trim().toLowerCase();
+
+  const exactYes = ["yes", "yeah", "yep", "ya", "ok", "okay", "please"];
+  if (exactYes.includes(t)) return true;
+
+  const softConfirms = [
+    "please help",
+    "please do it",
+    "go ahead",
+    "do it",
+    "alert them",
+    "open an sos",
+    "open a case",
+    "contact them",
+    "call them",
+    "i need help now",
+    "help me now",
+    "yes please",
+    "yes i need help",
+  ];
+
+  return softConfirms.some((phrase) => t.includes(phrase));
+}
+
 // GET /api/chat/[roomId] -> messages for a single room
 export async function GET(_req: NextRequest, context: any) {
   const { roomId } = (context.params as RoomParams) ?? { roomId: "default" };
@@ -61,9 +123,39 @@ export async function POST(req: NextRequest, context: any) {
 
   // Only trigger the agent when a *user* sends something.
   if (sender === "user") {
-    const agentInput =
+    const agentInputBase =
       rawText ||
       (attachmentName ? `User sent attachment: ${attachmentName}` : "");
+
+    // --------------- Option C: Hybrid SOS logic -----------------
+    const lowerText = (rawText || "").toLowerCase();
+    const emergencyNow = isEmergencyText(lowerText);
+    const confirmationNow = isConfirmationText(lowerText);
+
+    // Look at recent user messages to see if there was an earlier emergency
+    const history = await listMessages(roomId);
+    const recentUserMessages = history
+      .filter((m) => m.sender === "user")
+      .slice(-5); // last 5 user messages
+
+    const emergencyEarlier = recentUserMessages.some((m) =>
+      isEmergencyText((m.text || "").toLowerCase())
+    );
+
+    // Confirmed emergency if:
+    // - current message is both emergency + confirmation, OR
+    // - earlier message was emergency and current message is confirmation.
+    const confirmedEmergency =
+      (emergencyNow && confirmationNow) ||
+      (confirmationNow && emergencyEarlier);
+
+    // toolsMode: "debug" ONLY when emergency is confirmed, otherwise off.
+    const toolsMode: "off" | "debug" = confirmedEmergency ? "debug" : "off";
+
+    // Decorate the input a bit if we know it's confirmed emergency
+    const agentInput = confirmedEmergency
+      ? `[CONFIRMED_EMERGENCY]\nThe user is in immediate danger and has explicitly asked for help / for you to alert their emergency contacts or open an SOS case.\n\nUser message: ${agentInputBase}`
+      : agentInputBase;
 
     try {
       const agentResult = await runFoundzieAgent({
@@ -72,8 +164,7 @@ export async function POST(req: NextRequest, context: any) {
         // If you later pass real user IDs from the client, they will show up here.
         userId: typeof body.userId === "string" ? body.userId : undefined,
         source: "mobile",
-        // ✅ Let Foundzie decide dynamically when to use tools (SOS, calls, etc.)
-        toolsMode: "debug",
+        toolsMode,
       });
 
       const replyText =
