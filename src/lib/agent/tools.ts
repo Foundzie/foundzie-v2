@@ -7,9 +7,17 @@ import {
   type MediaKind,
 } from "../../app/data/notifications";
 
+import {
+  addEvent,
+  updateEvent,
+  type SosStatus,
+} from "@/app/api/sos/store";
+
+import { addCallLog } from "@/app/api/calls/store";
+
 /**
  * Names of tools the concierge agent can call.
- * (These should match whatever you define in agentspec.ts.)
+ * (These should match whatever you define in spec.ts.)
  */
 export type ToolName =
   | "open_sos_case"
@@ -18,66 +26,161 @@ export type ToolName =
   | "broadcast_notification";
 
 /* ------------------------------------------------------------------ */
-/* 1. SOS tools – currently debug stubs (safe no-ops, just logging)    */
+/* 1. SOS tools – now wired into real SOS store                        */
 /* ------------------------------------------------------------------ */
 
-export async function openSosCase(args: {
-  userId?: string;
-  message: string;
-}) {
-  const id = `debug-sos-${Date.now()}`;
+/**
+ * open_sos_case
+ *
+ * OpenAI schema (spec.ts) defines:
+ *   - category: "general" | "police" | "medical" | "fire"
+ *   - description: string
+ *   - locationHint: string
+ *
+ * We accept a flexible args shape so future upgrades don’t break:
+ *   { category?, description?, locationHint?, message?, phone?, userId? }
+ */
+export async function openSosCase(args: any) {
+  const category: string =
+    args?.category ?? args?.type ?? "general";
 
-  console.log("[agent tool] open_sos_case", {
-    id,
+  const description: string =
+    args?.description ??
+    args?.message ??
+    args?.reason ??
+    "SOS alert created from an agent conversation.";
+
+  const location: string | undefined =
+    args?.locationHint ?? args?.location ?? undefined;
+
+  const phone: string | undefined =
+    args?.phone ?? undefined;
+
+  const userId: string | undefined =
+    typeof args?.userId === "string" ? args.userId : undefined;
+
+  const source: string =
+    typeof args?.source === "string" ? args.source : "agent-chat";
+
+  console.log("[agent tool] open_sos_case (agent)", {
+    category,
+    description,
+    location,
+    phone,
+    userId,
+    source,
+    rawArgs: args,
+  });
+
+  // Create a real SOS event in the shared store
+  const event = await addEvent({
+    message: description,
+    type: category,
+    location,
+    source,
+    phone,
+    userId,
+  });
+
+  // Add a small automatic action note so admins see context
+  await updateEvent(event.id, {
+    newActionText:
+      "SOS case opened automatically from Foundzie agent chat.",
+    newActionBy: "agent-foundzie",
+  });
+
+  return {
+    id: event.id,
+    userId: event.userId,
+    status: event.status,
+  };
+}
+
+/**
+ * add_sos_note
+ *
+ * OpenAI schema (spec.ts) defines:
+ *   - sosId: string
+ *   - note: string
+ *   - status?: "new" | "in-progress" | "resolved"
+ *
+ * We also accept { caseId } for flexibility.
+ */
+export async function addSosNote(args: {
+  sosId?: string;
+  caseId?: string;
+  note: string;
+  status?: SosStatus;
+  userId?: string;
+  by?: string;
+}) {
+  const sosId = args.sosId ?? args.caseId;
+
+  if (!sosId) {
+    console.warn(
+      "[agent tool] add_sos_note called without sosId/caseId",
+      args
+    );
+    return { ok: false as const, reason: "missing_sos_id" };
+  }
+
+  const patch: Parameters<typeof updateEvent>[1] = {
+    newActionText: args.note,
+    newActionBy: args.by ?? "agent-foundzie",
+  };
+
+  if (args.status) {
+    patch.status = args.status;
+  }
+  if (typeof args.userId !== "undefined") {
+    patch.userId = args.userId;
+  }
+
+  console.log("[agent tool] add_sos_note (agent)", {
+    sosId,
     ...args,
   });
 
-  // For now just return a fake SOS object.
-  return {
-    id,
-    userId: args.userId ?? null,
-    message: args.message,
-  };
-}
+  const updated = await updateEvent(sosId, patch);
 
-export async function addSosNote(args: {
-  caseId: string;
-  note: string;
-}) {
-  console.log("[agent tool] add_sos_note", args);
-
-  // Placeholder return – later this will write to real SOS storage.
   return {
-    ok: true as const,
-    caseId: args.caseId,
+    ok: !!updated,
+    id: sosId,
   };
 }
 
 /* ------------------------------------------------------------------ */
-/* 2. Call log tool – matches what we already log in /api/calls        */
+/* 2. Call log tool – now wired into real call log store              */
 /* ------------------------------------------------------------------ */
 
 export async function logOutboundCall(args: {
   userId?: string;
-  phone: string;
+  userName?: string;
+  phone?: string;
   direction?: "outbound" | "inbound";
   note?: string;
 }) {
-  const callId = `debug-call-${Date.now()}`;
+  const callId = `agent-call-${Date.now()}`;
 
-  console.log("[agent tool] log_outbound_call", {
+  const phone = args.phone ?? "unknown";
+  const direction: "outbound" = "outbound";
+
+  console.log("[agent tool] log_outbound_call (agent)", {
     callId,
     ...args,
   });
 
-  // Same shape as your existing admin call log rows
-  return {
-    callId,
+  // Persist into the shared call log store
+  const log = await addCallLog({
+    id: callId,
     userId: args.userId ?? null,
-    phone: args.phone,
-    direction: args.direction ?? "outbound",
+    userName: args.userName ?? null,
+    phone,
     note: args.note ?? "",
-  };
+    direction,
+  });
+
+  return log;
 }
 
 /* ------------------------------------------------------------------ */
@@ -123,7 +226,7 @@ export async function broadcastNotification(args: {
 }
 
 /* ------------------------------------------------------------------ */
-/* 4. Tool registry – this is what /api/agent will call                */
+/* 4. Tool registry – this is what /api/agent & runtime use           */
 /* ------------------------------------------------------------------ */
 
 export const toolImplementations = {
