@@ -72,6 +72,8 @@ export async function POST(req: NextRequest, context: any) {
         // If you later pass real user IDs from the client, they will show up here.
         userId: typeof body.userId === "string" ? body.userId : undefined,
         source: "mobile",
+        // ✅ Let Foundzie decide dynamically when to use tools (SOS, calls, etc.)
+        toolsMode: "debug",
       });
 
       const replyText =
