@@ -216,6 +216,45 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
     }
   }
 
+  // -----------------------------
+  // 3) Human-friendly summary of tool actions
+  // -----------------------------
+  if (toolResults.length > 0) {
+    const actions: string[] = [];
+
+    if (usedTools.includes("open_sos_case")) {
+      actions.push("opened a new SOS case");
+    }
+    if (usedTools.includes("add_sos_note")) {
+      actions.push("added a note to the SOS case");
+    }
+    if (usedTools.includes("log_outbound_call")) {
+      actions.push("logged an outbound call with your note");
+    }
+    if (usedTools.includes("broadcast_notification")) {
+      actions.push("sent a broadcast notification to users");
+    }
+
+    if (actions.length > 0) {
+      let summary: string;
+
+      if (actions.length === 1) {
+        summary = `I've ${actions[0]}.`;
+      } else if (actions.length === 2) {
+        summary = `I've ${actions[0]} and ${actions[1]}.`;
+      } else {
+        const last = actions[actions.length - 1];
+        const rest = actions.slice(0, -1).join(", ");
+        summary = `I've ${rest}, and ${last}.`;
+      }
+
+      replyText =
+        replyText.trim() +
+        "\n\n" +
+        `${summary} Your concierge team can now see this in the Foundzie admin system.`;
+    }
+  }
+
   return {
     replyText,
     usedTools,
