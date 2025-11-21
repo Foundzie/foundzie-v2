@@ -5,7 +5,7 @@ import {
   FOUNDZIE_SYSTEM_PROMPT,
   coreTools,
 } from "@/lib/agent/spec";
-import { toolImplementations } from "@/lib/agent/tools";
+import { toolHandlers as toolImplementations } from "@/lib/agent/tools";
 
 export type AgentSource = "mobile" | "admin" | "system";
 
@@ -14,10 +14,6 @@ export interface AgentRequestPayload {
   roomId?: string;
   userId?: string | null;
   source?: AgentSource;
-
-  // How we want tools to behave:
-  // - "off"   → no tools, just text reply
-  // - "debug" → allow tools, return tool info in debug panel (admin)
   toolsMode?: "off" | "debug";
 }
 
@@ -34,7 +30,7 @@ export interface AgentResult {
 }
 
 // -----------------------------------------------------
-// OpenAI client wiring + basic visibility debug
+// OpenAI client wiring
 // -----------------------------------------------------
 const hasOpenAiKey =
   typeof process !== "undefined" &&
@@ -47,10 +43,9 @@ const openai = hasOpenAiKey
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY! })
   : null;
 
-/**
- * Fallback stub behavior (what you had before), but with
- * a bit more debug info so we can see *why* we’re stubbing.
- */
+// -----------------------------------------------------
+// Stub agent (if key missing or errors)
+// -----------------------------------------------------
 async function runStubAgent(
   req: AgentRequestPayload,
   reason?: string
@@ -73,14 +68,11 @@ async function runStubAgent(
   };
 }
 
-/**
- * Real OpenAI-powered agent.
- * Includes optional tool calls (in toolsMode "debug").
- */
+// -----------------------------------------------------
+// Real OpenAI-powered agent
+// -----------------------------------------------------
 async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
   if (!openai) {
-    // Shouldn’t normally happen, because runFoundzieAgent checks too,
-    // but we keep this for extra safety.
     return runStubAgent(req, "no_openai_client");
   }
 
@@ -96,11 +88,9 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
 
   const finalUserContent = userText + contextSuffix;
 
-  // Decide if tools are enabled for this request
   const toolsMode = req.toolsMode ?? "off";
   const useTools = toolsMode === "debug";
 
-  // Convert our coreTools → OpenAI tool schema
   const openAiTools: any[] = coreTools.map((t) => ({
     type: "function",
     function: {
@@ -113,27 +103,21 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
   const completion = await openai.chat.completions.create({
     model: "gpt-4.1-mini",
     messages: [
-      {
-        role: "system",
-        content: FOUNDZIE_SYSTEM_PROMPT,
-      },
-      {
-        role: "user",
-        content: finalUserContent,
-      },
+      { role: "system", content: FOUNDZIE_SYSTEM_PROMPT },
+      { role: "user", content: finalUserContent },
     ],
     tools: useTools ? (openAiTools as any) : undefined,
     tool_choice: useTools ? "auto" : undefined,
-    temperature: 0.6,
+    temperature: 0.4,
     max_tokens: 400,
   });
 
   const choice: any = completion.choices[0];
   const message: any = choice?.message ?? {};
 
-  // -----------------------------
+  console.log("[agent runtime] raw OpenAI message:", JSON.stringify(message));
+
   // 1) Text reply
-  // -----------------------------
   let replyText = "";
 
   if (typeof message.content === "string") {
@@ -153,14 +137,7 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
         .trim() || "";
   }
 
-  if (!replyText) {
-    replyText =
-      "Foundzie: I received your message and I'm here, but my reply was empty. Please try asking again in a slightly different way.";
-  }
-
-  // -----------------------------
-  // 2) Tool call handling
-  // -----------------------------
+  // 2) Tool calls
   const usedTools: string[] = [];
   const toolResults: Array<{ name: string; result: unknown }> = [];
 
@@ -216,9 +193,18 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
     }
   }
 
-  // -----------------------------
-  // 3) Human-friendly summary of tool actions
-  // -----------------------------
+  // 3) If no text, but tools ran, synthesize a short reply
+  if (!replyText) {
+    if (toolResults.length > 0) {
+      replyText =
+        "I've processed your request and updated the concierge system.";
+    } else {
+      replyText =
+        "Foundzie: I received your message and I'm here, but my reply was empty. Please try asking again in a slightly different way.";
+    }
+  }
+
+  // 4) Friendly summary of tool actions
   if (toolResults.length > 0) {
     const actions: string[] = [];
 
@@ -237,7 +223,6 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
 
     if (actions.length > 0) {
       let summary: string;
-
       if (actions.length === 1) {
         summary = `I've ${actions[0]}.`;
       } else if (actions.length === 2) {
@@ -275,13 +260,15 @@ export async function runFoundzieAgent(
 ): Promise<AgentResult> {
   try {
     if (!hasOpenAiKey || !openai) {
-      // Clear reason so we can see it in admin debug JSON if needed
       return runStubAgent(req, "missing_or_empty_OPENAI_API_KEY");
     }
 
     return await runOpenAiAgent(req);
   } catch (err) {
     console.error("[agent runtime] OpenAI error, falling back to stub:", err);
-    return runStubAgent(req, err instanceof Error ? err.message : String(err));
+    return runStubAgent(
+      req,
+      err instanceof Error ? err.message : String(err)
+    );
   }
 }

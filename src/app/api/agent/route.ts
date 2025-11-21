@@ -8,8 +8,7 @@ import { toolImplementations } from "@/lib/agent/tools";
 export const dynamic = "force-dynamic";
 
 // POST /api/agent
-// Body shape (from Admin debug panel):
-//   { input: string, roomId?: string, userId?: string }
+// Body: { input: string, roomId?: string, userId?: string }
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as any;
 
@@ -33,7 +32,7 @@ export async function POST(req: NextRequest) {
     roomId,
     userId,
     source: "admin",
-    toolsMode: "debug", // admin debug is allowed to call tools
+    toolsMode: "debug", // Admin debug: allow tools
   });
 
   const availableTools = coreTools.map((t) => t.name);
@@ -50,7 +49,7 @@ export async function POST(req: NextRequest) {
   });
 }
 
-// Optional: simple GET for sanity checks
+// Simple sanity GET
 export async function GET() {
   return NextResponse.json({
     ok: true,

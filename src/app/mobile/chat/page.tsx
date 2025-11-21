@@ -2,7 +2,6 @@
 
 "use client";
 
-// src/app/mobile/chat/page.tsx
 import { useEffect, useState, FormEvent } from "react";
 import type { ChatMessage } from "@/app/data/chat";
 
@@ -21,10 +20,9 @@ export default function MobileChatPage() {
     try {
       if (messages.length === 0) setLoading(true);
 
-      const res = await fetch(
-        `/api/chat/${ROOM_ID}?t=${Date.now()}`,
-        { cache: "no-store" }
-      );
+      const res = await fetch(`/api/chat/${ROOM_ID}?t=${Date.now()}`, {
+        cache: "no-store",
+      });
       const data = await res.json().catch(() => ({} as any));
 
       if (Array.isArray(data.items)) {
@@ -146,12 +144,13 @@ export default function MobileChatPage() {
           </p>
         )}
 
-        {messages.map((msg) => {
+        {messages.map((msg, index) => {
           const isUser = msg.sender === "user";
 
           return (
             <div
-              key={msg.id}
+              // ✅ SAFE KEY: combines id + index so React never sees duplicates
+              key={`${msg.id}-${index}`}
               className={`flex ${isUser ? "justify-end" : "justify-start"}`}
             >
               <div
