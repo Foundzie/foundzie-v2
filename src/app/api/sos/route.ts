@@ -1,138 +1,118 @@
 // src/app/api/sos/route.ts
-
 import { NextResponse } from "next/server";
-import {
-  addEvent,
-  listEvents,
-  updateEvent,
-  type SosStatus,
-} from "./store";
-import { addMessage } from "../chat/store";
+import { addEvent, listEvents, updateEvent } from "./store";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/sos -> list all SOS events (optionally filtered by userId)
-export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const userIdParam = url.searchParams.get("userId");
-  const userId = userIdParam ? userIdParam.trim() : "";
-
-  const items = await listEvents();
-  const filtered = userId
-    ? items.filter((e) => (e.userId ?? "") === userId)
-    : items;
-
-  return NextResponse.json({ items: filtered });
+/**
+ * GET /api/sos
+ * Used by the Admin SOS page to fetch the list.
+ * Response: { ok: true, items: SosEvent[] }
+ */
+export async function GET() {
+  try {
+    const items = await listEvents();
+    return NextResponse.json({ ok: true, items });
+  } catch (err) {
+    console.error("[/api/sos] GET error:", err);
+    return NextResponse.json(
+      { ok: false, message: "Failed to load SOS events" },
+      { status: 500 }
+    );
+  }
 }
 
-// POST /api/sos -> create a new SOS event from mobile
+/**
+ * POST /api/sos
+ * Used by the mobile SOS screen to create a new event.
+ * Body: { message, type?, location?, source?, phone?, userId? }
+ */
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as any;
+  try {
+    const body = await req.json().catch(() => ({} as any));
 
-  const rawMessage =
-    typeof body.message === "string" ? body.message.trim() : "";
-  const type =
-    typeof body.type === "string" ? body.type.trim() : "general";
-  const location =
-    typeof body.location === "string" ? body.location.trim() : "";
-  const phone =
-    typeof body.phone === "string" ? body.phone.trim() : "";
-  const source =
-    typeof body.source === "string" ? body.source.trim() : "mobile-sos";
+    const message = typeof body.message === "string" ? body.message.trim() : "";
+    const type = typeof body.type === "string" ? body.type : "general";
+    const location =
+      typeof body.location === "string" ? body.location : undefined;
+    const source =
+      typeof body.source === "string" ? body.source : "mobile-sos";
+    const phone = typeof body.phone === "string" ? body.phone : undefined;
+    const userId = typeof body.userId === "string" ? body.userId : undefined;
 
-  const userId =
-    typeof body.userId === "string" && body.userId.trim()
-      ? body.userId.trim()
-      : "";
+    if (!message) {
+      return NextResponse.json(
+        { ok: false, message: "Missing SOS message" },
+        { status: 400 }
+      );
+    }
 
-  if (!rawMessage) {
+    const event = await addEvent({
+      message,
+      type,
+      location,
+      source,
+      phone,
+      userId,
+    });
+
+    return NextResponse.json({ ok: true, item: event });
+  } catch (err) {
+    console.error("[/api/sos] POST error:", err);
     return NextResponse.json(
-      { ok: false, message: "Missing SOS message" },
-      { status: 400 }
+      { ok: false, message: "Failed to create SOS event" },
+      { status: 500 }
     );
   }
-
-  // 1) store the SOS event
-  const sos = await addEvent({
-    message: rawMessage,
-    type,
-    location,
-    phone,
-    source,
-    ...(userId ? { userId } : {}),
-  });
-
-  // 2) also drop a system-style message into the chat history
-  // For now we use a single default room id
-  const chatText = `⚠️ SOS sent: "${rawMessage}". A concierge is being notified and will assist you.`;
-
-  await addMessage("default", {
-    sender: "concierge",
-    text: chatText,
-    attachmentName: null,
-    attachmentKind: null,
-  });
-
-  return NextResponse.json({ ok: true, item: sos });
 }
 
-// PATCH /api/sos -> update status of an SOS event (+ optional note + optional user link)
+/**
+ * PATCH /api/sos
+ * Used by the Admin SOS page to update status / add notes.
+ * Body: { id, status?, note?, by?, userId? }
+ */
 export async function PATCH(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as any;
+  try {
+    const body = await req.json().catch(() => ({} as any));
 
-  const id = typeof body.id === "string" ? body.id : "";
-  const status = body.status as SosStatus | undefined;
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    const status = body.status as any;
+    const note = typeof body.note === "string" ? body.note : undefined;
+    const by = typeof body.by === "string" ? body.by : undefined;
+    const userId =
+      body.userId === undefined
+        ? undefined
+        : body.userId === null
+        ? null
+        : String(body.userId);
 
-  const note =
-    typeof body.note === "string" ? body.note.trim() : "";
-  const by =
-    typeof body.by === "string" && body.by.trim()
-      ? body.by.trim()
-      : "Admin";
+    if (!id) {
+      return NextResponse.json(
+        { ok: false, message: "Missing SOS id" },
+        { status: 400 }
+      );
+    }
 
-  const userId =
-    typeof body.userId === "string" && body.userId.trim()
-      ? body.userId.trim()
-      : undefined;
+    const updated = await updateEvent(id, {
+      status,
+      newActionText: note,
+      newActionBy: by,
+      userId,
+    });
 
-  if (!id) {
+    if (!updated) {
+      return NextResponse.json(
+        { ok: false, message: "SOS event not found" },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ ok: true, item: updated });
+  } catch (err) {
+    console.error("[/api/sos] PATCH error:", err);
     return NextResponse.json(
-      { ok: false, message: "Missing SOS id" },
-      { status: 400 }
+      { ok: false, message: "Failed to update SOS event" },
+      { status: 500 }
     );
   }
-
-  if (!status || !["new", "in-progress", "resolved"].includes(status)) {
-    return NextResponse.json(
-      { ok: false, message: "Invalid status" },
-      { status: 400 }
-    );
-  }
-
-  const patch: {
-    status: SosStatus;
-    newActionText?: string;
-    newActionBy?: string;
-    userId?: string | null;
-  } = { status };
-
-  if (note) {
-    patch.newActionText = note;
-    patch.newActionBy = by;
-  }
-
-  if (userId !== undefined) {
-    patch.userId = userId;
-  }
-
-  const updated = await updateEvent(id, patch);
-
-  if (!updated) {
-    return NextResponse.json(
-      { ok: false, message: "SOS event not found" },
-      { status: 404 }
-    );
-  }
-
-  return NextResponse.json({ ok: true, item: updated });
 }

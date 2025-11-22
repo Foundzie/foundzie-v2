@@ -1,5 +1,3 @@
-// src/lib/agent/tools.ts
-
 /**
  * Foundzie V3 - Agent Tool Handlers
  * ----------------------------------
@@ -15,7 +13,9 @@ import {
   updateEvent,
   type SosStatus,
 } from "@/app/api/sos/store";
+
 import { addCallLog } from "@/app/api/calls/store";
+
 import {
   mockNotifications,
   type AppNotification,
@@ -70,14 +70,35 @@ export async function log_outbound_call(args: {
   phone?: string;
   note: string;
 }) {
+  const userId =
+    typeof args.userId === "string" && args.userId.trim()
+      ? args.userId.trim()
+      : null;
+
+  const phone =
+    typeof args.phone === "string" && args.phone.trim()
+      ? args.phone.trim()
+      : "";
+
+  const note =
+    typeof args.note === "string" && args.note.trim()
+      ? args.note.trim()
+      : "";
+
+  if (!phone) {
+    throw new Error(
+      "Missing phone number. Provide a phone or a userId linked to a phone."
+    );
+  }
+
   const id = `agent-call-${Date.now()}`;
 
   const log = await addCallLog({
     id,
-    userId: args.userId ?? null,
+    userId,
     userName: null,
-    phone: args.phone ?? "unknown",
-    note: args.note,
+    phone,
+    note,
     direction: "outbound",
   });
 
@@ -133,5 +154,4 @@ export const toolHandlers = {
   broadcast_notification,
 } as const;
 
-// Alias used by runtime.ts and api/agent/route.ts
 export const toolImplementations = toolHandlers;

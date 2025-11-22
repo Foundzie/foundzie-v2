@@ -1,14 +1,5 @@
-// src/app/api/sos/store.ts
-//
-// SOS store with optional Redis backing.
-// - If REDIS_URL + ioredis are available → data is stored in Redis.
-// - Otherwise → falls back to in-memory array (what you had before).
-//
-// The public API (types + functions) is unchanged so all existing
-// routes & UIs keep working.
-
 import "server-only";
-import { getRedis } from "@/lib/kv/redis";
+import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 
 export type SosStatus = "new" | "in-progress" | "resolved";
 
@@ -36,72 +27,23 @@ export interface SosEvent {
   actions: SosAction[];
 }
 
-// Redis key namespace for SOS events
-const SOS_LIST_KEY = "foundzie:sos:events:v1";
+// ⬇⬇ IMPORTANT: new versioned key so we ignore any old corrupted data
+const SOS_KEY = "foundzie:sos:v2";
 
-// In-memory fallback (dev / no Redis)
-let memoryEvents: SosEvent[] = [];
-
-// ---------- Helpers for Redis <-> SosEvent ----------
-
-function sortNewestFirst(events: SosEvent[]): SosEvent[] {
-  return events.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+async function loadAll(): Promise<SosEvent[]> {
+  const items = (await kvGetJSON<SosEvent[]>(SOS_KEY)) ?? [];
+  // newest first
+  return items.slice().sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  );
 }
 
-function parseEvent(raw: string): SosEvent | null {
-  try {
-    const obj = JSON.parse(raw) as SosEvent;
-    if (!obj || typeof obj.id !== "string") return null;
-    // ensure actions array exists
-    obj.actions = Array.isArray(obj.actions) ? obj.actions : [];
-    return obj;
-  } catch {
-    return null;
-  }
+async function saveAll(items: SosEvent[]): Promise<void> {
+  await kvSetJSON(SOS_KEY, items);
 }
 
-async function readAllFromRedis(): Promise<SosEvent[]> {
-  const client = getRedis();
-  if (!client) return memoryEvents;
-
-  const entries = await client.lrange(SOS_LIST_KEY, 0, -1);
-  const parsed: SosEvent[] = [];
-  for (const raw of entries) {
-    const evt = parseEvent(raw);
-    if (evt) parsed.push(evt);
-  }
-  return parsed;
-}
-
-async function writeAllToRedis(events: SosEvent[]): Promise<void> {
-  const client = getRedis();
-  if (!client) {
-    memoryEvents = events;
-    return;
-  }
-
-  const pipeline = client.multi();
-  pipeline.del(SOS_LIST_KEY);
-  if (events.length > 0) {
-    // store newest first to match your existing behavior
-    for (const e of events) {
-      pipeline.lpush(SOS_LIST_KEY, JSON.stringify(e));
-    }
-  }
-  await pipeline.exec();
-}
-
-// ---------- Public API (same signatures as before) ----------
-
-// newest first
 export async function listEvents(): Promise<SosEvent[]> {
-  const client = getRedis();
-  if (!client) {
-    return sortNewestFirst(memoryEvents);
-  }
-
-  const events = await readAllFromRedis();
-  return sortNewestFirst(events);
+  return loadAll();
 }
 
 export async function addEvent(input: {
@@ -125,16 +67,10 @@ export async function addEvent(input: {
     actions: [],
   };
 
-  const client = getRedis();
+  const current = await loadAll();
+  const next = [event, ...current];
 
-  if (!client) {
-    // in-memory only
-    memoryEvents = [event, ...memoryEvents];
-    return event;
-  }
-
-  // Redis: push as newest entry
-  await client.lpush(SOS_LIST_KEY, JSON.stringify(event));
+  await saveAll(next);
   return event;
 }
 
@@ -149,49 +85,16 @@ export async function updateEvent(
   id: string,
   patch: UpdatePatch
 ): Promise<SosEvent | null> {
-  const client = getRedis();
-
-  // -------- In-memory branch --------
-  if (!client) {
-    const idx = memoryEvents.findIndex((e) => e.id === id);
-    if (idx === -1) return null;
-
-    const current = memoryEvents[idx];
-
-    const updated: SosEvent = {
-      ...current,
-      status: patch.status ?? current.status,
-      actions: [...(current.actions ?? [])],
-    };
-
-    if (patch.userId !== undefined) {
-      updated.userId = patch.userId;
-    }
-
-    if (patch.newActionText && patch.newActionText.trim()) {
-      updated.actions.push({
-        id: crypto.randomUUID(),
-        at: new Date().toISOString(),
-        text: patch.newActionText.trim(),
-        by: patch.newActionBy ?? null,
-      });
-    }
-
-    memoryEvents[idx] = updated;
-    return updated;
-  }
-
-  // -------- Redis branch --------
-  const all = await readAllFromRedis();
-  const idx = all.findIndex((e) => e.id === id);
+  const current = await loadAll();
+  const idx = current.findIndex((e) => e.id === id);
   if (idx === -1) return null;
 
-  const current = all[idx];
+  const event = current[idx];
 
   const updated: SosEvent = {
-    ...current,
-    status: patch.status ?? current.status,
-    actions: [...(current.actions ?? [])],
+    ...event,
+    status: patch.status ?? event.status,
+    actions: [...(event.actions ?? [])],
   };
 
   if (patch.userId !== undefined) {
@@ -207,8 +110,9 @@ export async function updateEvent(
     });
   }
 
-  all[idx] = updated;
-  await writeAllToRedis(all);
+  const next = [...current];
+  next[idx] = updated;
 
+  await saveAll(next);
   return updated;
 }
