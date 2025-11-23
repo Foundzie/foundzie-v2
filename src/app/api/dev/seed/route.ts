@@ -1,8 +1,13 @@
 // src/app/api/dev/seed/route.ts
 import "server-only";
 import { NextResponse } from "next/server";
+
 import { addEvent, listEvents } from "@/app/api/sos/store";
 import { addCallLog, listCallLogs } from "@/app/api/calls/store";
+import {
+  addNotification,
+  listNotifications,
+} from "@/app/api/notifications/store";
 import { kvDebugGetRaw } from "@/lib/kv/redis";
 
 export const dynamic = "force-dynamic";
@@ -29,23 +34,38 @@ export async function GET() {
       direction: "outbound",
     });
 
-    // 3) Read back current lists
+    // 3) Create a debug notification
+    const notification = await addNotification({
+      title: "DEBUG notification from /api/dev/seed",
+      message: "This is a seeded notification used to verify KV wiring.",
+      type: "system",
+      timeLabel: "just now",
+    });
+
+    // 4) Read back current lists
     const sosList = await listEvents();
     const callList = await listCallLogs();
+    const notificationList = await listNotifications();
 
-    // 4) Optional: debug raw KV contents
+    // 5) Optional: debug raw KV contents
     const sosRaw = await kvDebugGetRaw("foundzie:sos:v2");
     const callsRaw = await kvDebugGetRaw("foundzie:calls:v2");
+    const notificationsRaw = await kvDebugGetRaw(
+      "foundzie:notifications:v1"
+    );
 
     return NextResponse.json({
       ok: true,
       sosCreated: sos,
       callCreated: call,
+      notificationCreated: notification,
       sosCount: sosList.length,
       callCount: callList.length,
+      notificationCount: notificationList.length,
       debugKv: {
         sos: sosRaw,
         calls: callsRaw,
+        notifications: notificationsRaw,
       },
     });
   } catch (err: any) {
