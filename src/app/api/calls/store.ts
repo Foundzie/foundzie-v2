@@ -1,7 +1,7 @@
+// src/app/api/calls/store.ts
 import "server-only";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 
-// Direction for future: we can add "inbound" later
 export type CallDirection = "outbound";
 
 export interface CallLog {
@@ -14,29 +14,19 @@ export interface CallLog {
   direction: CallDirection;
 }
 
-// ⬇⬇ IMPORTANT: new versioned key so we ignore any old corrupted data
 const CALLS_KEY = "foundzie:calls:v2";
-
-// --- internal helpers -------------------------------------------------
 
 async function loadAll(): Promise<CallLog[]> {
   const items = (await kvGetJSON<CallLog[]>(CALLS_KEY)) ?? [];
-  const sorted = items.slice().sort((a, b) =>
-    b.createdAt.localeCompare(a.createdAt)
-  );
-  return sorted;
+  return items
+    .slice()
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 async function saveAll(items: CallLog[]): Promise<void> {
   await kvSetJSON(CALLS_KEY, items);
 }
 
-// --- public API -------------------------------------------------------
-
-/**
- * Add a new call log entry (first position).
- * We keep only the latest 100 entries to avoid unbounded growth.
- */
 export async function addCallLog(
   entry: Omit<CallLog, "createdAt">
 ): Promise<CallLog> {
@@ -52,9 +42,6 @@ export async function addCallLog(
   return log;
 }
 
-/**
- * Return recent call logs (most recent first).
- */
 export async function listCallLogs(limit = 50): Promise<CallLog[]> {
   const items = await loadAll();
   return items.slice(0, limit);

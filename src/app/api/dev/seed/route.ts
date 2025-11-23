@@ -1,3 +1,5 @@
+// src/app/api/dev/seed/route.ts
+import "server-only";
 import { NextResponse } from "next/server";
 import { addEvent, listEvents } from "@/app/api/sos/store";
 import { addCallLog, listCallLogs } from "@/app/api/calls/store";
@@ -5,14 +7,6 @@ import { kvDebugGetRaw } from "@/lib/kv/redis";
 
 export const dynamic = "force-dynamic";
 
-/**
- * GET /api/dev/seed
- *
- * Debug endpoint to verify:
- *  - Upstash / Redis connection
- *  - SOS store
- *  - Call logs store
- */
 export async function GET() {
   try {
     // 1) Create a debug SOS event
@@ -39,7 +33,7 @@ export async function GET() {
     const sosList = await listEvents();
     const callList = await listCallLogs();
 
-    // 4) Debug raw KV contents for the new versioned keys
+    // 4) Optional: debug raw KV contents
     const sosRaw = await kvDebugGetRaw("foundzie:sos:v2");
     const callsRaw = await kvDebugGetRaw("foundzie:calls:v2");
 
@@ -57,10 +51,7 @@ export async function GET() {
   } catch (err: any) {
     console.error("[/api/dev/seed] error:", err);
     return NextResponse.json(
-      {
-        ok: false,
-        error: String(err?.message ?? err),
-      },
+      { ok: false, error: String(err?.message ?? err) },
       { status: 500 }
     );
   }

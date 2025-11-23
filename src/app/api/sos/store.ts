@@ -1,3 +1,4 @@
+// src/app/api/sos/store.ts
 import "server-only";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 
@@ -27,15 +28,15 @@ export interface SosEvent {
   actions: SosAction[];
 }
 
-// ⬇⬇ IMPORTANT: new versioned key so we ignore any old corrupted data
+// IMPORTANT: versioned key so we ignore any old corrupted data
 const SOS_KEY = "foundzie:sos:v2";
 
 async function loadAll(): Promise<SosEvent[]> {
   const items = (await kvGetJSON<SosEvent[]>(SOS_KEY)) ?? [];
   // newest first
-  return items.slice().sort((a, b) =>
-    b.createdAt.localeCompare(a.createdAt)
-  );
+  return items
+    .slice()
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 async function saveAll(items: SosEvent[]): Promise<void> {
