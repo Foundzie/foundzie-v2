@@ -5,9 +5,20 @@
 import { useEffect, useState, FormEvent } from "react";
 import type { ChatMessage } from "@/app/data/chat";
 
-const ROOM_ID = "demo-visitor-1"; // later: replace with real user/session id
+const VISITOR_ID_STORAGE_KEY = "foundzie_visitor_id";
+
+function createVisitorId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `visitor-${crypto.randomUUID()}`;
+  }
+  // Fallback for environments without randomUUID
+  return `visitor-${Date.now().toString(16)}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+}
 
 export default function MobileChatPage() {
+  const [roomId, setRoomId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [attachmentName, setAttachmentName] = useState<string | null>(null);
@@ -15,14 +26,29 @@ export default function MobileChatPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Shared loader (initial + polling)
-  const loadMessages = async () => {
-    try {
-      if (messages.length === 0) setLoading(true);
+  // ---------------- Visitor identity (roomId) ----------------
+  useEffect(() => {
+    if (typeof window === "undefined") return;
 
-      const res = await fetch(`/api/chat/${ROOM_ID}?t=${Date.now()}`, {
-        cache: "no-store",
-      });
+    let id = window.localStorage.getItem(VISITOR_ID_STORAGE_KEY);
+
+    if (!id) {
+      id = createVisitorId();
+      window.localStorage.setItem(VISITOR_ID_STORAGE_KEY, id);
+    }
+
+    setRoomId(id);
+  }, []);
+
+  // Shared loader (initial + polling) – uses the resolved roomId
+  const loadMessages = async (currentRoomId: string, skipLoading?: boolean) => {
+    try {
+      if (!skipLoading && messages.length === 0) setLoading(true);
+
+      const res = await fetch(
+        `/api/chat/${currentRoomId}?t=${Date.now()}`,
+        { cache: "no-store" }
+      );
       const data = await res.json().catch(() => ({} as any));
 
       if (Array.isArray(data.items)) {
@@ -32,29 +58,29 @@ export default function MobileChatPage() {
       console.error("Failed to load chat messages:", err);
       setError("Could not load chat history.");
     } finally {
-      setLoading(false);
+      if (!skipLoading) setLoading(false);
     }
   };
 
-  // Initial load
+  // Initial load + poll every 5s once roomId is known
   useEffect(() => {
-    loadMessages();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!roomId) return;
 
-  // Poll every 5 seconds
-  useEffect(() => {
+    loadMessages(roomId);
+
     const id = setInterval(() => {
-      loadMessages();
+      loadMessages(roomId, true);
     }, 5000);
 
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [roomId]);
 
-  // Send message (with optimistic UI)
+  // ---------------- Send message (with optimistic UI) ----------------
   async function handleSend(e: FormEvent) {
     e.preventDefault();
+
+    if (!roomId) return; // safety: no room yet
 
     const text = input.trim();
     if ((!text && !attachmentName) || sending) return;
@@ -77,13 +103,18 @@ export default function MobileChatPage() {
     setInput("");
 
     try {
-      const body: any = { text, sender: "user" as const };
+      const body: any = {
+        text,
+        sender: "user" as const,
+        userId: roomId, // <-- pass identity to backend
+      };
+
       if (attachmentName) {
         body.attachmentName = attachmentName;
         body.attachmentKind = "image"; // treat as image/file mock
       }
 
-      const res = await fetch(`/api/chat/${ROOM_ID}`, {
+      const res = await fetch(`/api/chat/${roomId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -123,6 +154,7 @@ export default function MobileChatPage() {
     }
   }
 
+  // ---------------- UI ----------------
   return (
     <main className="min-h-screen bg-slate-950 text-white flex flex-col">
       <header className="px-4 pt-4 pb-2 border-b border-slate-800">
@@ -130,64 +162,69 @@ export default function MobileChatPage() {
         <p className="text-xs text-slate-400">
           Ask for help, ideas, or concierge requests.
         </p>
+        {roomId && (
+          <p className="text-[10px] text-slate-500 mt-1">
+            Visitor ID: <span className="font-mono">{roomId}</span>
+          </p>
+        )}
       </header>
 
       {/* messages area */}
       <section className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-        {loading && (
+        {(!roomId || loading) && (
           <p className="text-xs text-slate-500">Loading conversation...</p>
         )}
 
-        {!loading && messages.length === 0 && (
+        {roomId && !loading && messages.length === 0 && (
           <p className="text-xs text-slate-500">
             No messages yet. Say hi and tell Foundzie what you need.
           </p>
         )}
 
-        {messages.map((msg, index) => {
-          const isUser = msg.sender === "user";
+        {roomId &&
+          messages.map((msg, index) => {
+            const isUser = msg.sender === "user";
 
-          return (
-            <div
-              // ✅ SAFE KEY: combines id + index so React never sees duplicates
-              key={`${msg.id}-${index}`}
-              className={`flex ${isUser ? "justify-end" : "justify-start"}`}
-            >
+            return (
               <div
-                className={[
-                  "max-w-[80%] rounded-2xl px-3 py-2 text-xs",
-                  isUser
-                    ? "bg-pink-600 text-white"
-                    : "bg-slate-800 text-slate-100",
-                ].join(" ")}
+                key={`${msg.id}-${index}`} // safe key
+                className={`flex ${isUser ? "justify-end" : "justify-start"}`}
               >
-                {!isUser && (
-                  <p className="text-[10px] uppercase tracking-wide text-slate-300 mb-1">
-                    Concierge
+                <div
+                  className={[
+                    "max-w-[80%] rounded-2xl px-3 py-2 text-xs",
+                    isUser
+                      ? "bg-pink-600 text-white"
+                      : "bg-slate-800 text-slate-100",
+                  ].join(" ")}
+                >
+                  {!isUser && (
+                    <p className="text-[10px] uppercase tracking-wide text-slate-300 mb-1">
+                      Concierge
+                    </p>
+                  )}
+
+                  {/* attachment chip, if any */}
+                  {msg.attachmentName && (
+                    <p className="text-[10px] mb-1 italic opacity-90">
+                      {msg.attachmentName}
+                    </p>
+                  )}
+
+                  <p className="whitespace-pre-wrap break-words">
+                    {msg.text || (msg.attachmentName ? "(attachment)" : "")}
                   </p>
-                )}
 
-                {/* attachment chip, if any */}
-                {msg.attachmentName && (
-                  <p className="text-[10px] mb-1 italic opacity-90">
-                    {msg.attachmentName}
+                  <p className="mt-1 text-[10px] text-slate-400 text-right">
+                    {new Date(msg.createdAt).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
                   </p>
-                )}
-
-                <p className="whitespace-pre-wrap break-words">
-                  {msg.text || (msg.attachmentName ? "(attachment)" : "")}
-                </p>
-
-                <p className="mt-1 text-[10px] text-slate-400 text-right">
-                  {new Date(msg.createdAt).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </p>
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
       </section>
 
       {/* error */}
@@ -245,7 +282,9 @@ export default function MobileChatPage() {
 
           <button
             type="submit"
-            disabled={sending || (!input.trim() && !attachmentName)}
+            disabled={
+              sending || (!input.trim() && !attachmentName) || !roomId
+            }
             className="px-3 py-2 text-xs rounded-full bg-pink-600 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {sending ? "Sending..." : "Send"}
