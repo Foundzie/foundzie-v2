@@ -4,10 +4,10 @@
 
 import { useEffect, useState, FormEvent } from "react";
 import type { ChatMessage } from "../../data/chat";
-import mockUsers, { AdminUser } from "../../data/users";
+import type { AdminUser } from "../../data/users";
 
 type ConversationUser = {
-  id: string | null;      // userId if known, otherwise null
+  id: string | null; // userId if known, otherwise null
   name: string;
   roomId: string;
   subtitle: string;
@@ -31,16 +31,15 @@ export default function AdminChatPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // --- Visitor profile state (live user from API) ---
+  // Visitor profile state (live user from API)
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
 
-  // draft fields you can edit in the sidebar
   const [profileDraft, setProfileDraft] = useState<{
     interest: string;
     source: string;
-    tagsText: string; // comma-separated tags
+    tagsText: string;
     conciergeStatus: string;
     conciergeNote: string;
   }>({
@@ -56,11 +55,52 @@ export default function AdminChatPage() {
     null
   );
 
-  // --- Agent debug panel state (talks to /api/agent) ---
+  // Agent debug panel state (talks to /api/agent)
   const [agentInput, setAgentInput] = useState("");
   const [agentResult, setAgentResult] = useState<string | null>(null);
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
+
+  // NEW: real users loaded from /api/users
+  const [knownUsers, setKnownUsers] = useState<AdminUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+
+  /* --------------------- Load users for mapping roomId → user --------------------- */
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadUsers() {
+      try {
+        setUsersLoading(true);
+        const res = await fetch("/api/users", { cache: "no-store" });
+        const data = await res.json().catch(() => ({} as any));
+
+        if (!res.ok) {
+          throw new Error("Failed to load users");
+        }
+
+        const items = Array.isArray(data.items)
+          ? (data.items as AdminUser[])
+          : [];
+        if (!cancelled) {
+          setKnownUsers(items);
+        }
+      } catch (err) {
+        console.error("Failed to load users for admin chat:", err);
+      } finally {
+        if (!cancelled) setUsersLoading(false);
+      }
+    }
+
+    loadUsers();
+
+    // Optional: refresh users every 20s so admin sees new collected visitors
+    const id = setInterval(loadUsers, 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   /* --------------------- Load chat rooms (conversations) --------------------- */
   useEffect(() => {
@@ -80,19 +120,20 @@ export default function AdminChatPage() {
         }
 
         if (!Array.isArray(data.rooms)) {
-          // no rooms yet; leave conversations empty
           return;
         }
 
         const rooms = data.rooms as ChatRoomSummaryFromApi[];
 
         const convs: ConversationUser[] = rooms.map((room) => {
-          // Try to match to a known AdminUser by roomId
-          const match = mockUsers.find((u) => u.roomId === room.id);
+          // Try to match to a real AdminUser by roomId
+          const match = knownUsers.find(
+            (u) => String(u.roomId).trim() === String(room.id).trim()
+          );
 
           if (match) {
             return {
-              id: match.id,
+              id: String(match.id),
               name: match.name,
               roomId: room.id,
               subtitle:
@@ -125,7 +166,6 @@ export default function AdminChatPage() {
       } catch (err) {
         if (!cancelled) {
           console.error("Failed to load chat rooms:", err);
-          // We don't surface an error here yet; the UI handles "no conversations" message.
         }
       }
     }
@@ -138,11 +178,11 @@ export default function AdminChatPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [selectedRoomId]);
+  }, [selectedRoomId, knownUsers]);
 
   /* --------------------- Load chat messages --------------------- */
   useEffect(() => {
-    if (!selectedRoomId) return; // nothing to load yet
+    if (!selectedRoomId) return;
 
     let cancelled = false;
 
@@ -151,9 +191,12 @@ export default function AdminChatPage() {
         setLoading(true);
         setError(null);
 
-        const res = await fetch(`/api/chat/${selectedRoomId}?t=${Date.now()}`, {
-          cache: "no-store",
-        });
+        const res = await fetch(
+          `/api/chat/${encodeURIComponent(selectedRoomId)}?t=${Date.now()}`,
+          {
+            cache: "no-store",
+          }
+        );
 
         const data = await res.json().catch(() => ({} as unknown));
 
@@ -183,7 +226,6 @@ export default function AdminChatPage() {
 
     load();
 
-    // poll every 5 seconds
     const id = setInterval(load, 5000);
     return () => {
       cancelled = true;
@@ -214,6 +256,7 @@ export default function AdminChatPage() {
         setProfileError(null);
         setProfileSaveMessage(null);
 
+        // NOTE: no encodeURIComponent to avoid string|null TS issue
         const res = await fetch(`/api/users/${selectedUserId}`);
         const data = await res.json().catch(() => ({} as unknown));
 
@@ -280,6 +323,7 @@ export default function AdminChatPage() {
     };
 
     try {
+      // NOTE: no encodeURIComponent here either
       const res = await fetch(`/api/users/${selectedUserId}`, {
         method: "PATCH",
         headers: {
@@ -345,16 +389,19 @@ export default function AdminChatPage() {
     setInput("");
 
     try {
-      const res = await fetch(`/api/chat/${selectedRoomId}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text,
-          sender: "concierge",
-        }),
-      });
+      const res = await fetch(
+        `/api/chat/${encodeURIComponent(selectedRoomId)}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text,
+            sender: "concierge",
+          }),
+        }
+      );
 
       const data = await res.json().catch(() => ({} as unknown));
 
@@ -475,6 +522,12 @@ export default function AdminChatPage() {
           >
             Conversations
           </h2>
+
+          {usersLoading && (
+            <p style={{ fontSize: "11px", color: "#9ca3af" }}>
+              Loading users…
+            </p>
+          )}
 
           {conversations.length === 0 && (
             <p style={{ fontSize: "12px", color: "#6b7280" }}>
@@ -603,7 +656,6 @@ export default function AdminChatPage() {
                         color: isUser ? "#111827" : "white",
                       }}
                     >
-                      {/* sender label */}
                       <div
                         style={{
                           fontSize: "10px",
@@ -616,7 +668,6 @@ export default function AdminChatPage() {
                         {isUser ? "Visitor" : "Concierge"}
                       </div>
 
-                      {/* attachment chip */}
                       {msg.attachmentName && (
                         <div
                           style={{
@@ -863,8 +914,8 @@ export default function AdminChatPage() {
 
             {!profileLoading && !selectedUser && !profileError && (
               <p style={{ fontSize: "12px", color: "#6b7280" }}>
-                Select a conversation with a known user to see visitor
-                details. Anonymous visitors will still show in the chat list.
+                Select a conversation with a known user to see visitor details.
+                Anonymous visitors will still show in the chat list.
               </p>
             )}
 
@@ -879,7 +930,6 @@ export default function AdminChatPage() {
                   gap: "6px",
                 }}
               >
-                {/* read-only basics */}
                 <div style={{ fontWeight: 600 }}>{selectedUser.name}</div>
                 <div style={{ color: "#6b7280" }}>
                   {selectedUser.email || "no-email@example.com"}
@@ -898,7 +948,6 @@ export default function AdminChatPage() {
                   <strong>Room ID:</strong> {selectedUser.roomId}
                 </div>
 
-                {/* editable fields */}
                 <label style={{ marginTop: "4px" }}>
                   <div style={{ fontWeight: 600 }}>Interest</div>
                   <input

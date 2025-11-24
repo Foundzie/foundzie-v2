@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { listMessages, addMessage } from "../store";
 import type { ChatMessage } from "@/app/data/chat";
 import { runFoundzieAgent } from "@/lib/agent/runtime";
+import { ensureUserForRoom } from "../../users/store";
 
 export const dynamic = "force-dynamic";
 
@@ -87,10 +88,8 @@ export async function POST(req: NextRequest, context: any) {
 
   const body = (await req.json().catch(() => ({}))) as any;
 
-  const rawText =
-    typeof body.text === "string" ? body.text.trim() : "";
-  const rawSender =
-    typeof body.sender === "string" ? body.sender : "user";
+  const rawText = typeof body.text === "string" ? body.text.trim() : "";
+  const rawSender = typeof body.sender === "string" ? body.sender : "user";
   const attachmentName =
     typeof body.attachmentName === "string"
       ? body.attachmentName.trim()
@@ -111,6 +110,21 @@ export async function POST(req: NextRequest, context: any) {
 
   const sender = rawSender === "concierge" ? "concierge" : "user";
 
+  // NEW: if this is a user message, ensure we have a user record for this room
+  let linkedUserId: string | undefined = undefined;
+  if (sender === "user") {
+    try {
+      const ensured = await ensureUserForRoom(roomId, {
+        // Later we can pass name/email once the mobile app knows them.
+        source: "mobile-concierge",
+        tags: ["concierge-request"],
+      });
+      linkedUserId = String(ensured.id);
+    } catch (err) {
+      console.error("[chat] ensureUserForRoom failed:", err);
+    }
+  }
+
   // Save the incoming message (metadata only for attachments)
   const userMessage = await addMessage(roomId, {
     sender,
@@ -124,8 +138,7 @@ export async function POST(req: NextRequest, context: any) {
   // Only trigger the agent when a *user* sends something.
   if (sender === "user") {
     const agentInputBase =
-      rawText ||
-      (attachmentName ? `User sent attachment: ${attachmentName}` : "");
+      rawText || (attachmentName ? `User sent attachment: ${attachmentName}` : "");
 
     // --------------- Option C: Hybrid SOS logic -----------------
     const lowerText = (rawText || "").toLowerCase();
@@ -161,8 +174,10 @@ export async function POST(req: NextRequest, context: any) {
       const agentResult = await runFoundzieAgent({
         input: agentInput,
         roomId,
-        // If you later pass real user IDs from the client, they will show up here.
-        userId: typeof body.userId === "string" ? body.userId : undefined,
+        // Prefer the ensured userId; fall back to whatever client sent.
+        userId:
+          linkedUserId ??
+          (typeof body.userId === "string" ? body.userId : undefined),
         source: "mobile",
         toolsMode,
       });
