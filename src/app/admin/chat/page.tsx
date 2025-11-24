@@ -7,32 +7,23 @@ import type { ChatMessage } from "../../data/chat";
 import mockUsers, { AdminUser } from "../../data/users";
 
 type ConversationUser = {
-  id: string;
+  id: string | null;      // userId if known, otherwise null
   name: string;
   roomId: string;
   subtitle: string;
 };
 
-function buildConversations(): ConversationUser[] {
-  return mockUsers.map((u) => ({
-    id: u.id,
-    name: u.name,
-    roomId: u.roomId,
-    subtitle: u.interest || u.source || "",
-  }));
-}
+type ChatRoomSummaryFromApi = {
+  id: string; // roomId
+  lastMessage?: ChatMessage;
+  lastAt?: string;
+  lastSender?: "user" | "concierge";
+};
 
 export default function AdminChatPage() {
-  const conversations = buildConversations();
-
-  // pick first user as default
-  const initialRoomId = conversations[0]?.roomId ?? "default";
-  const initialUserId = conversations[0]?.id ?? null;
-
-  const [selectedRoomId, setSelectedRoomId] = useState<string>(initialRoomId);
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(
-    initialUserId
-  );
+  const [conversations, setConversations] = useState<ConversationUser[]>([]);
+  const [selectedRoomId, setSelectedRoomId] = useState<string>("");
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -71,8 +62,88 @@ export default function AdminChatPage() {
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
 
+  /* --------------------- Load chat rooms (conversations) --------------------- */
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRooms() {
+      try {
+        const res = await fetch(`/api/chat?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          rooms?: unknown;
+        };
+
+        if (!res.ok) {
+          throw new Error("Failed to load chat rooms");
+        }
+
+        if (!Array.isArray(data.rooms)) {
+          // no rooms yet; leave conversations empty
+          return;
+        }
+
+        const rooms = data.rooms as ChatRoomSummaryFromApi[];
+
+        const convs: ConversationUser[] = rooms.map((room) => {
+          // Try to match to a known AdminUser by roomId
+          const match = mockUsers.find((u) => u.roomId === room.id);
+
+          if (match) {
+            return {
+              id: match.id,
+              name: match.name,
+              roomId: room.id,
+              subtitle:
+                match.interest ||
+                match.source ||
+                room.lastMessage?.text ||
+                "",
+            };
+          }
+
+          // Fallback: anonymous visitor
+          const shortId = room.id.slice(0, 6);
+          return {
+            id: null,
+            name: `Visitor ${shortId}`,
+            roomId: room.id,
+            subtitle: room.lastMessage?.text || "",
+          };
+        });
+
+        if (!cancelled) {
+          setConversations(convs);
+
+          // If nothing selected yet, pick the first room (if any)
+          if (!selectedRoomId && convs.length > 0) {
+            setSelectedRoomId(convs[0].roomId);
+            setSelectedUserId(convs[0].id);
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Failed to load chat rooms:", err);
+          // We don't surface an error here yet; the UI handles "no conversations" message.
+        }
+      }
+    }
+
+    loadRooms();
+
+    // Optional: poll rooms every 10s so new visitors appear automatically
+    const id = setInterval(loadRooms, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [selectedRoomId]);
+
   /* --------------------- Load chat messages --------------------- */
   useEffect(() => {
+    if (!selectedRoomId) return; // nothing to load yet
+
     let cancelled = false;
 
     async function load() {
@@ -254,7 +325,7 @@ export default function AdminChatPage() {
   async function handleSend(e: FormEvent) {
     e.preventDefault();
     const text = input.trim();
-    if (!text || sending) return;
+    if (!text || sending || !selectedRoomId) return;
 
     setSending(true);
     setError(null);
@@ -417,7 +488,7 @@ export default function AdminChatPage() {
 
             return (
               <button
-                key={c.id}
+                key={c.roomId}
                 type="button"
                 onClick={() => {
                   setSelectedRoomId(c.roomId);
@@ -500,13 +571,13 @@ export default function AdminChatPage() {
                 padding: "8px 0",
               }}
             >
-              {loading && (
+              {loading && selectedRoomId && (
                 <p style={{ fontSize: "12px", color: "#9ca3af" }}>
                   Loading conversation…
                 </p>
               )}
 
-              {!loading && messages.length === 0 && (
+              {!loading && messages.length === 0 && selectedRoomId && (
                 <p style={{ fontSize: "12px", color: "#9ca3af" }}>
                   No chat messages yet for this user.
                 </p>
@@ -625,7 +696,7 @@ export default function AdminChatPage() {
               />
               <button
                 type="submit"
-                disabled={sending || !input.trim()}
+                disabled={sending || !input.trim() || !selectedRoomId}
                 style={{
                   borderRadius: "9999px",
                   padding: "8px 14px",
@@ -633,10 +704,12 @@ export default function AdminChatPage() {
                   fontWeight: 500,
                   background: "#f97316",
                   color: "white",
-                  opacity: sending || !input.trim() ? 0.6 : 1,
-                  cursor: sending || !input.trim()
-                    ? "not-allowed"
-                    : "pointer",
+                  opacity:
+                    sending || !input.trim() || !selectedRoomId ? 0.6 : 1,
+                  cursor:
+                    sending || !input.trim() || !selectedRoomId
+                      ? "not-allowed"
+                      : "pointer",
                   border: "none",
                 }}
               >
@@ -669,9 +742,7 @@ export default function AdminChatPage() {
                   marginBottom: "6px",
                 }}
               >
-                Send a test prompt to the Foundzie agent backend. This still
-                uses the stubbed response (OpenAI will be wired in next
-                milestone).
+                Send a test prompt to the Foundzie agent backend.
               </p>
 
               <form
@@ -778,7 +849,7 @@ export default function AdminChatPage() {
               Visitor profile
             </h2>
 
-            {profileLoading && (
+            {profileLoading && selectedUserId && (
               <p style={{ fontSize: "12px", color: "#9ca3af" }}>
                 Loading profile…
               </p>
@@ -792,7 +863,8 @@ export default function AdminChatPage() {
 
             {!profileLoading && !selectedUser && !profileError && (
               <p style={{ fontSize: "12px", color: "#6b7280" }}>
-                Select a conversation to see visitor details.
+                Select a conversation with a known user to see visitor
+                details. Anonymous visitors will still show in the chat list.
               </p>
             )}
 
