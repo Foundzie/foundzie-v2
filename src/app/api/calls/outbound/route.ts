@@ -2,26 +2,23 @@
 import { NextResponse } from "next/server";
 import { getUser } from "../../users/store";
 import { addCallLog } from "../store";
+import { startTwilioCall } from "@/lib/twilio";
 
 export const dynamic = "force-dynamic";
 
 // POST /api/calls/outbound
-// Body options:
-//  - { userId: "29", note?: "Follow-up on booking" }
-//  - { phone: "+13315551234", note?: "Manual number" }
-// If userId is provided, we try to load the user's phone first.
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({} as unknown));
+  const body = await req.json().catch(() => ({} as any));
 
   const userId =
-    typeof (body as any).userId === "string" ? (body as any).userId.trim() : "";
+    typeof body.userId === "string" ? body.userId.trim() : "";
   const note =
-    typeof (body as any).note === "string" ? (body as any).note.trim() : "";
+    typeof body.note === "string" ? body.note.trim() : "";
 
   let phone =
-    typeof (body as any).phone === "string" ? (body as any).phone.trim() : "";
+    typeof body.phone === "string" ? body.phone.trim() : "";
 
-  let user: Awaited<ReturnType<typeof getUser>> | null = null;
+  let user = null;
 
   if (userId) {
     user = await getUser(userId);
@@ -35,23 +32,18 @@ export async function POST(req: Request) {
       {
         ok: false,
         message:
-          "Missing phone number. Provide phone in body or a userId that has phone set.",
+          "Missing phone number. Provide phone in body or a userId with phone set.",
       },
       { status: 400 }
     );
   }
 
-  const callId = `debug-call-${Date.now()}`;
+  const callId = `call-${Date.now()}`;
 
-  // Log the request (this is where Twilio will hook in later)
-  console.log("[calls] outbound request", {
-    userId: user ? user.id : null,
-    phone,
-    note,
-    callId,
-  });
+  // 1) Attempt Twilio call (auto-skips if env vars missing)
+  const twilioResult = await startTwilioCall(phone, note);
 
-  // NEW: store in call logs
+  // 2) Always log internally (preserves your Admin Calls page)
   const log = await addCallLog({
     id: callId,
     userId: user ? String(user.id) : null,
@@ -69,7 +61,7 @@ export async function POST(req: Request) {
     userName: log.userName,
     note: log.note,
     createdAt: log.createdAt,
-    // Reminder for future Twilio work
-    debug: "Twilio outbound voice integration goes here in the next step.",
+    twilioSid: twilioResult?.sid ?? null,
+    twilioStatus: twilioResult ? "started" : "skipped",
   });
 }
