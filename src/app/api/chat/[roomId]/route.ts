@@ -4,7 +4,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { listMessages, addMessage } from "../store";
 import type { ChatMessage } from "@/app/data/chat";
 import { runFoundzieAgent } from "@/lib/agent/runtime";
-import { ensureUserForRoom } from "../../users/store";
+
+import { listUsers, createUser, updateUser } from "../../users/store";
+import type { AdminUser } from "@/app/data/users";
 
 export const dynamic = "force-dynamic";
 
@@ -74,6 +76,47 @@ function isConfirmationText(text: string): boolean {
   return softConfirms.some((phrase) => t.includes(phrase));
 }
 
+/* ------------------------------------------------------------------ */
+/*  Auto-create / link visitor profile for this room                  */
+/* ------------------------------------------------------------------ */
+
+async function ensureVisitorUserForRoom(roomId: string): Promise<AdminUser | null> {
+  if (!roomId) return null;
+
+  try {
+    const all = await listUsers();
+    const existing = all.find(
+      (u) => String(u.roomId).trim() === String(roomId).trim()
+    );
+    if (existing) {
+      return existing;
+    }
+
+    // No user yet for this roomId → create a minimal "collected" profile
+    const now = new Date();
+    const joined = now.toISOString().slice(0, 10); // e.g. "2025-11-23"
+
+    const base = await createUser({
+      name: "Anonymous visitor",
+      email: `anonymous+${roomId}@visitor.local`,
+      phone: null,
+      role: "viewer",
+      status: "collected",
+      joined,
+      interest: "",
+      source: "mobile-chat",
+      tags: [],
+    });
+
+    // Make sure the profile is linked to this specific chat room
+    const updated = await updateUser(String(base.id), { roomId });
+    return updated ?? base;
+  } catch (err) {
+    console.error("[chat] ensureVisitorUserForRoom failed:", err);
+    return null;
+  }
+}
+
 // GET /api/chat/[roomId] -> messages for a single room
 export async function GET(_req: NextRequest, context: any) {
   const { roomId } = (context.params as RoomParams) ?? { roomId: "default" };
@@ -88,8 +131,10 @@ export async function POST(req: NextRequest, context: any) {
 
   const body = (await req.json().catch(() => ({}))) as any;
 
-  const rawText = typeof body.text === "string" ? body.text.trim() : "";
-  const rawSender = typeof body.sender === "string" ? body.sender : "user";
+  const rawText =
+    typeof body.text === "string" ? body.text.trim() : "";
+  const rawSender =
+    typeof body.sender === "string" ? body.sender : "user";
   const attachmentName =
     typeof body.attachmentName === "string"
       ? body.attachmentName.trim()
@@ -110,21 +155,6 @@ export async function POST(req: NextRequest, context: any) {
 
   const sender = rawSender === "concierge" ? "concierge" : "user";
 
-  // NEW: if this is a user message, ensure we have a user record for this room
-  let linkedUserId: string | undefined = undefined;
-  if (sender === "user") {
-    try {
-      const ensured = await ensureUserForRoom(roomId, {
-        // Later we can pass name/email once the mobile app knows them.
-        source: "mobile-concierge",
-        tags: ["concierge-request"],
-      });
-      linkedUserId = String(ensured.id);
-    } catch (err) {
-      console.error("[chat] ensureUserForRoom failed:", err);
-    }
-  }
-
   // Save the incoming message (metadata only for attachments)
   const userMessage = await addMessage(roomId, {
     sender,
@@ -135,10 +165,14 @@ export async function POST(req: NextRequest, context: any) {
 
   let reply: ChatMessage | null = null;
 
-  // Only trigger the agent when a *user* sends something.
+  // Only trigger the agent (and auto-profile logic) when a *user* sends something.
   if (sender === "user") {
+    // 🔹 Ensure we have a visitor profile for this room
+    await ensureVisitorUserForRoom(roomId);
+
     const agentInputBase =
-      rawText || (attachmentName ? `User sent attachment: ${attachmentName}` : "");
+      rawText ||
+      (attachmentName ? `User sent attachment: ${attachmentName}` : "");
 
     // --------------- Option C: Hybrid SOS logic -----------------
     const lowerText = (rawText || "").toLowerCase();
@@ -174,10 +208,8 @@ export async function POST(req: NextRequest, context: any) {
       const agentResult = await runFoundzieAgent({
         input: agentInput,
         roomId,
-        // Prefer the ensured userId; fall back to whatever client sent.
-        userId:
-          linkedUserId ??
-          (typeof body.userId === "string" ? body.userId : undefined),
+        // If you later pass real user IDs from the client, they will show up here.
+        userId: typeof body.userId === "string" ? body.userId : undefined,
         source: "mobile",
         toolsMode,
       });
