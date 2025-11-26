@@ -1,4 +1,5 @@
 // src/app/api/users/store.ts
+
 import type { AdminUser as BaseAdminUser } from "@/app/data/users";
 import { userProvider, type AdminUserInput } from "./provider";
 
@@ -7,6 +8,10 @@ export type AdminUser = BaseAdminUser & {
   tags?: string[];
   phone?: string | null;
 };
+
+/* ------------------------------------------------------------------ */
+/*  Basic CRUD wrappers                                               */
+/* ------------------------------------------------------------------ */
 
 export async function listUsers(): Promise<AdminUser[]> {
   return userProvider.list();
@@ -31,7 +36,7 @@ export async function deleteUser(id: string): Promise<boolean> {
   return userProvider.delete(id);
 }
 
-// used later for mass activate/disable
+// Used later for mass activate/disable
 export async function bulkUpdateUsers(
   ids: string[],
   partial: AdminUserInput
@@ -47,12 +52,24 @@ export async function bulkUpdateUsers(
 export async function findUserByRoomId(
   roomId: string
 ): Promise<AdminUser | undefined> {
+  const trimmed = roomId.trim();
+  if (!trimmed) return undefined;
+
   const all = await listUsers();
-  return all.find((u) => String(u.roomId).trim() === roomId.trim());
+  return all.find(
+    (u) => typeof u.roomId === "string" && u.roomId.trim() === trimmed
+  );
 }
 
-// Ensure there is at least one user row for this roomId.
-// If it exists, return it. If not, create a lightweight "Anonymous visitor".
+/**
+ * Ensure there is at least one user row for this roomId.
+ *
+ * - If it exists, return it.
+ * - If not, create a lightweight "Anonymous visitor" (or use the provided name).
+ *
+ * This is used by the mobile chat profile endpoint /api/users/room/[roomId]
+ * so that the admin panel can always find a matching user for a chat room.
+ */
 export async function ensureUserForRoom(
   roomId: string,
   opts?: {
@@ -67,16 +84,25 @@ export async function ensureUserForRoom(
     throw new Error("ensureUserForRoom called with empty roomId");
   }
 
+  // If a user is already linked to this room, just return it.
   const existing = await findUserByRoomId(trimmed);
   if (existing) return existing;
 
   const nowIso = new Date().toISOString();
 
+  // Prefer the explicit name we got from the mobile client.
   const defaultName =
-    opts?.name ?? `Anonymous visitor ${trimmed.slice(0, 6) || ""}`;
+    (opts?.name && opts.name.trim()) ||
+    `Anonymous visitor ${trimmed.slice(0, 6) || ""}`;
+
   const email = opts?.email ?? "no-email@example.com";
-  const source = opts?.source ?? "mobile-concierge";
-  const tags = opts?.tags ?? ["concierge-request"];
+
+  // IMPORTANT: for mobile chat we default the source to "mobile-chat"
+  const source = opts?.source ?? "mobile-chat";
+
+  const tags = Array.isArray(opts?.tags) && opts!.tags.length > 0
+    ? opts!.tags
+    : ["concierge-request"];
 
   // AdminUserInput already allows partial fields (joined is optional in your usage)
   const created = await createUser({

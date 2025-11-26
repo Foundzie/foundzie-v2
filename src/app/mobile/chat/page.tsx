@@ -2,7 +2,7 @@
 
 "use client";
 
-import { useEffect, useState, FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import type { ChatMessage } from "@/app/data/chat";
 
 const VISITOR_ID_STORAGE_KEY = "foundzie_visitor_id";
@@ -26,6 +26,16 @@ export default function MobileChatPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Profile sharing (M2d)
+  const [hasSharedProfile, setHasSharedProfile] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [interestDraft, setInterestDraft] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileSavedMessage, setProfileSavedMessage] = useState<string | null>(
+    null
+  );
+
   // ---------------- Visitor identity (roomId) ----------------
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -45,10 +55,9 @@ export default function MobileChatPage() {
     try {
       if (!skipLoading && messages.length === 0) setLoading(true);
 
-      const res = await fetch(
-        `/api/chat/${currentRoomId}?t=${Date.now()}`,
-        { cache: "no-store" }
-      );
+      const res = await fetch(`/api/chat/${currentRoomId}?t=${Date.now()}`, {
+        cache: "no-store",
+      });
       const data = await res.json().catch(() => ({} as any));
 
       if (Array.isArray(data.items)) {
@@ -75,6 +84,112 @@ export default function MobileChatPage() {
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
+
+  // ---------------- Check if we already have a profile ----------------
+  useEffect(() => {
+    if (!roomId) return;
+
+    // capture a non-null copy for the async function
+    const currentRoomId: string = roomId;
+
+    let cancelled = false;
+
+    async function checkProfile(roomIdForFetch: string) {
+      try {
+        const encodedRoomId = encodeURIComponent(roomIdForFetch);
+
+        const res = await fetch(`/api/users/room/${encodedRoomId}`);
+        if (!res.ok) {
+          // No profile yet or some other error — just ignore for now
+          return;
+        }
+
+        const data = await res.json().catch(() => ({} as any));
+
+        if (!cancelled && data && data.item) {
+          setHasSharedProfile(true);
+
+          if (typeof data.item.name === "string") {
+            setNameDraft(data.item.name);
+          }
+
+          if (typeof data.item.interest === "string") {
+            setInterestDraft(data.item.interest);
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error("checkProfile failed:", err);
+        }
+      }
+    }
+
+    checkProfile(currentRoomId);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId]);
+
+  // ---------------- Save profile (name + interest) ----------------
+  async function handleProfileSave(e: FormEvent) {
+    e.preventDefault();
+    if (!roomId || profileSaving) return;
+
+    const name = nameDraft.trim();
+    const interest = interestDraft.trim();
+
+    if (!name && !interest) {
+      setProfileError("Please share at least your name or what you like.");
+      return;
+    }
+
+    setProfileSaving(true);
+    setProfileError(null);
+    setProfileSavedMessage(null);
+
+    try {
+      const encodedRoomId = encodeURIComponent(roomId);
+
+      // This payload now matches /api/users/room/[roomId] expectations
+      const payload = {
+        name,
+        interest,
+        source: "mobile-chat",
+        tags: ["concierge-request"], // helps the admin filter “concierge requests”
+      };
+
+      const res = await fetch(`/api/users/room/${encodedRoomId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({} as any));
+
+      if (!res.ok || !data.item) {
+        throw new Error(
+          (data && data.message) || "Could not save your details."
+        );
+      }
+
+      setHasSharedProfile(true);
+
+      if (typeof data.item.name === "string") {
+        setNameDraft(data.item.name);
+      }
+      if (typeof data.item.interest === "string") {
+        setInterestDraft(data.item.interest);
+      }
+
+      setProfileSavedMessage("Saved! Your concierge now knows who you are.");
+    } catch (err) {
+      console.error("handleProfileSave failed:", err);
+      setProfileError("Could not save your details. Please try again.");
+    } finally {
+      setProfileSaving(false);
+    }
+  }
 
   // ---------------- Send message (with optimistic UI) ----------------
   async function handleSend(e: FormEvent) {
@@ -106,7 +221,7 @@ export default function MobileChatPage() {
       const body: any = {
         text,
         sender: "user" as const,
-        userId: roomId, // <-- pass identity to backend
+        userId: roomId, // <-- identity sent to backend
       };
 
       if (attachmentName) {
@@ -168,6 +283,53 @@ export default function MobileChatPage() {
           </p>
         )}
       </header>
+
+      {/* tiny profile card */}
+      {roomId && (
+        <section className="px-4 pt-3 pb-1 border-b border-slate-800 bg-slate-900/40">
+          <form
+            onSubmit={handleProfileSave}
+            className="flex flex-col gap-2 text-[11px]"
+          >
+            <p className="text-slate-300">
+              {hasSharedProfile
+                ? "You can update your details anytime to help your concierge personalise suggestions."
+                : "Tell Foundzie who you are so your concierge can personalise recommendations."}
+            </p>
+
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder="Your name (e.g. Kashif)"
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-full px-3 py-1.5 text-[11px] outline-none focus:border-pink-500"
+              />
+              <input
+                value={interestDraft}
+                onChange={(e) => setInterestDraft(e.target.value)}
+                placeholder="What you like (e.g. food & music in 60515)"
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-full px-3 py-1.5 text-[11px] outline-none focus:border-pink-500"
+              />
+              <button
+                type="submit"
+                disabled={profileSaving || !roomId}
+                className="px-3 py-1.5 text-[11px] rounded-full bg-emerald-600 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {profileSaving ? "Saving..." : "Save"}
+              </button>
+            </div>
+
+            {profileError && (
+              <p className="text-[11px] text-red-400">{profileError}</p>
+            )}
+            {profileSavedMessage && (
+              <p className="text-[11px] text-emerald-400">
+                {profileSavedMessage}
+              </p>
+            )}
+          </form>
+        </section>
+      )}
 
       {/* messages area */}
       <section className="flex-1 overflow-y-auto px-4 py-3 space-y-2">

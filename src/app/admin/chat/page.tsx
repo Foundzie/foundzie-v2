@@ -1,6 +1,5 @@
-"use client";
-
 // src/app/admin/chat/page.tsx
+"use client";
 
 import { useEffect, useState, FormEvent } from "react";
 import type { ChatMessage } from "../../data/chat";
@@ -22,7 +21,7 @@ type ChatRoomSummaryFromApi = {
 
 export default function AdminChatPage() {
   const [conversations, setConversations] = useState<ConversationUser[]>([]);
-  const [selectedRoomId, setSelectedRoomId] = useState<string>("");
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -94,7 +93,6 @@ export default function AdminChatPage() {
 
     loadUsers();
 
-    // Optional: refresh users every 20s so admin sees new collected visitors
     const id = setInterval(loadUsers, 20000);
     return () => {
       cancelled = true;
@@ -161,6 +159,14 @@ export default function AdminChatPage() {
           if (!selectedRoomId && convs.length > 0) {
             setSelectedRoomId(convs[0].roomId);
             setSelectedUserId(convs[0].id);
+          } else if (selectedRoomId && !selectedUserId) {
+            // We have a selected room but no user yet; see if a user appeared
+            const match = convs.find(
+              (c) => c.roomId === selectedRoomId && c.id !== null
+            );
+            if (match && match.id) {
+              setSelectedUserId(match.id);
+            }
           }
         }
       } catch (err) {
@@ -172,13 +178,12 @@ export default function AdminChatPage() {
 
     loadRooms();
 
-    // Optional: poll rooms every 10s so new visitors appear automatically
     const id = setInterval(loadRooms, 10000);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [selectedRoomId, knownUsers]);
+  }, [selectedRoomId, selectedUserId, knownUsers]);
 
   /* --------------------- Load chat messages --------------------- */
   useEffect(() => {
@@ -187,12 +192,15 @@ export default function AdminChatPage() {
     let cancelled = false;
 
     async function load() {
+      const roomId = selectedRoomId;
+      if (!roomId) return;
+
       try {
         setLoading(true);
         setError(null);
 
         const res = await fetch(
-          `/api/chat/${encodeURIComponent(selectedRoomId)}?t=${Date.now()}`,
+          `/api/chat/${encodeURIComponent(roomId)}?t=${Date.now()}`,
           {
             cache: "no-store",
           }
@@ -233,9 +241,9 @@ export default function AdminChatPage() {
     };
   }, [selectedRoomId]);
 
-  /* --------------------- Load visitor profile --------------------- */
+  /* --------------------- Load visitor profile (by roomId) --------------------- */
   useEffect(() => {
-    if (!selectedUserId) {
+    if (!selectedRoomId) {
       setSelectedUser(null);
       setProfileDraft({
         interest: "",
@@ -251,13 +259,18 @@ export default function AdminChatPage() {
     let cancelled = false;
 
     async function loadProfile() {
+      const roomId = selectedRoomId;
+      if (!roomId) return;
+
       try {
         setProfileLoading(true);
         setProfileError(null);
         setProfileSaveMessage(null);
 
-        // NOTE: no encodeURIComponent to avoid string|null TS issue
-        const res = await fetch(`/api/users/${selectedUserId}`);
+        const encodedRoomId = encodeURIComponent(roomId);
+
+        // NEW endpoint: fetch by room id instead of numeric id
+        const res = await fetch(`/api/users/room/${encodedRoomId}`);
         const data = await res.json().catch(() => ({} as unknown));
 
         if (!res.ok || typeof data !== "object" || !data) {
@@ -270,7 +283,18 @@ export default function AdminChatPage() {
 
         const maybeItem = (data as { item?: unknown }).item;
         if (!maybeItem || typeof maybeItem !== "object") {
-          throw new Error("Failed to load user");
+          // No profile yet for this room – that's OK, just clear
+          if (!cancelled) {
+            setSelectedUser(null);
+            setProfileDraft({
+              interest: "",
+              source: "",
+              tagsText: "",
+              conciergeStatus: "",
+              conciergeNote: "",
+            });
+          }
+          return;
         }
 
         if (!cancelled) {
@@ -286,7 +310,7 @@ export default function AdminChatPage() {
         }
       } catch (err) {
         if (!cancelled) {
-          console.error("Failed to load user profile:", err);
+          console.error("Failed to load user profile (by room):", err);
           setProfileError("Could not load user details.");
         }
       } finally {
@@ -299,12 +323,12 @@ export default function AdminChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedUserId]);
+  }, [selectedRoomId]);
 
   /* --------------------- Save visitor profile --------------------- */
   async function handleProfileSave(e: FormEvent) {
     e.preventDefault();
-    if (!selectedUserId || !selectedUser || profileSaving) return;
+    if (!selectedUser || profileSaving) return;
 
     setProfileSaving(true);
     setProfileError(null);
@@ -323,8 +347,7 @@ export default function AdminChatPage() {
     };
 
     try {
-      // NOTE: no encodeURIComponent here either
-      const res = await fetch(`/api/users/${selectedUserId}`, {
+      const res = await fetch(`/api/users/${selectedUser.id}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -368,8 +391,12 @@ export default function AdminChatPage() {
   /* --------------------- Send reply (normal chat) --------------------- */
   async function handleSend(e: FormEvent) {
     e.preventDefault();
+
+    const roomId = selectedRoomId;
+    if (!roomId) return;
+
     const text = input.trim();
-    if (!text || sending || !selectedRoomId) return;
+    if (!text || sending) return;
 
     setSending(true);
     setError(null);
@@ -390,7 +417,7 @@ export default function AdminChatPage() {
 
     try {
       const res = await fetch(
-        `/api/chat/${encodeURIComponent(selectedRoomId)}`,
+        `/api/chat/${encodeURIComponent(roomId)}`,
         {
           method: "POST",
           headers: {
@@ -449,8 +476,8 @@ export default function AdminChatPage() {
     const payload = {
       source: "admin" as const,
       input: text,
-      userId: selectedUserId,
-      roomId: selectedRoomId,
+      userId: selectedUserId ?? undefined,
+      roomId: selectedRoomId ?? undefined,
     };
 
     try {
@@ -481,9 +508,11 @@ export default function AdminChatPage() {
   }
 
   const currentUser =
-    conversations.find((c) => c.id === selectedUserId) ??
-    conversations.find((c) => c.roomId === selectedRoomId) ??
-    conversations[0] ??
+    (selectedUserId &&
+      conversations.find((c) => c.id === selectedUserId)) ||
+    (selectedRoomId &&
+      conversations.find((c) => c.roomId === selectedRoomId)) ||
+    conversations[0] ||
     null;
 
   return (
@@ -606,7 +635,9 @@ export default function AdminChatPage() {
             }}
           >
             <header style={{ marginBottom: "8px" }}>
-              <h1 style={{ fontSize: "18px", fontWeight: 600 }}>Chat inbox</h1>
+              <h1 style={{ fontSize: "18px", fontWeight: 600 }}>
+                Chat inbox
+              </h1>
               <p style={{ fontSize: "12px", color: "#6b7280" }}>
                 {currentUser
                   ? `Reading conversation for ${currentUser.name}. Replies you send here will appear in the user's chat.`
@@ -747,7 +778,9 @@ export default function AdminChatPage() {
               />
               <button
                 type="submit"
-                disabled={sending || !input.trim() || !selectedRoomId}
+                disabled={
+                  sending || !input.trim() || !selectedRoomId
+                }
                 style={{
                   borderRadius: "9999px",
                   padding: "8px 14px",
@@ -900,7 +933,7 @@ export default function AdminChatPage() {
               Visitor profile
             </h2>
 
-            {profileLoading && selectedUserId && (
+            {profileLoading && selectedRoomId && (
               <p style={{ fontSize: "12px", color: "#9ca3af" }}>
                 Loading profile…
               </p>
@@ -914,8 +947,9 @@ export default function AdminChatPage() {
 
             {!profileLoading && !selectedUser && !profileError && (
               <p style={{ fontSize: "12px", color: "#6b7280" }}>
-                Select a conversation with a known user to see visitor details.
-                Anonymous visitors will still show in the chat list.
+                Select a conversation with a known user to see visitor
+                details. Anonymous visitors will still show in the chat
+                list.
               </p>
             )}
 
