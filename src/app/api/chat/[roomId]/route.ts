@@ -4,21 +4,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { listMessages, addMessage } from "../store";
 import type { ChatMessage } from "@/app/data/chat";
 import { runFoundzieAgent } from "@/lib/agent/runtime";
-
-// use the shared helper so chat + users stay in sync
 import { ensureUserForRoom } from "../../users/store";
 
 export const dynamic = "force-dynamic";
 
 type RoomParams = { roomId?: string };
 
-/**
- * Normalise the roomId coming from the route params.
- * Falls back to the demo room only if nothing was provided.
- */
-function normalizeRoomId(params?: RoomParams): string {
+// Normalize roomId from params
+function normalizeRoomId(params?: RoomParams | null): string {
   const raw = params?.roomId ?? "";
-  if (!raw) return "demo-visitor-1"; // fallback for legacy/demo
+  if (!raw) return "demo-visitor-1";
 
   try {
     return decodeURIComponent(raw);
@@ -27,26 +22,31 @@ function normalizeRoomId(params?: RoomParams): string {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/*  GET /api/chat/[roomId] -> messages for a single room               */
-/* ------------------------------------------------------------------ */
-
+/* GET /api/chat/[roomId] */
 export async function GET(_req: NextRequest, context: any) {
-  const roomId = normalizeRoomId(context?.params as RoomParams);
+  const params = (await Promise.resolve(
+    context?.params
+  )) as RoomParams | undefined;
 
+  const roomId = normalizeRoomId(params ?? undefined);
   const items = await listMessages(roomId);
   return NextResponse.json({ items });
 }
 
-/* ------------------------------------------------------------------ */
-/*  POST /api/chat/[roomId] -> send a new message to that room         */
-/* ------------------------------------------------------------------ */
-
+/* POST /api/chat/[roomId] */
 export async function POST(req: NextRequest, context: any) {
-  const roomId = normalizeRoomId(context?.params as RoomParams);
+  const params = (await Promise.resolve(
+    context?.params
+  )) as RoomParams | undefined;
+  const paramsRoomId = normalizeRoomId(params ?? undefined);
 
   try {
     const body = (await req.json().catch(() => ({}))) as any;
+
+    const bodyRoomId =
+      typeof body.roomId === "string" ? body.roomId.trim() : "";
+
+    const roomId = bodyRoomId || paramsRoomId;
 
     const rawText =
       typeof body.text === "string" ? body.text.trim() : "";
@@ -63,7 +63,6 @@ export async function POST(req: NextRequest, context: any) {
         ? body.attachmentKind
         : null;
 
-    // Must have at least some text OR an attachment
     if (!rawText && !attachmentName) {
       return NextResponse.json(
         { ok: false, message: "Missing text or attachment" },
@@ -74,7 +73,6 @@ export async function POST(req: NextRequest, context: any) {
     const sender: "user" | "concierge" =
       rawSender === "concierge" ? "concierge" : "user";
 
-    // Save the incoming message (metadata only for attachments)
     const userMessage = await addMessage(roomId, {
       sender,
       text: rawText,
@@ -84,9 +82,7 @@ export async function POST(req: NextRequest, context: any) {
 
     let reply: ChatMessage | null = null;
 
-    // Only trigger the agent when a *user* sends something.
     if (sender === "user") {
-      // Ensure we have a visitor profile for this room
       await ensureUserForRoom(roomId, {
         source: "mobile-chat",
         tags: ["concierge-request"],
@@ -100,11 +96,9 @@ export async function POST(req: NextRequest, context: any) {
         const agentResult = await runFoundzieAgent({
           input: agentInputBase,
           roomId,
-          // if caller doesn't send userId, fall back to roomId
           userId:
             typeof body.userId === "string" ? body.userId : roomId,
           source: "mobile",
-          // keep toolsMode simple & safe here
           toolsMode: "off",
         });
 

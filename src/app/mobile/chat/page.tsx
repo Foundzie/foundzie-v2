@@ -32,9 +32,8 @@ export default function MobileChatPage() {
   const [interestDraft, setInterestDraft] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
-  const [profileSavedMessage, setProfileSavedMessage] = useState<string | null>(
-    null
-  );
+  const [profileSavedMessage, setProfileSavedMessage] =
+    useState<string | null>(null);
 
   // ---------------- Visitor identity (roomId) ----------------
   useEffect(() => {
@@ -55,9 +54,13 @@ export default function MobileChatPage() {
     try {
       if (!skipLoading && messages.length === 0) setLoading(true);
 
-      const res = await fetch(`/api/chat/${currentRoomId}?t=${Date.now()}`, {
-        cache: "no-store",
-      });
+      const encodedRoomId = encodeURIComponent(currentRoomId);
+      const res = await fetch(
+        `/api/chat/${encodedRoomId}?t=${Date.now()}`,
+        {
+          cache: "no-store",
+        }
+      );
       const data = await res.json().catch(() => ({} as any));
 
       if (Array.isArray(data.items)) {
@@ -89,9 +92,7 @@ export default function MobileChatPage() {
   useEffect(() => {
     if (!roomId) return;
 
-    // capture a non-null copy for the async function
     const currentRoomId: string = roomId;
-
     let cancelled = false;
 
     async function checkProfile(roomIdForFetch: string) {
@@ -100,23 +101,30 @@ export default function MobileChatPage() {
 
         const res = await fetch(`/api/users/room/${encodedRoomId}`);
         if (!res.ok) {
-          // No profile yet or some other error — just ignore for now
           return;
         }
 
         const data = await res.json().catch(() => ({} as any));
+        const user = data?.item;
+        if (!user || cancelled) return;
 
-        if (!cancelled && data && data.item) {
-          setHasSharedProfile(true);
+        const apiName =
+          typeof user.name === "string" ? (user.name as string) : "";
+        const apiInterest =
+          typeof user.interest === "string"
+            ? (user.interest as string)
+            : "";
 
-          if (typeof data.item.name === "string") {
-            setNameDraft(data.item.name);
-          }
+        const isAnonymous = apiName
+          .toLowerCase()
+          .startsWith("anonymous visitor");
 
-          if (typeof data.item.interest === "string") {
-            setInterestDraft(data.item.interest);
-          }
-        }
+        setNameDraft(isAnonymous ? "" : apiName);
+        setInterestDraft(apiInterest);
+
+        setHasSharedProfile(
+          !isAnonymous && (!!apiName || !!apiInterest)
+        );
       } catch (err) {
         if (!cancelled) {
           console.error("checkProfile failed:", err);
@@ -151,12 +159,11 @@ export default function MobileChatPage() {
     try {
       const encodedRoomId = encodeURIComponent(roomId);
 
-      // This payload now matches /api/users/room/[roomId] expectations
       const payload = {
         name,
         interest,
         source: "mobile-chat",
-        tags: ["concierge-request"], // helps the admin filter “concierge requests”
+        tags: ["concierge-request"],
       };
 
       const res = await fetch(`/api/users/room/${encodedRoomId}`, {
@@ -195,7 +202,7 @@ export default function MobileChatPage() {
   async function handleSend(e: FormEvent) {
     e.preventDefault();
 
-    if (!roomId) return; // safety: no room yet
+    if (!roomId) return;
 
     const text = input.trim();
     if ((!text && !attachmentName) || sending) return;
@@ -221,15 +228,18 @@ export default function MobileChatPage() {
       const body: any = {
         text,
         sender: "user" as const,
-        userId: roomId, // <-- identity sent to backend
+        userId: roomId, // identity sent to backend
+        roomId,         // 🔴 explicitly tell backend which chat room
       };
 
       if (attachmentName) {
         body.attachmentName = attachmentName;
-        body.attachmentKind = "image"; // treat as image/file mock
+        body.attachmentKind = "image";
       }
 
-      const res = await fetch(`/api/chat/${roomId}`, {
+      const encodedRoomId = encodeURIComponent(roomId);
+
+      const res = await fetch(`/api/chat/${encodedRoomId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -240,7 +250,6 @@ export default function MobileChatPage() {
         throw new Error(data.message || "Chat send failed");
       }
 
-      // Replace temp with real one + concierge reply (if any)
       setMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId);
         const final: ChatMessage[] = [...withoutTemp];
@@ -255,13 +264,11 @@ export default function MobileChatPage() {
         return final;
       });
 
-      // Clear attachment after successful send
       setAttachmentName(null);
     } catch (err) {
       console.error("Chat send error", err);
       setError("Could not send message. Please try again.");
 
-      // rollback optimistic message
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setInput(text);
     } finally {
@@ -284,7 +291,6 @@ export default function MobileChatPage() {
         )}
       </header>
 
-      {/* tiny profile card */}
       {roomId && (
         <section className="px-4 pt-3 pb-1 border-b border-slate-800 bg-slate-900/40">
           <form
@@ -331,7 +337,6 @@ export default function MobileChatPage() {
         </section>
       )}
 
-      {/* messages area */}
       <section className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
         {(!roomId || loading) && (
           <p className="text-xs text-slate-500">Loading conversation...</p>
@@ -349,7 +354,7 @@ export default function MobileChatPage() {
 
             return (
               <div
-                key={`${msg.id}-${index}`} // safe key
+                key={`${msg.id}-${index}`}
                 className={`flex ${isUser ? "justify-end" : "justify-start"}`}
               >
                 <div
@@ -366,7 +371,6 @@ export default function MobileChatPage() {
                     </p>
                   )}
 
-                  {/* attachment chip, if any */}
                   {msg.attachmentName && (
                     <p className="text-[10px] mb-1 italic opacity-90">
                       {msg.attachmentName}
@@ -389,16 +393,13 @@ export default function MobileChatPage() {
           })}
       </section>
 
-      {/* error */}
       {error && (
         <section className="border-t border-slate-800 px-4 pt-1 pb-1">
           <p className="text-[11px] text-red-400">{error}</p>
         </section>
       )}
 
-      {/* input + attach */}
       <section className="border-t border-slate-800 px-4 pb-3 space-y-1">
-        {/* attachment preview chip */}
         {attachmentName && (
           <div className="flex items-center gap-2 text-[11px] text-slate-300 mb-1">
             <span className="px-2 py-[2px] rounded-full bg-slate-700">

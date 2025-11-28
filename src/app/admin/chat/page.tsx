@@ -220,18 +220,23 @@ export default function AdminChatPage() {
           const items = (data as { items?: unknown }).items;
           if (Array.isArray(items)) {
             setMessages(items as ChatMessage[]);
+          } else {
+            setMessages([]);
           }
         }
       } catch (err) {
         if (!cancelled) {
           console.error("Failed to load chat messages (admin):", err);
           setError("Could not load chat history.");
+          setMessages([]);
         }
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
 
+    // clear old messages immediately so switching rooms feels clean
+    setMessages([]);
     load();
 
     const id = setInterval(load, 5000);
@@ -269,7 +274,7 @@ export default function AdminChatPage() {
 
         const encodedRoomId = encodeURIComponent(roomId);
 
-        // NEW endpoint: fetch by room id instead of numeric id
+        // Fetch profile by room id (covers visitors + seeded users with roomId)
         const res = await fetch(`/api/users/room/${encodedRoomId}`);
         const data = await res.json().catch(() => ({} as unknown));
 
@@ -426,6 +431,7 @@ export default function AdminChatPage() {
           body: JSON.stringify({
             text,
             sender: "concierge",
+            roomId, // 🔴 important: tell backend exactly which room
           }),
         }
       );
@@ -607,6 +613,16 @@ export default function AdminChatPage() {
                     {c.subtitle}
                   </div>
                 )}
+                {/* tiny roomId line so you can SEE which room this is */}
+                <div
+                  style={{
+                    fontSize: "10px",
+                    color: "#9ca3af",
+                    marginTop: "2px",
+                  }}
+                >
+                  room: <code>{c.roomId}</code>
+                </div>
               </button>
             );
           })}
@@ -640,9 +656,21 @@ export default function AdminChatPage() {
               </h1>
               <p style={{ fontSize: "12px", color: "#6b7280" }}>
                 {currentUser
-                  ? `Reading conversation for ${currentUser.name}. Replies you send here will appear in the user's chat.`
+                  ? `Reading conversation for ${currentUser.name}. Replies you send here will appear in that visitor's chat.`
                   : "Select a conversation to view and reply."}
               </p>
+              {selectedRoomId && (
+                <p
+                  style={{
+                    fontSize: "10px",
+                    color: "#9ca3af",
+                    marginTop: "2px",
+                  }}
+                >
+                  Replying to room:{" "}
+                  <code>{selectedRoomId}</code>
+                </p>
+              )}
             </header>
 
             <div
