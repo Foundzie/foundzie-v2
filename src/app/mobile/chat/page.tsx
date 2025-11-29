@@ -1,8 +1,8 @@
 // src/app/mobile/chat/page.tsx
-
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import type { ChatMessage } from "@/app/data/chat";
 
 const VISITOR_ID_STORAGE_KEY = "foundzie_visitor_id";
@@ -18,6 +18,8 @@ function createVisitorId() {
 }
 
 export default function MobileChatPage() {
+  const router = useRouter();
+
   const [roomId, setRoomId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -34,6 +36,9 @@ export default function MobileChatPage() {
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileSavedMessage, setProfileSavedMessage] =
     useState<string | null>(null);
+
+  // NEW: voice sheet state (M5a scaffold)
+  const [showVoiceSheet, setShowVoiceSheet] = useState(false);
 
   // ---------------- Visitor identity (roomId) ----------------
   useEffect(() => {
@@ -55,12 +60,9 @@ export default function MobileChatPage() {
       if (!skipLoading && messages.length === 0) setLoading(true);
 
       const encodedRoomId = encodeURIComponent(currentRoomId);
-      const res = await fetch(
-        `/api/chat/${encodedRoomId}?t=${Date.now()}`,
-        {
-          cache: "no-store",
-        }
-      );
+      const res = await fetch(`/api/chat/${encodedRoomId}?t=${Date.now()}`, {
+        cache: "no-store",
+      });
       const data = await res.json().catch(() => ({} as any));
 
       if (Array.isArray(data.items)) {
@@ -122,9 +124,7 @@ export default function MobileChatPage() {
         setNameDraft(isAnonymous ? "" : apiName);
         setInterestDraft(apiInterest);
 
-        setHasSharedProfile(
-          !isAnonymous && (!!apiName || !!apiInterest)
-        );
+        setHasSharedProfile(!isAnonymous && (!!apiName || !!apiInterest));
       } catch (err) {
         if (!cancelled) {
           console.error("checkProfile failed:", err);
@@ -229,7 +229,7 @@ export default function MobileChatPage() {
         text,
         sender: "user" as const,
         userId: roomId, // identity sent to backend
-        roomId,         // 🔴 explicitly tell backend which chat room
+        roomId, // explicitly tell backend which chat room
       };
 
       if (attachmentName) {
@@ -280,15 +280,28 @@ export default function MobileChatPage() {
   return (
     <main className="min-h-screen bg-slate-950 text-white flex flex-col">
       <header className="px-4 pt-4 pb-2 border-b border-slate-800">
-        <h1 className="text-lg font-semibold">Chat with Foundzie</h1>
-        <p className="text-xs text-slate-400">
-          Ask for help, ideas, or concierge requests.
-        </p>
-        {roomId && (
-          <p className="text-[10px] text-slate-500 mt-1">
-            Visitor ID: <span className="font-mono">{roomId}</span>
-          </p>
-        )}
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-semibold">Chat with Foundzie</h1>
+            <p className="text-xs text-slate-400">
+              Ask for help, ideas, or concierge requests.
+            </p>
+            {roomId && (
+              <p className="text-[10px] text-slate-500 mt-1">
+                Visitor ID: <span className="font-mono">{roomId}</span>
+              </p>
+            )}
+          </div>
+
+          {/* NEW: voice button scaffold */}
+          <button
+            type="button"
+            onClick={() => setShowVoiceSheet(true)}
+            className="self-center px-3 py-1.5 rounded-full bg-purple-600 text-[11px] font-medium hover:bg-purple-500"
+          >
+            Talk to Foundzie
+          </button>
+        </div>
       </header>
 
       {roomId && (
@@ -454,6 +467,56 @@ export default function MobileChatPage() {
           </button>
         </form>
       </section>
+
+      {/* NEW: Voice sheet scaffold */}
+      {showVoiceSheet && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-30"
+          onClick={() => setShowVoiceSheet(false)}
+        >
+          <div
+            className="bg-slate-900 w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-4 space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-base font-semibold">
+                Talk to Foundzie (voice)
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowVoiceSheet(false)}
+                className="text-xs text-slate-400 hover:text-slate-200"
+              >
+                Close
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300">
+              Voice calls are coming soon. For now, your concierge can call you
+              by phone, or you can keep chatting here.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => {
+                setShowVoiceSheet(false);
+                router.push("/mobile/concierge");
+              }}
+              className="w-full px-4 py-2 rounded-full bg-purple-600 text-xs font-medium text-white hover:bg-purple-500"
+            >
+              Call me via concierge
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowVoiceSheet(false)}
+              className="w-full px-4 py-2 rounded-full bg-slate-800 text-xs font-medium text-slate-100 hover:bg-slate-700"
+            >
+              Keep chatting
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
