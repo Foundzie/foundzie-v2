@@ -1,4 +1,3 @@
-// src/app/mobile/notifications/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -7,7 +6,7 @@ type NotificationType = "system" | "event" | "offer" | "chat";
 
 interface AppNotification {
   id: string;
-  type: NotificationType;
+  type: NotificationType | string;
   title: string;
   message: string;
   unread?: boolean;
@@ -15,7 +14,7 @@ interface AppNotification {
   actionLabel?: string;
   actionHref?: string;
   mediaUrl?: string;
-  mediaKind?: "image" | "gif" | "other";
+  mediaKind?: "image" | "gif" | "other" | null;
 }
 
 const FILTERS: Array<{ id: "all" | NotificationType; label: string }> = [
@@ -26,6 +25,10 @@ const FILTERS: Array<{ id: "all" | NotificationType; label: string }> = [
   { id: "chat", label: "Chat" },
 ];
 
+function isSpotlight(n: AppNotification) {
+  return n.type === "offer" && !!n.mediaUrl;
+}
+
 export default function MobileNotificationsPage() {
   const [items, setItems] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
@@ -33,7 +36,6 @@ export default function MobileNotificationsPage() {
     useState<"all" | NotificationType>("all");
   const [selected, setSelected] = useState<AppNotification | null>(null);
 
-  // load notifications
   async function load() {
     try {
       const res = await fetch("/api/notifications", { cache: "no-store" });
@@ -46,14 +48,12 @@ export default function MobileNotificationsPage() {
     }
   }
 
-  // initial load + auto refresh every 5 seconds
   useEffect(() => {
     load();
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
   }, []);
 
-  // apply filter
   const shown =
     activeFilter === "all"
       ? items
@@ -62,7 +62,6 @@ export default function MobileNotificationsPage() {
   const unreadCount = items.filter((n) => n.unread).length;
 
   async function markAsRead(id: string) {
-    // optimistic update
     setItems((prev) =>
       prev.map((n) => (n.id === id ? { ...n, unread: false } : n))
     );
@@ -77,7 +76,6 @@ export default function MobileNotificationsPage() {
       });
     } catch (err) {
       console.error("Failed to mark notification read", err);
-      // not critical; we keep the optimistic UI
     }
   }
 
@@ -99,7 +97,7 @@ export default function MobileNotificationsPage() {
           <div>
             <h1 className="text-xl font-semibold">Alerts</h1>
             <p className="text-xs text-slate-400">
-              Latest updates from places near you
+              Latest updates and Spotlight offers near you
             </p>
           </div>
           {unreadCount > 0 && (
@@ -135,31 +133,41 @@ export default function MobileNotificationsPage() {
             No alerts right now.
           </li>
         ) : (
-          shown.map((n) => (
-            <li
-              key={n.id}
-              onClick={() => openDetails(n)}
-              className={`px-4 py-4 flex items-start gap-3 cursor-pointer ${
-                n.unread ? "bg-slate-900/30" : ""
-              }`}
-            >
-              <div className="flex-1">
-                <p className="text-sm font-medium flex items-center gap-2">
-                  {n.title}
-                  {n.unread && (
-                    <span className="w-2 h-2 rounded-full bg-pink-500 inline-block" />
-                  )}
-                </p>
-                <p className="text-xs text-slate-400 mt-1 line-clamp-2">
-                  {n.message}
-                </p>
-                <p className="text-[10px] text-slate-500 mt-1">{n.time}</p>
-              </div>
-              <span className="text-[10px] uppercase text-slate-400">
-                {n.type}
-              </span>
-            </li>
-          ))
+          shown.map((n) => {
+            const spotlight = isSpotlight(n);
+            return (
+              <li
+                key={n.id}
+                onClick={() => openDetails(n)}
+                className={`px-4 py-4 flex items-start gap-3 cursor-pointer ${
+                  n.unread ? "bg-slate-900/30" : ""
+                }`}
+              >
+                <div className="flex-1">
+                  <p className="text-sm font-medium flex items-center gap-2">
+                    {n.title}
+                    {spotlight && (
+                      <span className="text-[9px] uppercase bg-yellow-400/90 text-slate-900 px-2 py-[1px] rounded-full">
+                        Spotlight
+                      </span>
+                    )}
+                    {n.unread && (
+                      <span className="w-2 h-2 rounded-full bg-pink-500 inline-block" />
+                    )}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1 line-clamp-2">
+                    {n.message}
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    {n.time}
+                  </p>
+                </div>
+                <span className="text-[10px] uppercase text-slate-400">
+                  {n.type}
+                </span>
+              </li>
+            );
+          })
         )}
       </ul>
 
@@ -174,7 +182,14 @@ export default function MobileNotificationsPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2">
-              <h2 className="text-base font-semibold">{selected.title}</h2>
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                {selected.title}
+                {isSpotlight(selected) && (
+                  <span className="text-[9px] uppercase bg-yellow-400/90 text-slate-900 px-2 py-[1px] rounded-full">
+                    Spotlight
+                  </span>
+                )}
+              </h2>
               <button
                 type="button"
                 onClick={closeDetails}
@@ -188,10 +203,8 @@ export default function MobileNotificationsPage() {
               {selected.time} · {selected.type}
             </p>
 
-            {/* media preview */}
             {selected.mediaUrl && (
               <div className="mt-1">
-                {/* for now we just render an img; gif also works */}
                 <img
                   src={selected.mediaUrl}
                   alt={selected.title}

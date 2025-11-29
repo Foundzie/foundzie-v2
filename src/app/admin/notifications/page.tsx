@@ -1,4 +1,3 @@
-// src/app/admin/notifications/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -8,7 +7,7 @@ type NotificationType = "system" | "event" | "offer" | "chat";
 
 interface AppNotification {
   id: string;
-  type: NotificationType;
+  type: NotificationType | string;
   title: string;
   message: string;
   time: string;
@@ -16,7 +15,12 @@ interface AppNotification {
   actionLabel?: string;
   actionHref?: string;
   mediaUrl?: string;
-  mediaKind?: "image" | "gif" | "other";
+  mediaKind?: "image" | "gif" | "other" | null;
+}
+
+// simple helper: what we treat as a Spotlight promo
+function isSpotlight(n: AppNotification) {
+  return n.type === "offer" && !!n.mediaUrl;
 }
 
 export default function AdminNotificationsPage() {
@@ -44,7 +48,9 @@ export default function AdminNotificationsPage() {
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Notifications</h1>
           <p className="text-xs text-gray-500">
-            Shared list coming from /api/notifications
+            Shared list coming from <code>/api/notifications</code>. Set{" "}
+            <span className="font-semibold">type = offer</span> +{" "}
+            <span className="font-semibold">image URL</span> for Spotlight promos.
           </p>
         </div>
 
@@ -74,41 +80,49 @@ export default function AdminNotificationsPage() {
                 No notifications yet.
               </li>
             ) : (
-              items.map((n) => (
-                <li
-                  key={n.id}
-                  className={`flex items-center justify-between px-4 py-3 ${
-                    n.unread ? "bg-purple-50" : ""
-                  }`}
-                >
-                  <div>
-                    <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
-                      {n.title}
-                      <span className="text-[10px] uppercase tracking-wide bg-gray-100 text-gray-600 px-2 py-[2px] rounded">
-                        {n.type}
-                      </span>
-                      {n.unread && (
-                        <span className="text-[10px] text-purple-600 font-semibold">
-                          • unread
+              items.map((n) => {
+                const spotlight = isSpotlight(n);
+                return (
+                  <li
+                    key={n.id}
+                    className={`flex items-center justify-between px-4 py-3 ${
+                      n.unread ? "bg-purple-50" : ""
+                    }`}
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                        {n.title}
+                        <span className="text-[10px] uppercase tracking-wide bg-gray-100 text-gray-600 px-2 py-[2px] rounded">
+                          {n.type}
                         </span>
-                      )}
-                    </p>
-                    <p className="text-xs text-gray-500">{n.message}</p>
-                    <p className="text-[10px] text-gray-400 mt-1">
-                      {n.time}
-                    </p>
-                  </div>
+                        {spotlight && (
+                          <span className="text-[9px] uppercase tracking-wide bg-yellow-100 text-yellow-700 px-2 py-[1px] rounded-full">
+                            Spotlight
+                          </span>
+                        )}
+                        {n.unread && (
+                          <span className="text-[10px] text-purple-600 font-semibold">
+                            • unread
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-xs text-gray-500">{n.message}</p>
+                      <p className="text-[10px] text-gray-400 mt-1">
+                        {n.time}
+                      </p>
+                    </div>
 
-                  <div className="flex items-center gap-3">
-                    <Link
-                      href={`/admin/notifications/${n.id}`}
-                      className="text-xs text-purple-600 hover:underline"
-                    >
-                      Edit
-                    </Link>
-                  </div>
-                </li>
-              ))
+                    <div className="flex items-center gap-3">
+                      <Link
+                        href={`/admin/notifications/${n.id}`}
+                        className="text-xs text-purple-600 hover:underline"
+                      >
+                        Edit
+                      </Link>
+                    </div>
+                  </li>
+                );
+              })
             )}
           </ul>
         </div>

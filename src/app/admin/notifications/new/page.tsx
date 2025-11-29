@@ -1,4 +1,3 @@
-// src/app/admin/notifications/new/page.tsx
 "use client";
 
 import { useState } from "react";
@@ -57,15 +56,16 @@ export default function AdminNewNotificationPage() {
 
   return (
     <main className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="w-full bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">
             New notification
           </h1>
           <p className="text-xs text-gray-500">
-            This is a mocked form. Now it saves to /api/notifications so it
-            shows in the mobile app.
+            Saves to <code>/api/notifications</code> so it shows in the mobile
+            app. Use <span className="font-semibold">type = offer</span> +
+            an <span className="font-semibold">image URL</span> to create a
+            Spotlight promo.
           </p>
         </div>
         <Link
@@ -76,7 +76,6 @@ export default function AdminNewNotificationPage() {
         </Link>
       </header>
 
-      {/* Form */}
       <section className="px-6 py-6">
         <form
           onSubmit={handleSubmit}
@@ -115,13 +114,11 @@ export default function AdminNewNotificationPage() {
             </label>
             <select
               value={type}
-              onChange={(e) =>
-                setType(e.target.value as NotificationType)
-              }
+              onChange={(e) => setType(e.target.value as NotificationType)}
               className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
             >
               <option value="system">system</option>
-              <option value="offer">offer</option>
+              <option value="offer">offer (Spotlight promo)</option>
               <option value="event">event</option>
               <option value="chat">chat</option>
             </select>
@@ -153,7 +150,6 @@ export default function AdminNewNotificationPage() {
             </div>
           </div>
 
-          {/* NEW: media fields */}
           <div className="grid grid-cols-1 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">
@@ -166,7 +162,7 @@ export default function AdminNewNotificationPage() {
                 placeholder="https://example.com/image.jpg"
               />
               <p className="text-[10px] text-gray-400 mt-1">
-                Image or GIF URL to show inside the alert details.
+                Add an image/GIF for visual Spotlight promos.
               </p>
             </div>
 
