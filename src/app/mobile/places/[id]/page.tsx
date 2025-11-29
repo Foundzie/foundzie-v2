@@ -1,17 +1,16 @@
-// src/app/mobile/places/[id]/page.tsx
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 import MobileSaveButton from "@/app/components/MobileSaveButton";
+import PlaceBookForm from "./PlaceBookForm";
 
 type MobilePlaceDetailPageProps = {
-  // ✅ this is the important part: params is a Promise
+  // params is a Promise in this project setup
   params: Promise<{ id: string }>;
 };
 
 export default async function MobilePlaceDetailPage({
   params,
 }: MobilePlaceDetailPageProps) {
-  // ✅ unwrap the promise
   const { id } = await params;
 
   const place = mockPlaces.find((p) => p.id.toString() === id);
@@ -48,6 +47,9 @@ export default async function MobilePlaceDetailPage({
           <p className="text-slate-200 text-sm">{place.description}</p>
         ) : null}
       </div>
+
+      {/* NEW: concierge booking micro-form */}
+      <PlaceBookForm placeId={id} placeName={place.name} />
     </main>
   );
 }
