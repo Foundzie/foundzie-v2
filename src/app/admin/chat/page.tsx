@@ -19,6 +19,9 @@ type ChatRoomSummaryFromApi = {
   lastSender?: "user" | "concierge";
 };
 
+// NEW: local VoiceStatus type for this UI
+type VoiceStatus = "none" | "requested" | "active" | "ended" | "failed";
+
 export default function AdminChatPage() {
   const [conversations, setConversations] = useState<ConversationUser[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
@@ -59,6 +62,12 @@ export default function AdminChatPage() {
   const [agentResult, setAgentResult] = useState<string | null>(null);
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
+
+  // NEW: Voice status state for this room
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("none");
+  const [voiceLoading, setVoiceLoading] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceUpdatedAt, setVoiceUpdatedAt] = useState<string | null>(null);
 
   // NEW: real users loaded from /api/users
   const [knownUsers, setKnownUsers] = useState<AdminUser[]>([]);
@@ -330,6 +339,71 @@ export default function AdminChatPage() {
     };
   }, [selectedRoomId]);
 
+  /* --------------------- NEW: Load voice session status for this room --------------------- */
+  useEffect(() => {
+    if (!selectedRoomId) {
+      setVoiceStatus("none");
+      setVoiceUpdatedAt(null);
+      setVoiceError(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadVoice() {
+      try {
+        setVoiceLoading(true);
+        setVoiceError(null);
+
+        const res = await fetch(
+          `/api/voice/session?roomId=${encodeURIComponent(
+            selectedRoomId!
+          )}&t=${Date.now()}`,
+          { cache: "no-store" }
+        );
+        const data = await res.json().catch(() => ({} as any));
+
+        if (!res.ok) {
+          const message =
+            typeof data === "object" && data && "message" in data
+              ? String((data as { message?: unknown }).message)
+              : "Failed to load voice session";
+          throw new Error(message);
+        }
+
+        if (cancelled) return;
+
+        const status = (data.status as VoiceStatus | undefined) ?? "none";
+        setVoiceStatus(status);
+
+        const updatedAt =
+          data.session && typeof data.session.updatedAt === "string"
+            ? (data.session.updatedAt as string)
+            : null;
+        setVoiceUpdatedAt(updatedAt);
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Failed to load voice session:", err);
+          setVoiceError("Could not load voice status.");
+          setVoiceStatus("none");
+          setVoiceUpdatedAt(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setVoiceLoading(false);
+        }
+      }
+    }
+
+    loadVoice();
+
+    const id = setInterval(loadVoice, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [selectedRoomId]);
+
   /* --------------------- Save visitor profile --------------------- */
   async function handleProfileSave(e: FormEvent) {
     e.preventDefault();
@@ -510,6 +584,50 @@ export default function AdminChatPage() {
       setAgentError("Could not reach /api/agent. Check server logs.");
     } finally {
       setAgentLoading(false);
+    }
+  }
+
+  /* --------------------- NEW: create/update voice session for this room --------------------- */
+  async function handleCreateVoiceSession() {
+    if (!selectedRoomId) return;
+
+    try {
+      setVoiceLoading(true);
+      setVoiceError(null);
+
+      const res = await fetch("/api/voice/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomId: selectedRoomId,
+          userId: selectedUser?.id ?? selectedUserId ?? null,
+          status: "requested" as VoiceStatus,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({} as any));
+
+      if (!res.ok) {
+        const message =
+          typeof data === "object" && data && "message" in data
+            ? String((data as { message?: unknown }).message)
+            : "Failed to create voice session";
+        throw new Error(message);
+      }
+
+      const status = (data.status as VoiceStatus | undefined) ?? "requested";
+      setVoiceStatus(status);
+
+      const updatedAt =
+        data.session && typeof data.session.updatedAt === "string"
+          ? (data.session.updatedAt as string)
+          : null;
+      setVoiceUpdatedAt(updatedAt);
+    } catch (err) {
+      console.error("Failed to create voice session:", err);
+      setVoiceError("Could not create voice session.");
+    } finally {
+      setVoiceLoading(false);
     }
   }
 
@@ -947,7 +1065,7 @@ export default function AdminChatPage() {
               padding: "12px",
               display: "flex",
               flexDirection: "column",
-              gap: "6px",
+              gap: "8px",
             }}
           >
             <h2
@@ -1169,6 +1287,99 @@ export default function AdminChatPage() {
                   {profileSaving ? "Saving…" : "Save profile"}
                 </button>
               </form>
+            )}
+
+            {/* NEW: Voice session status box */}
+            {selectedRoomId && (
+              <div
+                style={{
+                  marginTop: "8px",
+                  paddingTop: "8px",
+                  borderTop: "1px solid #e5e7eb",
+                  fontSize: "12px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: "4px",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      color: "#111827",
+                    }}
+                  >
+                    Voice status
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCreateVoiceSession}
+                    disabled={voiceLoading}
+                    style={{
+                      borderRadius: "9999px",
+                      padding: "4px 8px",
+                      fontSize: "11px",
+                      fontWeight: 500,
+                      background: "#e0f2fe",
+                      color: "#0369a1",
+                      border: "none",
+                      cursor: voiceLoading ? "not-allowed" : "pointer",
+                      opacity: voiceLoading ? 0.6 : 1,
+                    }}
+                  >
+                    {voiceLoading ? "Updating…" : "Create 'requested'"}
+                  </button>
+                </div>
+
+                <div style={{ fontSize: "12px", color: "#111827" }}>
+                  <strong>Status:</strong>{" "}
+                  <span
+                    style={{
+                      textTransform: "capitalize",
+                      color:
+                        voiceStatus === "requested"
+                          ? "#ea580c"
+                          : voiceStatus === "active"
+                          ? "#16a34a"
+                          : voiceStatus === "failed"
+                          ? "#b91c1c"
+                          : "#4b5563",
+                    }}
+                  >
+                    {voiceStatus}
+                  </span>
+                </div>
+
+                {voiceUpdatedAt && (
+                  <div
+                    style={{
+                      marginTop: "2px",
+                      fontSize: "11px",
+                      color: "#6b7280",
+                    }}
+                  >
+                    Last update:{" "}
+                    {new Date(voiceUpdatedAt).toLocaleString()}
+                  </div>
+                )}
+
+                {voiceError && (
+                  <div
+                    style={{
+                      marginTop: "2px",
+                      fontSize: "11px",
+                      color: "#b91c1c",
+                    }}
+                  >
+                    {voiceError}
+                  </div>
+                )}
+              </div>
             )}
           </aside>
         </section>

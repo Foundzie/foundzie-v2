@@ -1,131 +1,79 @@
 // src/app/api/voice/session/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import {
-  createOrUpdateVoiceSession,
   getVoiceSessionForRoom,
-  updateVoiceSessionStatus,
+  upsertVoiceSession,
   type VoiceStatus,
 } from "../store";
 
 export const dynamic = "force-dynamic";
 
-// POST /api/voice/session
-// Body: { roomId: string, userId?: string, status?: VoiceStatus, lastError?: string }
-export async function POST(req: NextRequest) {
-  const body = (await req.json().catch(() => ({} as any))) as any;
-
-  const rawRoomId =
-    typeof body.roomId === "string" ? body.roomId.trim() : "";
-  const rawUserId =
-    typeof body.userId === "string" ? body.userId.trim() : "";
-  const rawStatus =
-    typeof body.status === "string" ? body.status.trim() : "";
-  const lastError =
-    typeof body.lastError === "string" ? body.lastError : null;
-
-  if (!rawRoomId) {
-    return NextResponse.json(
-      { ok: false, message: "roomId is required" },
-      { status: 400 }
-    );
-  }
-
-  try {
-    const session = await createOrUpdateVoiceSession({
-      roomId: rawRoomId,
-      userId: rawUserId || null,
-      status: rawStatus || "requested",
-      lastError,
-    });
-
-    return NextResponse.json({
-      ok: true,
-      item: session,
-    });
-  } catch (err: any) {
-    console.error("[voice] POST /session error", err);
-    return NextResponse.json(
-      {
-        ok: false,
-        message: err?.message || "Failed to create voice session",
-      },
-      { status: 500 }
-    );
-  }
-}
-
-// PATCH /api/voice/session
-// Body: { roomId: string, status: VoiceStatus, lastError?: string }
-export async function PATCH(req: NextRequest) {
-  const body = (await req.json().catch(() => ({} as any))) as any;
-
-  const rawRoomId =
-    typeof body.roomId === "string" ? body.roomId.trim() : "";
-  const rawStatus =
-    typeof body.status === "string" ? (body.status.trim() as VoiceStatus) : "";
-  const lastError =
-    typeof body.lastError === "string" ? body.lastError : null;
-
-  if (!rawRoomId || !rawStatus) {
-    return NextResponse.json(
-      { ok: false, message: "roomId and status are required" },
-      { status: 400 }
-    );
-  }
-
-  try {
-    const session = await updateVoiceSessionStatus({
-      roomId: rawRoomId,
-      status: rawStatus,
-      lastError,
-    });
-
-    return NextResponse.json({
-      ok: true,
-      item: session,
-    });
-  } catch (err: any) {
-    console.error("[voice] PATCH /session error", err);
-    return NextResponse.json(
-      {
-        ok: false,
-        message: err?.message || "Failed to update voice session",
-      },
-      { status: 500 }
-    );
-  }
-}
-
-// GET /api/voice/session?roomId=visitor-...
+// GET /api/voice/session?roomId=...
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const roomId = (searchParams.get("roomId") || "").trim();
+  const url = new URL(req.url);
+  const roomId = url.searchParams.get("roomId");
+
+  if (!roomId || roomId.trim().length === 0) {
+    return NextResponse.json({
+      ok: true,
+      status: "none" as VoiceStatus,
+      session: null,
+    });
+  }
+
+  const cleanRoomId = roomId.trim();
+  const session = await getVoiceSessionForRoom(cleanRoomId);
+
+  return NextResponse.json({
+    ok: true,
+    status: (session?.status ?? "none") as VoiceStatus,
+    session,
+  });
+}
+
+// POST /api/voice/session
+// Body: { roomId: string, userId?: string, status?: VoiceStatus }
+export async function POST(req: NextRequest) {
+  const body = (await req.json().catch(() => ({} as any))) as {
+    roomId?: string;
+    userId?: string | null;
+    status?: VoiceStatus;
+  };
+
+  const roomId =
+    typeof body.roomId === "string" && body.roomId.trim().length > 0
+      ? body.roomId.trim()
+      : null;
 
   if (!roomId) {
     return NextResponse.json(
       {
         ok: false,
-        message: "roomId query param is required",
+        message: "roomId is required for a voice session.",
       },
       { status: 400 }
     );
   }
 
-  try {
-    const session = await getVoiceSessionForRoom(roomId);
+  const userId =
+    typeof body.userId === "string" && body.userId.trim().length > 0
+      ? body.userId.trim()
+      : null;
 
-    return NextResponse.json({
-      ok: true,
-      item: session,
-    });
-  } catch (err: any) {
-    console.error("[voice] GET /session error", err);
-    return NextResponse.json(
-      {
-        ok: false,
-        message: err?.message || "Failed to load voice session",
-      },
-      { status: 500 }
-    );
-  }
+  const status: VoiceStatus =
+    typeof body.status === "string"
+      ? (body.status as VoiceStatus)
+      : "requested";
+
+  const session = await upsertVoiceSession({
+    roomId,
+    userId,
+    status,
+  });
+
+  return NextResponse.json({
+    ok: true,
+    status: session.status,
+    session,
+  });
 }
