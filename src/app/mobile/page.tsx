@@ -5,12 +5,14 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { mockPlaces } from "@/app/data/places";
 
+type TabKey = "trending" | "nearby" | "saved";
+
 export default function MobileHomePage() {
-  const [activeTab, setActiveTab] = useState<"trending" | "nearby" | "saved">(
-    "trending"
-  );
+  const [activeTab, setActiveTab] = useState<TabKey>("trending");
   const [savedIds, setSavedIds] = useState<string[]>([]);
-  const [interest, setInterest] = useState(""); // NEW: user preference from mobile
+  const [interest, setInterest] = useState("");
+  const [savingInterest, setSavingInterest] = useState(false);
+  const [interestSaved, setInterestSaved] = useState(false);
 
   // load saved ids from API once
   useEffect(() => {
@@ -30,12 +32,11 @@ export default function MobileHomePage() {
   const toggleSave = async (id: string) => {
     const isSaved = savedIds.includes(id);
 
-    // update UI immediately
+    // optimistic UI
     setSavedIds((prev) =>
       isSaved ? prev.filter((x) => x !== id) : [...prev, id]
     );
 
-    // tell backend
     try {
       await fetch("/api/saved", {
         method: "POST",
@@ -47,12 +48,18 @@ export default function MobileHomePage() {
       });
     } catch (err) {
       console.error("Failed to update saved on server", err);
-      // optional: revert UI here if you want
+      // optional: revert – for now just log
     }
   };
 
-  // NEW: send lightweight user + interest to backend
+  // send lightweight user + interest to backend
   const sendCollectedUser = async () => {
+    const trimmed = interest.trim();
+    if (!trimmed) return;
+
+    setSavingInterest(true);
+    setInterestSaved(false);
+
     try {
       const res = await fetch("/api/users/collect", {
         method: "POST",
@@ -61,106 +68,186 @@ export default function MobileHomePage() {
           name: "Mobile visitor",
           email: "no-email@example.com",
           source: "mobile-home",
-          interest: interest.trim() || undefined,
+          interest: trimmed,
         }),
       });
-      const data = await res.json();
-      console.log("collect result:", data);
-      // you could clear the input if you want:
-      // setInterest("");
+      await res.json();
+      setInterest("");
+      setInterestSaved(true);
     } catch (err) {
       console.error("failed to collect user from mobile", err);
+    } finally {
+      setSavingInterest(false);
     }
   };
 
-  // pick what to show
-  const shownPlaces =
-    activeTab === "saved"
-      ? mockPlaces.filter((p) => savedIds.includes(p.id.toString()))
-      : mockPlaces; // for now trending/nearby just show all like before
+  // simple helpers to make the tabs feel different
+  const trendingPlaces = mockPlaces.filter((p) => p.trending);
+  const nearbyPlaces = [...mockPlaces].sort(
+    (a, b) => (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999)
+  );
+  const savedPlaces = mockPlaces.filter((p) =>
+    savedIds.includes(p.id.toString())
+  );
+
+  let shownPlaces = trendingPlaces;
+  if (activeTab === "nearby") shownPlaces = nearbyPlaces;
+  if (activeTab === "saved") shownPlaces = savedPlaces;
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white">
-      <div className="px-4 pt-6 pb-2 space-y-2">
-        <h1 className="text-xl font-bold">Foundzie</h1>
-        <p className="text-xs text-slate-400">What&apos;s near you</p>
-      </div>
+    <main className="min-h-screen bg-slate-950 text-white pb-16">
+      {/* Hero / header */}
+      <header className="px-4 pt-6 pb-4 space-y-2 bg-gradient-to-b from-slate-900/90 to-slate-950">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              Foundzie
+            </h1>
+            <p className="text-xs text-slate-400">
+              Lightning-fast concierge for what&apos;s around you.
+            </p>
+          </div>
+          <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/40">
+            Concierge online
+          </span>
+        </div>
+
+        <p className="text-[11px] text-slate-400">
+          Open the app, see places instantly. Tap any spot to chat or book via
+          your concierge.
+        </p>
+      </header>
 
       {/* Tabs */}
-      <div className="flex px-4 py-2 gap-2">
-        {["trending", "nearby", "saved"].map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab as any)}
-            className={`px-3 py-1 rounded-full text-xs ${
-              activeTab === tab ? "bg-pink-500 text-white" : "bg-slate-900 text-slate-300"
-            }`}
-          >
-            {tab[0].toUpperCase() + tab.slice(1)}
-          </button>
-        ))}
-      </div>
+      <section className="px-4 pt-3">
+        <div className="inline-flex rounded-full bg-slate-900 p-1 gap-1">
+          {(["trending", "nearby", "saved"] as TabKey[]).map((tab) => {
+            const isActive = activeTab === tab;
+            const label =
+              tab === "trending"
+                ? "Trending"
+                : tab === "nearby"
+                ? "Nearby"
+                : "Saved";
 
-      {/* List */}
-      <ul>
-        {shownPlaces.length === 0 && activeTab === "saved" ? (
-          <li className="px-4 py-8 text-slate-500 text-center">
-            No saved places yet.
-          </li>
-        ) : null}
-
-        {shownPlaces.map((p) => (
-          <li
-            key={p.id}
-            className="px-4 py-4 flex justify-between items-center border-b border-slate-800"
-          >
-            <div>
-              <p className="text-sm font-medium">{p.name}</p>
-              <p className="text-xs text-slate-400">{p.category}</p>
-            </div>
-
-            <div className="flex gap-2 items-center">
-              <Link
-                href={`/mobile/places/${p.id}`}
-                className="text-xs text-pink-400 underline"
-              >
-                View
-              </Link>
-
+            return (
               <button
-                onClick={() => toggleSave(p.id.toString())}
-                className="text-xs"
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={[
+                  "px-3 py-1.5 rounded-full text-xs transition-colors",
+                  isActive
+                    ? "bg-pink-500 text-white shadow-sm"
+                    : "text-slate-300",
+                ].join(" ")}
               >
-                {savedIds.includes(p.id.toString()) ? "★" : "☆"}
+                {label}
               </button>
-            </div>
-          </li>
-        ))}
-      </ul>
-
-      {/* NEW: interest capture area */}
-      <div className="px-4 py-6 space-y-2">
-        <p className="text-xs text-slate-400">
-          Tell Foundzie what you like (saved to admin):
+            );
+          })}
+        </div>
+        <p className="mt-2 text-[11px] text-slate-500">
+          {activeTab === "trending" &&
+            "Popular spots people are loving right now."}
+          {activeTab === "nearby" &&
+            "Sorted by distance so you can decide quickly."}
+          {activeTab === "saved" &&
+            "Your shortlist of favourites to revisit later."}
         </p>
+      </section>
+
+      {/* Places list */}
+      <section className="mt-2">
+        {shownPlaces.length === 0 && activeTab === "saved" ? (
+          <div className="px-4 py-10 text-center text-slate-500 text-sm">
+            You haven&apos;t saved any places yet.
+            <br />
+            <span className="text-[11px] text-slate-400">
+              Tap the ☆ icon on any place to save it.
+            </span>
+          </div>
+        ) : (
+          <ul className="divide-y divide-slate-800">
+            {shownPlaces.map((p) => (
+              <li
+                key={p.id}
+                className="px-4 py-4 flex justify-between items-center"
+              >
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">{p.name}</p>
+                  <p className="text-[11px] text-slate-400">
+                    {p.category}
+                    {typeof p.distanceMiles === "number" && (
+                      <> • {p.distanceMiles} mi</>
+                    )}
+                    {typeof p.rating === "number" && (
+                      <> • {p.rating.toFixed(1)} ★</>
+                    )}
+                  </p>
+                  {p.description && (
+                    <p className="text-[11px] text-slate-500 line-clamp-1">
+                      {p.description}
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex flex-col items-end gap-2">
+                  <Link
+                    href={`/mobile/places/${p.id}`}
+                    className="text-[11px] text-pink-400 underline"
+                  >
+                    View details
+                  </Link>
+                  <button
+                    onClick={() => toggleSave(p.id.toString())}
+                    className="text-xs px-2 py-1 rounded-full border border-slate-700 bg-slate-900/60"
+                  >
+                    {savedIds.includes(p.id.toString()) ? "★ Saved" : "☆ Save"}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Interest capture area */}
+      <section className="px-4 py-5 mt-1 border-t border-slate-900/70 bg-slate-950/90 space-y-2">
+        <p className="text-xs text-slate-300">
+          Tell Foundzie what you&apos;re into and we&apos;ll use it to tune
+          suggestions.
+        </p>
+
         <div className="flex gap-2">
           <input
             value={interest}
-            onChange={(e) => setInterest(e.target.value)}
-            placeholder="e.g. brunch, parks, events"
-            className="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs outline-none"
+            onChange={(e) => {
+              setInterest(e.target.value);
+              if (interestSaved) setInterestSaved(false);
+            }}
+            placeholder="e.g. brunch, parks, live music"
+            className="flex-1 bg-slate-900/80 border border-slate-700 rounded-lg px-3 py-2 text-xs outline-none focus:border-slate-400"
           />
           <button
             onClick={sendCollectedUser}
-            className="text-xs bg-slate-800 rounded-md px-3 py-1"
+            disabled={savingInterest || !interest.trim()}
+            className="text-xs px-3 py-2 rounded-lg bg-pink-500 disabled:opacity-60"
           >
-            Save
+            {savingInterest ? "Saving..." : "Save"}
           </button>
         </div>
+
+        {interestSaved && (
+          <p className="text-[11px] text-emerald-400">
+            Saved. Your concierge can now see this in the admin panel.
+          </p>
+        )}
+
         <p className="text-[10px] text-slate-500">
-          This hits <code>/api/users/collect</code> — no login.
+          This sends a lightweight profile to <code>/api/users/collect</code>{" "}
+          without any login.
         </p>
-      </div>
+      </section>
     </main>
   );
 }
