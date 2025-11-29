@@ -24,7 +24,7 @@ export async function startTwilioCall(to: string, note?: string) {
     const call = await client.calls.create({
       to,
       from,
-      url: "https://handler.twilio.com/twiml/EHXXXXXXXXXXXXXXXXXXXXXXXX", 
+      url: "https://handler.twilio.com/twiml/EHe799022b06fd93132b819e795be155e3", 
       // Replace with a TwiML Bin URL or optional webhook.
       // For now, a placeholder is fine.
     });
