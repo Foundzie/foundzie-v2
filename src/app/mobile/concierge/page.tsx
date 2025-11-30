@@ -1,16 +1,45 @@
 // src/app/mobile/concierge/page.tsx
 "use client";
 
-import { useState, FormEvent } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import Link from "next/link";
 
+// Must match the key used in /mobile/chat so we share the same room
+const VISITOR_ID_STORAGE_KEY = "foundzie_visitor_id";
+
+function createVisitorId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `visitor-${crypto.randomUUID()}`;
+  }
+  // Fallback for environments without randomUUID
+  return `visitor-${Date.now().toString(16)}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+}
+
+type VoiceStatus = "none" | "requested" | "active" | "ended" | "failed";
+
 export default function MobileConciergePage() {
+  const [roomId, setRoomId] = useState<string | null>(null);
+
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Pull the same visitor/room id that chat uses
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    let id = window.localStorage.getItem(VISITOR_ID_STORAGE_KEY);
+    if (!id) {
+      id = createVisitorId();
+      window.localStorage.setItem(VISITOR_ID_STORAGE_KEY, id);
+    }
+    setRoomId(id);
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -31,6 +60,9 @@ export default function MobileConciergePage() {
       if (trimmedPhone.length > 0) {
         parts.push(`Phone: ${trimmedPhone}`);
       }
+      if (roomId) {
+        parts.push(`Room: ${roomId}`);
+      }
 
       const interest =
         parts.join(" | ") || "Concierge request (no extra details)";
@@ -45,6 +77,9 @@ export default function MobileConciergePage() {
           interest,
           source: "mobile-concierge",
           tags: ["concierge-request"],
+          // extra hints for backend if it wants to store them
+          phone: trimmedPhone || undefined,
+          roomId: roomId ?? undefined,
         }),
       });
 
@@ -63,7 +98,29 @@ export default function MobileConciergePage() {
           ? collectData.item.id
           : undefined;
 
-      // 2️⃣ Trigger an outbound concierge call (best-effort)
+      // 2️⃣ Link the voice session to this user + keep status 'requested'
+      // (only if we know which room this visitor belongs to)
+      if (roomId) {
+        try {
+          await fetch("/api/voice/session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              roomId,
+              userId: userId ?? null,
+              status: "requested" as VoiceStatus,
+            }),
+          });
+        } catch (voiceErr) {
+          console.error(
+            "Failed to update voice session from concierge page:",
+            voiceErr
+          );
+          // Non-blocking: the call log + user still go through
+        }
+      }
+
+      // 3️⃣ Trigger an outbound concierge call (best-effort)
       try {
         await fetch("/api/calls/outbound", {
           method: "POST",
@@ -75,7 +132,9 @@ export default function MobileConciergePage() {
             phone: trimmedPhone || undefined,
             note:
               trimmedNote ||
-              "Concierge request from mobile /concierge (no extra note).",
+              (roomId
+                ? `Voice concierge request from /mobile/concierge for room ${roomId}.`
+                : "Voice concierge request from /mobile/concierge (no extra note)."),
           }),
         });
         // Even if this fails, the request is still collected; we just don't block the UI.
@@ -154,9 +213,8 @@ export default function MobileConciergePage() {
 
         {saved && (
           <p className="text-[11px] text-emerald-400">
-            Got it! Your concierge will reach out shortly{phone.trim()
-              ? ` at ${phone.trim()}.`
-              : "."}
+            Got it! Your concierge will reach out shortly
+            {phone.trim() ? ` at ${phone.trim()}.` : "."}
           </p>
         )}
         {error && <p className="text-[11px] text-red-400">{error}</p>}
