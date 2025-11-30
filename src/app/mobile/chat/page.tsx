@@ -17,6 +17,8 @@ function createVisitorId() {
     .slice(2)}`;
 }
 
+type VoiceStatus = "none" | "requested" | "active" | "ended" | "failed";
+
 export default function MobileChatPage() {
   const router = useRouter();
 
@@ -37,8 +39,12 @@ export default function MobileChatPage() {
   const [profileSavedMessage, setProfileSavedMessage] =
     useState<string | null>(null);
 
-  // NEW: voice sheet state (M5a scaffold)
+  // Voice sheet state (M5a)
   const [showVoiceSheet, setShowVoiceSheet] = useState(false);
+  const [voiceRequestError, setVoiceRequestError] = useState<string | null>(
+    null
+  );
+  const [voiceRequesting, setVoiceRequesting] = useState(false);
 
   // ---------------- Visitor identity (roomId) ----------------
   useEffect(() => {
@@ -276,6 +282,49 @@ export default function MobileChatPage() {
     }
   }
 
+  // ---------------- Voice: create session + go to concierge ----------------
+  async function handleVoiceConciergeClick() {
+    if (!roomId) {
+      // just in case, still navigate so user can type phone in concierge form
+      router.push("/mobile/concierge");
+      return;
+    }
+
+    setVoiceRequesting(true);
+    setVoiceRequestError(null);
+
+    try {
+      const res = await fetch("/api/voice/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomId,
+          status: "requested" as VoiceStatus,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({} as any));
+
+      if (!res.ok) {
+        const message =
+          typeof data === "object" && data && "message" in data
+            ? String((data as { message?: unknown }).message)
+            : "Voice session request failed";
+        throw new Error(message);
+      }
+    } catch (err) {
+      console.error("Failed to request voice session from mobile:", err);
+      setVoiceRequestError(
+        "We couldn’t flag your call request, but your concierge can still call you from the next screen."
+      );
+      // we still continue to concierge page
+    } finally {
+      setVoiceRequesting(false);
+      setShowVoiceSheet(false);
+      router.push("/mobile/concierge");
+    }
+  }
+
   // ---------------- UI ----------------
   return (
     <main className="min-h-screen bg-slate-950 text-white flex flex-col">
@@ -293,7 +342,7 @@ export default function MobileChatPage() {
             )}
           </div>
 
-          {/* NEW: voice button scaffold */}
+          {/* Voice button scaffold */}
           <button
             type="button"
             onClick={() => setShowVoiceSheet(true)}
@@ -468,7 +517,7 @@ export default function MobileChatPage() {
         </form>
       </section>
 
-      {/* NEW: Voice sheet scaffold */}
+      {/* Voice sheet */}
       {showVoiceSheet && (
         <div
           className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-30"
@@ -493,18 +542,23 @@ export default function MobileChatPage() {
 
             <p className="text-xs text-slate-300">
               Voice calls are coming soon. For now, your concierge can call you
-              by phone, or you can keep chatting here.
+              by phone. We&rsquo;ll flag your request and then take you to a
+              quick form to confirm your number.
             </p>
+
+            {voiceRequestError && (
+              <p className="text-[11px] text-amber-300">
+                {voiceRequestError}
+              </p>
+            )}
 
             <button
               type="button"
-              onClick={() => {
-                setShowVoiceSheet(false);
-                router.push("/mobile/concierge");
-              }}
-              className="w-full px-4 py-2 rounded-full bg-purple-600 text-xs font-medium text-white hover:bg-purple-500"
+              onClick={handleVoiceConciergeClick}
+              disabled={voiceRequesting}
+              className="w-full px-4 py-2 rounded-full bg-purple-600 text-xs font-medium text-white hover:bg-purple-500 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Call me via concierge
+              {voiceRequesting ? "Requesting…" : "Call me via concierge"}
             </button>
 
             <button
