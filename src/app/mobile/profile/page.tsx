@@ -1,38 +1,74 @@
 // src/app/mobile/profile/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, FormEvent } from "react";
 import BottomNav from "../../components/BottomNav";
 import { currentUser } from "@/app/data/profile";
 import { Bell, MapPin, Phone, Mail } from "lucide-react";
 
-const CHILD_MODE_STORAGE_KEY = "foundzie_interaction_mode_v1";
+const VISITOR_ID_STORAGE_KEY = "foundzie_visitor_id";
+const INTERACTION_MODE_KEY = "foundzie_interaction_mode_v1";
 
 type InteractionMode = "normal" | "child";
 
 export default function ProfilePage() {
-  const [mode, setMode] = useState<InteractionMode>("normal");
-  const [modeLoaded, setModeLoaded] = useState(false);
+  const [interactionMode, setInteractionMode] =
+    useState<InteractionMode>("normal");
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const [savingMode, setSavingMode] = useState(false);
+  const [modeError, setModeError] = useState<string | null>(null);
 
-  // Load saved mode from localStorage (if any)
+  // Load roomId + stored mode from localStorage on mount
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const stored = window.localStorage.getItem(CHILD_MODE_STORAGE_KEY);
-    if (stored === "normal" || stored === "child") {
-      setMode(stored);
+    const storedRoom = window.localStorage.getItem(VISITOR_ID_STORAGE_KEY);
+    if (storedRoom) setRoomId(storedRoom);
+
+    const storedMode = window.localStorage.getItem(INTERACTION_MODE_KEY);
+    if (storedMode === "child" || storedMode === "normal") {
+      setInteractionMode(storedMode);
     } else {
-      setMode("normal");
+      // default + persist
+      window.localStorage.setItem(INTERACTION_MODE_KEY, "normal");
+      setInteractionMode("normal");
     }
-    setModeLoaded(true);
   }, []);
 
-  // Update localStorage whenever mode changes (after initial load)
-  function handleModeChange(next: InteractionMode) {
-    setMode(next);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(CHILD_MODE_STORAGE_KEY, next);
+  async function syncModeToBackend(mode: InteractionMode) {
+    if (!roomId) return; // best-effort; chat creates this
+
+    try {
+      setSavingMode(true);
+      setModeError(null);
+
+      const encodedRoomId = encodeURIComponent(roomId);
+
+      await fetch(`/api/users/room/${encodedRoomId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          interactionMode: mode,
+          source: "mobile-profile",
+          // Helpful tag so admin can filter later
+          tags: mode === "child" ? ["child-mode"] : [],
+        }),
+      });
+    } catch (err) {
+      console.error("Failed to sync interaction mode to backend:", err);
+      setModeError("Could not sync mode to concierge (saved on this device).");
+    } finally {
+      setSavingMode(false);
     }
+  }
+
+  function handleModeChange(e: FormEvent<HTMLInputElement>) {
+    const value = e.currentTarget.value === "child" ? "child" : "normal";
+    setInteractionMode(value);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(INTERACTION_MODE_KEY, value);
+    }
+    void syncModeToBackend(value);
   }
 
   return (
@@ -101,7 +137,9 @@ export default function ProfilePage() {
           <div className="flex items-center justify-between px-3 py-2">
             <div className="flex items-center gap-2">
               <Bell className="w-4 h-4 text-gray-400" />
-              <span className="text-sm text-gray-800">App notifications</span>
+              <span className="text-sm text-gray-800">
+                App notifications
+              </span>
             </div>
             <span
               className={`text-[10px] px-2 py-0.5 rounded-full ${
@@ -148,61 +186,63 @@ export default function ProfilePage() {
         </div>
       </section>
 
-      {/* NEW: Interaction mode (local child-safe toggle) */}
-      <section className="px-4 mt-4 space-y-2">
+      {/* Interaction mode */}
+      <section className="px-4 mt-6 space-y-2">
         <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Interaction mode
         </h3>
-        <div className="bg-white border border-gray-100 rounded-lg px-3 py-3 space-y-2">
-          <p className="text-xs text-gray-500">
-            Choose how Foundzie talks and responds on this device. This setting
-            is saved locally and can be changed anytime.
-          </p>
-
-          <div className="flex flex-col gap-2 text-sm text-gray-800">
-            <label className="flex items-center gap-2">
+        <p className="text-[11px] text-gray-500 mb-1">
+          Choose how Foundzie talks and responds on this device. This is
+          saved locally and can be changed anytime. We&apos;ll also let your
+          concierge know which mode you prefer.
+        </p>
+        <div className="bg-white border border-gray-100 rounded-lg divide-y divide-gray-100">
+          <label className="flex items-center justify-between px-3 py-2 cursor-pointer">
+            <div className="flex items-center gap-2">
               <input
                 type="radio"
-                name="interaction-mode"
+                name="interactionMode"
                 value="normal"
-                checked={mode === "normal"}
-                onChange={() => handleModeChange("normal")}
-                className="h-4 w-4"
-                disabled={!modeLoaded}
+                checked={interactionMode === "normal"}
+                onChange={handleModeChange}
+                className="h-3 w-3 text-purple-600"
               />
-              <span>
-                <span className="font-medium">Normal mode</span>
-                <span className="ml-1 text-xs text-gray-500">
-                  (full concierge suggestions)
-                </span>
+              <span className="text-sm text-gray-800">
+                Normal mode
               </span>
-            </label>
+            </div>
+            <span className="text-[10px] text-gray-400">
+              Full concierge suggestions
+            </span>
+          </label>
 
-            <label className="flex items-center gap-2">
+          <label className="flex items-center justify-between px-3 py-2 cursor-pointer">
+            <div className="flex items-center gap-2">
               <input
                 type="radio"
-                name="interaction-mode"
+                name="interactionMode"
                 value="child"
-                checked={mode === "child"}
-                onChange={() => handleModeChange("child")}
-                className="h-4 w-4"
-                disabled={!modeLoaded}
+                checked={interactionMode === "child"}
+                onChange={handleModeChange}
+                className="h-3 w-3 text-purple-600"
               />
-              <span>
-                <span className="font-medium">Child-safe mode</span>
-                <span className="ml-1 text-xs text-gray-500">
-                  (gentler tone & kid-friendly content in future versions)
-                </span>
+              <span className="text-sm text-gray-800">
+                Child-safe mode
               </span>
-            </label>
-          </div>
-
-          {!modeLoaded && (
-            <p className="text-[10px] text-gray-400">
-              Loading your current setting…
-            </p>
-          )}
+            </div>
+            <span className="text-[10px] text-gray-400">
+              Gentler tone & kid-friendly content
+            </span>
+          </label>
         </div>
+        {savingMode && (
+          <p className="text-[11px] text-gray-400">
+            Updating your concierge preferences…
+          </p>
+        )}
+        {modeError && (
+          <p className="text-[11px] text-red-500">{modeError}</p>
+        )}
       </section>
 
       <BottomNav />

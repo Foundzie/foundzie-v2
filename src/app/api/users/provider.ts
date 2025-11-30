@@ -5,10 +5,11 @@ import mockUsers, {
 } from "@/app/data/users";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 
-// Extend base type with optional tags + phone (same as before)
+// Extend base type with optional tags + phone + interactionMode
 export type AdminUser = BaseAdminUser & {
   tags?: string[];
   phone?: string | null;
+  interactionMode?: "normal" | "child";
 };
 export type AdminUserInput = Partial<AdminUser>;
 
@@ -47,8 +48,10 @@ async function loadAll(): Promise<AdminUser[]> {
   // Seed from mock users on first run
   const seeded: AdminUser[] = mockUsers.map((u) => ({
     ...u,
-    tags: normalizeTags(u.tags),
-    phone: u.phone ?? null,
+    tags: normalizeTags((u as any).tags),
+    phone: (u as any).phone ?? null,
+    interactionMode:
+      (u as any).interactionMode === "child" ? "child" : "normal",
   }));
 
   await kvSetJSON(USERS_KEY, seeded);
@@ -103,6 +106,8 @@ const kvUserProvider: UserProvider = {
       roomId: partial.roomId ?? `user-${nextId}`,
       conciergeStatus: partial.conciergeStatus ?? "open",
       conciergeNote: partial.conciergeNote ?? "",
+      interactionMode:
+        partial.interactionMode === "child" ? "child" : "normal",
     };
 
     const updated = [user, ...list];
@@ -122,6 +127,11 @@ const kvUserProvider: UserProvider = {
         ? current.tags
         : normalizeTags(partial.tags ?? []);
 
+    const interactionMode =
+      partial.interactionMode ??
+      current.interactionMode ??
+      "normal";
+
     const updated: AdminUser = {
       ...current,
       ...partial,
@@ -129,6 +139,7 @@ const kvUserProvider: UserProvider = {
       phone:
         partial.phone !== undefined ? partial.phone : current.phone ?? null,
       roomId: partial.roomId ?? current.roomId,
+      interactionMode,
     };
 
     const next = [...list];
@@ -159,6 +170,9 @@ const kvUserProvider: UserProvider = {
           ? u.tags
           : normalizeTags(partial.tags ?? []);
 
+      const interactionMode =
+        partial.interactionMode ?? u.interactionMode ?? "normal";
+
       const updated: AdminUser = {
         ...u,
         ...partial,
@@ -166,6 +180,7 @@ const kvUserProvider: UserProvider = {
         phone:
           partial.phone !== undefined ? partial.phone : u.phone ?? null,
         roomId: partial.roomId ?? u.roomId,
+        interactionMode,
       };
 
       return updated;

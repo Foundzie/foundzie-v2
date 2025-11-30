@@ -3,10 +3,11 @@
 import type { AdminUser as BaseAdminUser } from "@/app/data/users";
 import { userProvider, type AdminUserInput } from "./provider";
 
-// Our API returns the base user + optional tags + phone (non-breaking)
+// Our API returns the base user + optional tags + phone + interactionMode
 export type AdminUser = BaseAdminUser & {
   tags?: string[];
   phone?: string | null;
+  interactionMode?: "normal" | "child";
 };
 
 /* ------------------------------------------------------------------ */
@@ -77,6 +78,7 @@ export async function ensureUserForRoom(
     email?: string | null;
     source?: string;
     tags?: string[];
+    interactionMode?: "normal" | "child";
   }
 ): Promise<AdminUser> {
   const trimmed = roomId.trim();
@@ -100,11 +102,14 @@ export async function ensureUserForRoom(
   // IMPORTANT: for mobile chat we default the source to "mobile-chat"
   const source = opts?.source ?? "mobile-chat";
 
-  const tags = Array.isArray(opts?.tags) && opts!.tags.length > 0
-    ? opts!.tags
-    : ["concierge-request"];
+  const tags =
+    Array.isArray(opts?.tags) && opts!.tags.length > 0
+      ? opts!.tags
+      : ["concierge-request"];
 
-  // AdminUserInput already allows partial fields (joined is optional in your usage)
+  const interactionMode =
+    opts?.interactionMode === "child" ? "child" : "normal";
+
   const created = await createUser({
     name: defaultName,
     email,
@@ -116,6 +121,7 @@ export async function ensureUserForRoom(
     source,
     tags,
     roomId: trimmed,
+    interactionMode,
   } as AdminUserInput);
 
   return created;

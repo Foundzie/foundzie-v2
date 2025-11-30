@@ -14,6 +14,7 @@ type RoomProfileBody = {
   phone?: string;
   source?: string;
   tags?: string[] | string;
+  interactionMode?: "normal" | "child";
 };
 
 // Robust roomId resolver: prefer params, fall back to URL last segment
@@ -42,10 +43,6 @@ export async function GET(req: Request, context: any) {
     );
   }
 
-  // IMPORTANT:
-  // Use ensureUserForRoom so this will either:
-  //  - find the existing user linked to this roomId, or
-  //  - create a minimal one if none exists yet.
   const user = await ensureUserForRoom(roomId, {
     source: "mobile-chat",
   });
@@ -80,6 +77,13 @@ export async function POST(req: Request, context: any) {
       ? body.phone.trim()
       : undefined;
 
+  const interactionMode: "normal" | "child" | undefined =
+    body.interactionMode === "child"
+      ? "child"
+      : body.interactionMode === "normal"
+      ? "normal"
+      : undefined;
+
   // Normalise tags to string[]
   let tags: string[] = [];
   if (Array.isArray(body.tags)) {
@@ -93,20 +97,21 @@ export async function POST(req: Request, context: any) {
       .filter((t) => t.length > 0);
   }
 
-  // Ensure a user row exists for this roomId (will also set roomId)
   const existing = await ensureUserForRoom(roomId, {
     name: baseName,
     source: body.source ?? "mobile-chat",
     tags,
+    interactionMode,
   });
 
   const updated = await updateUser(String(existing.id), {
     ...(baseName ? { name: baseName } : {}),
     ...(interest !== undefined ? { interest } : {}),
     ...(phone !== undefined ? { phone } : {}),
+    ...(interactionMode ? { interactionMode } : {}),
     source: body.source ?? existing.source ?? "mobile-chat",
     tags: tags.length > 0 ? tags : existing.tags,
-    roomId, // keep the chat ↔ user link
+    roomId,
   });
 
   return NextResponse.json({ ok: true, item: updated ?? existing });

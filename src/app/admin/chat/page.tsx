@@ -19,6 +19,11 @@ type ChatRoomSummaryFromApi = {
   lastSender?: "user" | "concierge";
 };
 
+// Local extension so we can see interactionMode
+type AdminUserWithMode = AdminUser & {
+  interactionMode?: "normal" | "child";
+};
+
 // NEW: local VoiceStatus type for this UI
 type VoiceStatus = "none" | "requested" | "active" | "ended" | "failed";
 
@@ -34,7 +39,9 @@ export default function AdminChatPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Visitor profile state (live user from API)
-  const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
+  const [selectedUser, setSelectedUser] = useState<AdminUserWithMode | null>(
+    null
+  );
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
 
@@ -44,12 +51,14 @@ export default function AdminChatPage() {
     tagsText: string;
     conciergeStatus: string;
     conciergeNote: string;
+    interactionMode: "normal" | "child";
   }>({
     interest: "",
     source: "",
     tagsText: "",
     conciergeStatus: "",
     conciergeNote: "",
+    interactionMode: "normal",
   });
 
   const [profileSaving, setProfileSaving] = useState(false);
@@ -70,7 +79,7 @@ export default function AdminChatPage() {
   const [voiceUpdatedAt, setVoiceUpdatedAt] = useState<string | null>(null);
 
   // NEW: real users loaded from /api/users
-  const [knownUsers, setKnownUsers] = useState<AdminUser[]>([]);
+  const [knownUsers, setKnownUsers] = useState<AdminUserWithMode[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
 
   /* --------------------- Load users for mapping roomId → user --------------------- */
@@ -88,7 +97,7 @@ export default function AdminChatPage() {
         }
 
         const items = Array.isArray(data.items)
-          ? (data.items as AdminUser[])
+          ? (data.items as AdminUserWithMode[])
           : [];
         if (!cancelled) {
           setKnownUsers(items);
@@ -133,9 +142,8 @@ export default function AdminChatPage() {
         const rooms = data.rooms as ChatRoomSummaryFromApi[];
 
         const convs: ConversationUser[] = rooms.map((room) => {
-          // Try to match to a real AdminUser by roomId
           const match = knownUsers.find(
-            (u) => String(u.roomId).trim() === String(room.id).trim()
+            (u) => String((u as any).roomId).trim() === String(room.id).trim()
           );
 
           if (match) {
@@ -151,7 +159,6 @@ export default function AdminChatPage() {
             };
           }
 
-          // Fallback: anonymous visitor
           const shortId = room.id.slice(0, 6);
           return {
             id: null,
@@ -164,12 +171,10 @@ export default function AdminChatPage() {
         if (!cancelled) {
           setConversations(convs);
 
-          // If nothing selected yet, pick the first room (if any)
           if (!selectedRoomId && convs.length > 0) {
             setSelectedRoomId(convs[0].roomId);
             setSelectedUserId(convs[0].id);
           } else if (selectedRoomId && !selectedUserId) {
-            // We have a selected room but no user yet; see if a user appeared
             const match = convs.find(
               (c) => c.roomId === selectedRoomId && c.id !== null
             );
@@ -244,7 +249,6 @@ export default function AdminChatPage() {
       }
     }
 
-    // clear old messages immediately so switching rooms feels clean
     setMessages([]);
     load();
 
@@ -265,6 +269,7 @@ export default function AdminChatPage() {
         tagsText: "",
         conciergeStatus: "",
         conciergeNote: "",
+        interactionMode: "normal",
       });
       setProfileSaveMessage(null);
       return;
@@ -283,7 +288,6 @@ export default function AdminChatPage() {
 
         const encodedRoomId = encodeURIComponent(roomId);
 
-        // Fetch profile by room id (covers visitors + seeded users with roomId)
         const res = await fetch(`/api/users/room/${encodedRoomId}`);
         const data = await res.json().catch(() => ({} as unknown));
 
@@ -297,7 +301,6 @@ export default function AdminChatPage() {
 
         const maybeItem = (data as { item?: unknown }).item;
         if (!maybeItem || typeof maybeItem !== "object") {
-          // No profile yet for this room – that's OK, just clear
           if (!cancelled) {
             setSelectedUser(null);
             setProfileDraft({
@@ -306,20 +309,22 @@ export default function AdminChatPage() {
               tagsText: "",
               conciergeStatus: "",
               conciergeNote: "",
+              interactionMode: "normal",
             });
           }
           return;
         }
 
         if (!cancelled) {
-          const user = maybeItem as AdminUser;
+          const user = maybeItem as AdminUserWithMode;
           setSelectedUser(user);
           setProfileDraft({
             interest: user.interest ?? "",
             source: user.source ?? "",
             tagsText: (user.tags ?? []).join(", "),
-            conciergeStatus: user.conciergeStatus ?? "open",
-            conciergeNote: user.conciergeNote ?? "",
+            conciergeStatus: (user as any).conciergeStatus ?? "open",
+            conciergeNote: (user as any).conciergeNote ?? "",
+            interactionMode: user.interactionMode ?? "normal",
           });
         }
       } catch (err) {
@@ -339,7 +344,7 @@ export default function AdminChatPage() {
     };
   }, [selectedRoomId]);
 
-  /* --------------------- NEW: Load voice session status for this room --------------------- */
+  /* --------------------- Load voice session status for this room --------------------- */
   useEffect(() => {
     if (!selectedRoomId) {
       setVoiceStatus("none");
@@ -417,12 +422,13 @@ export default function AdminChatPage() {
       interest: profileDraft.interest.trim(),
       source: profileDraft.source.trim(),
       conciergeStatus:
-        profileDraft.conciergeStatus || selectedUser.conciergeStatus,
+        profileDraft.conciergeStatus || (selectedUser as any).conciergeStatus,
       conciergeNote: profileDraft.conciergeNote,
       tags: profileDraft.tagsText
         .split(",")
         .map((t) => t.trim())
         .filter(Boolean),
+      interactionMode: profileDraft.interactionMode,
     };
 
     try {
@@ -449,14 +455,15 @@ export default function AdminChatPage() {
         throw new Error("Profile update failed");
       }
 
-      const updated = maybeItem as AdminUser;
+      const updated = maybeItem as AdminUserWithMode;
       setSelectedUser(updated);
       setProfileDraft({
         interest: updated.interest ?? "",
         source: updated.source ?? "",
         tagsText: (updated.tags ?? []).join(", "),
-        conciergeStatus: updated.conciergeStatus ?? "open",
-        conciergeNote: updated.conciergeNote ?? "",
+        conciergeStatus: (updated as any).conciergeStatus ?? "open",
+        conciergeNote: (updated as any).conciergeNote ?? "",
+        interactionMode: updated.interactionMode ?? "normal",
       });
       setProfileSaveMessage("Profile saved.");
     } catch (err) {
@@ -490,7 +497,6 @@ export default function AdminChatPage() {
       attachmentKind: null,
     };
 
-    // optimistic add
     setMessages((prev) => [...prev, tempMessage]);
     setInput("");
 
@@ -505,7 +511,7 @@ export default function AdminChatPage() {
           body: JSON.stringify({
             text,
             sender: "concierge",
-            roomId, // 🔴 important: tell backend exactly which room
+            roomId,
           }),
         }
       );
@@ -526,7 +532,6 @@ export default function AdminChatPage() {
         throw new Error("Admin send failed");
       }
 
-      // replace temp with real message
       setMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId);
         return [...withoutTemp, maybeItem as ChatMessage];
@@ -535,7 +540,6 @@ export default function AdminChatPage() {
       console.error("Admin chat send error:", err);
       setError("Could not send reply. Please try again.");
 
-      // rollback optimistic message
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setInput(text);
     } finally {
@@ -587,7 +591,7 @@ export default function AdminChatPage() {
     }
   }
 
-  /* --------------------- NEW: create/update voice session for this room --------------------- */
+  /* --------------------- create/update voice session for this room --------------------- */
   async function handleCreateVoiceSession() {
     if (!selectedRoomId) return;
 
@@ -731,7 +735,6 @@ export default function AdminChatPage() {
                     {c.subtitle}
                   </div>
                 )}
-                {/* tiny roomId line so you can SEE which room this is */}
                 <div
                   style={{
                     fontSize: "10px",
@@ -1125,7 +1128,12 @@ export default function AdminChatPage() {
                   <strong>Joined:</strong> {selectedUser.joined}
                 </div>
                 <div>
-                  <strong>Room ID:</strong> {selectedUser.roomId}
+                  <strong>Room ID:</strong> {(selectedUser as any).roomId}</div>
+                <div>
+                  <strong>Interaction mode:</strong>{" "}
+                  {profileDraft.interactionMode === "child"
+                    ? "Child-safe"
+                    : "Normal"}
                 </div>
 
                 <label style={{ marginTop: "4px" }}>
@@ -1243,6 +1251,31 @@ export default function AdminChatPage() {
                   />
                 </label>
 
+                <label>
+                  <div style={{ fontWeight: 600 }}>Interaction mode</div>
+                  <select
+                    value={profileDraft.interactionMode}
+                    onChange={(e) =>
+                      setProfileDraft((d) => ({
+                        ...d,
+                        interactionMode:
+                          e.target.value === "child" ? "child" : "normal",
+                      }))
+                    }
+                    style={{
+                      width: "100%",
+                      borderRadius: "8px",
+                      border: "1px solid #e5e7eb",
+                      padding: "4px 6px",
+                      fontSize: "12px",
+                      background: "white",
+                    }}
+                  >
+                    <option value="normal">Normal</option>
+                    <option value="child">Child-safe</option>
+                  </select>
+                </label>
+
                 {profileSaveMessage && (
                   <div
                     style={{
@@ -1289,7 +1322,7 @@ export default function AdminChatPage() {
               </form>
             )}
 
-            {/* NEW: Voice session status box */}
+            {/* Voice session status box */}
             {selectedRoomId && (
               <div
                 style={{
