@@ -28,7 +28,8 @@ let googleCallsDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 let googleCallsToday = 0;
 
 function canUseGoogle(): boolean {
-  const key = process.env.GOOGLE_MAPS_API_KEY;
+  // 🔑 IMPORTANT: use the same name as in .env & Vercel
+  const key = process.env.GOOGLE_PLACES_API_KEY;
   if (!key) return false;
 
   const today = new Date().toISOString().slice(0, 10);
@@ -91,7 +92,7 @@ function isChildSafe(category: string, name: string): boolean {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Google Places                                                             */
+/*  Google Places (Text Search)                                               */
 /* -------------------------------------------------------------------------- */
 
 async function fetchFromGooglePlaces(params: {
@@ -102,13 +103,12 @@ async function fetchFromGooglePlaces(params: {
 }): Promise<NormalizedPlace[]> {
   if (!canUseGoogle()) return [];
 
-  const apiKey = process.env.GOOGLE_MAPS_API_KEY!;
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY!; // 🔑 use PLACES key
   registerGoogleCall();
 
   const { lat, lng, q, mode } = params;
   const hasLocation = typeof lat === "number" && typeof lng === "number";
 
-  // Prefer Text Search so we can search "things to do near X"
   const baseUrl =
     "https://maps.googleapis.com/maps/api/place/textsearch/json";
 
@@ -217,7 +217,6 @@ async function fetchFromOpenStreetMap(params: {
   url.searchParams.set("limit", "20");
 
   if (lat && lng) {
-    // small bounding box around the location
     const d = 0.03;
     url.searchParams.set(
       "viewbox",
@@ -228,7 +227,7 @@ async function fetchFromOpenStreetMap(params: {
 
   const res = await fetch(url.toString(), {
     headers: {
-      // You should change this to your real contact email/domain in prod
+      // TODO: change this to a real domain/email in production
       "User-Agent": "FoundzieDev/1.0 (foundzie@example.com)",
     },
   });
@@ -321,16 +320,11 @@ export async function GET(req: Request) {
   const modeParam = url.searchParams.get("mode") ?? "normal";
 
   const lat =
-    latParam !== null && latParam !== ""
-      ? Number(latParam)
-      : undefined;
+    latParam !== null && latParam !== "" ? Number(latParam) : undefined;
   const lng =
-    lngParam !== null && lngParam !== ""
-      ? Number(lngParam)
-      : undefined;
+    lngParam !== null && lngParam !== "" ? Number(lngParam) : undefined;
 
-  const mode: InteractionMode =
-    modeParam === "child" ? "child" : "normal";
+  const mode: InteractionMode = modeParam === "child" ? "child" : "normal";
 
   try {
     let places: NormalizedPlace[] = [];
