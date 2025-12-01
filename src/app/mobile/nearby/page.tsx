@@ -5,10 +5,17 @@ import { useEffect, useState, FormEvent } from "react";
 import Link from "next/link";
 
 type Place = {
-  id: string;
+  id: string | number;
   name: string;
   category?: string;
   distanceMiles?: number;
+};
+
+type PlacesResponse = {
+  success: boolean;
+  source: "google" | "local" | "fallback-local";
+  count: number;
+  data: Place[];
 };
 
 type NewUserResponse = {
@@ -32,14 +39,16 @@ type CallResponse = {
 export default function NearbyPage() {
   const [places, setPlaces] = useState<Place[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [source, setSource] = useState<string>("");
 
-  // --- simple interest capture state (already planned) ---
+  // --- simple interest capture state ---
   const [interest, setInterest] = useState("");
   const [savingInterest, setSavingInterest] = useState(false);
   const [interestSaved, setInterestSaved] = useState(false);
   const [interestError, setInterestError] = useState<string | null>(null);
 
-  // --- NEW: concierge call mini-form state ---
+  // --- concierge call mini-form state ---
   const [activePlaceId, setActivePlaceId] = useState<string | null>(null);
   const [guestName, setGuestName] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
@@ -48,26 +57,59 @@ export default function NearbyPage() {
   const [callError, setCallError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
-      try {
-        const res = await fetch("/api/places");
-        const json = await res.json();
-        setPlaces((json.data ?? []) as Place[]);
-      } catch (e) {
-        console.error("Failed to load places", e);
-      } finally {
-        setLoading(false);
+      setLoading(true);
+      setError(null);
+
+      async function fetchPlaces(url: string) {
+        try {
+          const res = await fetch(url);
+          const json = (await res.json()) as PlacesResponse;
+          if (!json.success) throw new Error("API returned success=false");
+          if (cancelled) return;
+          setPlaces((json.data ?? []) as Place[]);
+          setSource(json.source);
+        } catch (err) {
+          console.error("Failed to load places", err);
+          if (!cancelled) {
+            setError("Could not load nearby places. Showing sample data.");
+          }
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      }
+
+      if (typeof navigator !== "undefined" && navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const lat = pos.coords.latitude;
+            const lng = pos.coords.longitude;
+            const url = `/api/places?lat=${lat}&lng=${lng}`;
+            fetchPlaces(url);
+          },
+          () => {
+            fetchPlaces("/api/places");
+          },
+          { timeout: 5000 }
+        );
+      } else {
+        fetchPlaces("/api/places");
       }
     }
 
     load();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const sorted = [...places].sort(
     (a, b) => (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999)
   );
 
-  // --- send interest -> /api/users/collect (M3 zero-friction bit) ---
+  // --- send interest -> /api/users/collect ---
   async function handleSaveInterest(e: FormEvent) {
     e.preventDefault();
     const trimmed = interest.trim();
@@ -84,7 +126,6 @@ export default function NearbyPage() {
         body: JSON.stringify({
           interest: trimmed,
           source: "mobile-nearby",
-          // store as real array so admin can target
           tags: [trimmed],
         }),
       });
@@ -98,7 +139,7 @@ export default function NearbyPage() {
     }
   }
 
-  // --- NEW: “Book via concierge” -> create user + trigger call ---
+  // --- “Book via concierge” -> create user + trigger call ---
   async function handleBookCall(e: FormEvent, place: Place) {
     e.preventDefault();
     const name = guestName.trim();
@@ -114,7 +155,6 @@ export default function NearbyPage() {
     setCallError(null);
 
     try {
-      // 1) Create / collect a lightweight user
       const collectRes = await fetch("/api/users/collect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -131,26 +171,22 @@ export default function NearbyPage() {
         }),
       });
 
-      const collectJson = (await collectRes
-        .json()
-        .catch(() => ({} as NewUserResponse))) as NewUserResponse;
+      const collectJson = (await collectRes.json().catch(
+        () => ({}) as NewUserResponse
+      )) as NewUserResponse;
 
       const newUserId =
         collectJson?.item?.id !== undefined
           ? String(collectJson.item.id)
           : undefined;
 
-      // 2) Trigger outbound concierge call (Twilio / fallback)
       const note = `Booking request from mobile-nearby for "${place.name}"`;
 
       const callBody: any = {
         phone,
         note,
       };
-
-      if (newUserId) {
-        callBody.userId = newUserId;
-      }
+      if (newUserId) callBody.userId = newUserId;
 
       const callRes = await fetch("/api/calls/outbound", {
         method: "POST",
@@ -158,9 +194,9 @@ export default function NearbyPage() {
         body: JSON.stringify(callBody),
       });
 
-      const callJson = (await callRes
-        .json()
-        .catch(() => ({} as CallResponse))) as CallResponse;
+      const callJson = (await callRes.json().catch(
+        () => ({}) as CallResponse
+      )) as CallResponse;
 
       if (!callRes.ok || !callJson.ok) {
         throw new Error(callJson?.callId || "Call request failed");
@@ -169,7 +205,6 @@ export default function NearbyPage() {
       setCallMessage(
         `Got it, ${name}. Your concierge will call you shortly at ${phone}.`
       );
-      // keep the form filled in case they want to tweak; just collapse it
       setActivePlaceId(null);
     } catch (err) {
       console.error("Failed to start concierge call", err);
@@ -184,9 +219,17 @@ export default function NearbyPage() {
       <header className="px-4 py-4 border-b border-slate-800">
         <h1 className="text-lg font-semibold">Nearby</h1>
         <p className="text-slate-400 text-sm">Places near your location</p>
+        {source && (
+          <p className="text-[11px] text-slate-500 mt-1">
+            Data source:{" "}
+            <span className="font-medium">
+              {source === "google" ? "Google Places" : "Local sample"}
+            </span>
+          </p>
+        )}
       </header>
 
-      {/* simple interest capture bar (zero-friction preference) */}
+      {/* interest capture bar */}
       <section className="px-4 py-3 border-b border-slate-800 space-y-2">
         <p className="text-xs text-slate-400">
           Tell Foundzie what you&apos;re into and we&apos;ll use it to improve
@@ -222,7 +265,6 @@ export default function NearbyPage() {
           <p className="text-[11px] text-red-400">{interestError}</p>
         )}
 
-        {/* entry to concierge chat flow (existing) */}
         <div className="pt-1">
           <Link
             href="/mobile/concierge"
@@ -237,6 +279,10 @@ export default function NearbyPage() {
         <p className="text-center py-8 text-slate-400">Loading...</p>
       ) : (
         <div className="px-4 pb-16 space-y-3">
+          {error && (
+            <p className="text-xs text-amber-300 mb-2 text-center">{error}</p>
+          )}
+
           {sorted.map((p) => {
             const isActive = activePlaceId === String(p.id);
             return (
