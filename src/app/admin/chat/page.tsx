@@ -2,8 +2,8 @@
 "use client";
 
 import { useEffect, useState, FormEvent } from "react";
-import type { ChatMessage } from "../../data/chat";
-import type { AdminUser } from "../../data/users";
+import type { ChatMessage } from "@/app/data/chat";
+import type { AdminUser } from "@/app/data/users";
 
 type ConversationUser = {
   id: string | null; // userId if known, otherwise null
@@ -220,7 +220,7 @@ export default function AdminChatPage() {
           }
         );
 
-        const data = await res.json().catch(() => ({} as unknown));
+        const data = await res.json().catch(() => ({} as any));
 
         if (!res.ok) {
           const message =
@@ -289,7 +289,7 @@ export default function AdminChatPage() {
         const encodedRoomId = encodeURIComponent(roomId);
 
         const res = await fetch(`/api/users/room/${encodedRoomId}`);
-        const data = await res.json().catch(() => ({} as unknown));
+        const data = await res.json().catch(() => ({} as any));
 
         if (!res.ok || typeof data !== "object" || !data) {
           const message =
@@ -440,7 +440,7 @@ export default function AdminChatPage() {
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json().catch(() => ({} as unknown));
+      const data = await res.json().catch(() => ({} as any));
 
       if (!res.ok || typeof data !== "object" || !data) {
         const message =
@@ -516,7 +516,7 @@ export default function AdminChatPage() {
         }
       );
 
-      const data = await res.json().catch(() => ({} as unknown));
+      const data = await res.json().catch(() => ({} as any));
 
       if (!res.ok || typeof data !== "object" || !data) {
         const message =
@@ -1128,7 +1128,8 @@ export default function AdminChatPage() {
                   <strong>Joined:</strong> {selectedUser.joined}
                 </div>
                 <div>
-                  <strong>Room ID:</strong> {(selectedUser as any).roomId}</div>
+                  <strong>Room ID:</strong> {(selectedUser as any).roomId}
+                </div>
                 <div>
                   <strong>Interaction mode:</strong>{" "}
                   {profileDraft.interactionMode === "child"

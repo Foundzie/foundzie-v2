@@ -5,8 +5,8 @@ import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 export type CallDirection = "outbound";
 
 export interface CallLog {
-  id: string;        // callId, e.g. "debug-call-123..."
-  createdAt: string; // ISO timestamp
+  id: string;
+  createdAt: string;
   userId: string | null;
   userName: string | null;
   phone: string;
@@ -18,9 +18,7 @@ const CALLS_KEY = "foundzie:calls:v2";
 
 async function loadAll(): Promise<CallLog[]> {
   const items = (await kvGetJSON<CallLog[]>(CALLS_KEY)) ?? [];
-  return items
-    .slice()
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return items.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 async function saveAll(items: CallLog[]): Promise<void> {
@@ -37,7 +35,6 @@ export async function addCallLog(
 
   const current = await loadAll();
   const next = [log, ...current].slice(0, 100);
-
   await saveAll(next);
   return log;
 }

@@ -1,6 +1,6 @@
 // src/app/admin/calls/page.tsx
 import Link from "next/link";
-import { listCallLogs } from "../../api/calls/store";
+import { listCallLogs } from "@/app/api/calls/store";
 
 export const dynamic = "force-dynamic";
 
@@ -84,12 +84,19 @@ export default async function AdminCallLogsPage() {
                   {log.userId ? (
                     <>
                       <br />
-                      <span style={{ color: "#9ca3af" }}>ID: {log.userId}</span>
+                      <span style={{ color: "#9ca3af" }}>
+                        ID: {log.userId}
+                      </span>
                     </>
                   ) : null}
                 </td>
                 <td style={{ padding: "8px" }}>{log.phone}</td>
-                <td style={{ padding: "8px", textTransform: "capitalize" }}>
+                <td
+                  style={{
+                    padding: "8px",
+                    textTransform: "capitalize",
+                  }}
+                >
                   {log.direction}
                 </td>
                 <td style={{ padding: "8px" }}>
