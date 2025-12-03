@@ -1,8 +1,9 @@
-// src/app/mobile/explore/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+
+type InteractionMode = "normal" | "child";
 
 type Place = {
   id: number | string;
@@ -18,7 +19,7 @@ type Place = {
 
 type PlacesResponse = {
   success: boolean;
-  source: "google" | "local" | "fallback-local";
+  source: "google" | "local" | "fallback-local" | "osm";
   count: number;
   data: Place[];
 };
@@ -30,12 +31,21 @@ export default function MobileExplorePage() {
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string>("");
 
+  // 🔐 Read interaction mode from localStorage (same key as Profile)
+  const [interactionMode] = useState<InteractionMode>(() => {
+    if (typeof window === "undefined") return "normal";
+    const stored = window.localStorage.getItem("foundzie:interaction-mode");
+    return stored === "child" ? "child" : "normal";
+  });
+
   useEffect(() => {
     let cancelled = false;
 
     async function loadPlaces() {
       setLoading(true);
       setError(null);
+
+      const modeParam = interactionMode === "child" ? "child" : "normal";
 
       // helper that actually calls the API
       async function fetchPlaces(url: string) {
@@ -66,12 +76,12 @@ export default function MobileExplorePage() {
           (pos) => {
             const lat = pos.coords.latitude;
             const lng = pos.coords.longitude;
-            const url = `/api/places?lat=${lat}&lng=${lng}`;
+            const url = `/api/places?lat=${lat}&lng=${lng}&mode=${modeParam}`;
             fetchPlaces(url);
           },
           () => {
             // Permission denied or failed → fallback to generic list
-            fetchPlaces("/api/places");
+            fetchPlaces(`/api/places?mode=${modeParam}`);
           },
           {
             timeout: 5000,
@@ -79,7 +89,7 @@ export default function MobileExplorePage() {
         );
       } else {
         // No geolocation in this environment
-        fetchPlaces("/api/places");
+        fetchPlaces(`/api/places?mode=${modeParam}`);
       }
     }
 
@@ -88,7 +98,7 @@ export default function MobileExplorePage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [interactionMode]);
 
   const filtered = places.filter((p) => {
     if (!query) return true;
@@ -111,8 +121,18 @@ export default function MobileExplorePage() {
           <p className="text-[11px] text-slate-500">
             Data source:{" "}
             <span className="font-medium">
-              {source === "google" ? "Google Places" : "Local sample"}
+              {source === "google"
+                ? "Google Places"
+                : source === "osm"
+                ? "OpenStreetMap"
+                : "Local sample"}
             </span>
+          </p>
+        )}
+
+        {interactionMode === "child" && (
+          <p className="text-[11px] text-emerald-300">
+            Child-safe suggestions enabled on this device.
           </p>
         )}
 
@@ -133,7 +153,9 @@ export default function MobileExplorePage() {
           )}
 
           {filtered.length === 0 ? (
-            <p className="text-center text-slate-400 py-6">No matches found.</p>
+            <p className="text-center text-slate-400 py-6">
+              No matches found.
+            </p>
           ) : (
             filtered.map((p) => (
               <Link

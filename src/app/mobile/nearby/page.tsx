@@ -1,8 +1,9 @@
-// src/app/mobile/nearby/page.tsx
 "use client";
 
 import { useEffect, useState, FormEvent } from "react";
 import Link from "next/link";
+
+type InteractionMode = "normal" | "child";
 
 type Place = {
   id: string | number;
@@ -13,7 +14,7 @@ type Place = {
 
 type PlacesResponse = {
   success: boolean;
-  source: "google" | "local" | "fallback-local";
+  source: "google" | "local" | "fallback-local" | "osm";
   count: number;
   data: Place[];
 };
@@ -42,6 +43,13 @@ export default function NearbyPage() {
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string>("");
 
+  // 🔐 Interaction mode from device (same key as Profile)
+  const [interactionMode] = useState<InteractionMode>(() => {
+    if (typeof window === "undefined") return "normal";
+    const stored = window.localStorage.getItem("foundzie:interaction-mode");
+    return stored === "child" ? "child" : "normal";
+  });
+
   // --- simple interest capture state ---
   const [interest, setInterest] = useState("");
   const [savingInterest, setSavingInterest] = useState(false);
@@ -62,6 +70,8 @@ export default function NearbyPage() {
     async function load() {
       setLoading(true);
       setError(null);
+
+      const modeParam = interactionMode === "child" ? "child" : "normal";
 
       async function fetchPlaces(url: string) {
         try {
@@ -86,16 +96,16 @@ export default function NearbyPage() {
           (pos) => {
             const lat = pos.coords.latitude;
             const lng = pos.coords.longitude;
-            const url = `/api/places?lat=${lat}&lng=${lng}`;
+            const url = `/api/places?lat=${lat}&lng=${lng}&mode=${modeParam}`;
             fetchPlaces(url);
           },
           () => {
-            fetchPlaces("/api/places");
+            fetchPlaces(`/api/places?mode=${modeParam}`);
           },
           { timeout: 5000 }
         );
       } else {
-        fetchPlaces("/api/places");
+        fetchPlaces(`/api/places?mode=${modeParam}`);
       }
     }
 
@@ -103,7 +113,7 @@ export default function NearbyPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [interactionMode]);
 
   const sorted = [...places].sort(
     (a, b) => (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999)
@@ -223,8 +233,17 @@ export default function NearbyPage() {
           <p className="text-[11px] text-slate-500 mt-1">
             Data source:{" "}
             <span className="font-medium">
-              {source === "google" ? "Google Places" : "Local sample"}
+              {source === "google"
+                ? "Google Places"
+                : source === "osm"
+                ? "OpenStreetMap"
+                : "Local sample"}
             </span>
+          </p>
+        )}
+        {interactionMode === "child" && (
+          <p className="text-[11px] text-emerald-300 mt-1">
+            Child-safe suggestions enabled for this device.
           </p>
         )}
       </header>
