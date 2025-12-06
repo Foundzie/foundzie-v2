@@ -210,8 +210,8 @@ export default function MobileChatPage() {
 
     if (!roomId) return;
 
-    const text = input.trim();
-    if ((!text && !attachmentName) || sending) return;
+    const rawText = input.trim();
+    if ((!rawText && !attachmentName) || sending) return;
 
     setSending(true);
     setError(null);
@@ -220,19 +220,36 @@ export default function MobileChatPage() {
     const userMessage: ChatMessage = {
       id: tempId,
       sender: "user",
-      text: text || "",
+      text: rawText || "",
       createdAt: new Date().toISOString(),
       attachmentName,
       attachmentKind: attachmentName ? "image" : null, // mock
     };
 
-    // optimistic add
+    // optimistic add – show exactly what user typed
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
 
+    // 🔹 Trip-planner transform (M10a):
+    // If the message starts with "plan:", we wrap it in a special
+    // instruction so the agent returns a short itinerary.
+    let transformedText = rawText;
+    const lower = rawText.toLowerCase();
+
+    if (lower.startsWith("plan:")) {
+      const userRequest = rawText.slice(5).trim() || "Plan something fun for me.";
+      transformedText =
+        "TRIP_PLANNER_REQUEST:\n" +
+        "You are Foundzie, a local concierge trip planner. " +
+        "Create a short, step-by-step plan with 2–4 stops, including rough timing " +
+        "(like '6:00pm', '7:30pm') and 1–2 sentences per stop, based on this request:\n\n" +
+        userRequest +
+        "\n\nKeep the answer concise and easy to follow, like you’re texting the user.";
+    }
+
     try {
       const body: any = {
-        text,
+        text: transformedText,
         sender: "user" as const,
         userId: roomId, // identity sent to backend
         roomId, // explicitly tell backend which chat room
@@ -276,7 +293,7 @@ export default function MobileChatPage() {
       setError("Could not send message. Please try again.");
 
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
-      setInput(text);
+      setInput(rawText);
     } finally {
       setSending(false);
     }
@@ -477,6 +494,46 @@ export default function MobileChatPage() {
           </div>
         )}
 
+        {/* M10a: Quick trip-planner suggestions */}
+        {roomId && (
+          <div className="flex flex-wrap items-center gap-2 mb-1 text-[11px] text-slate-300">
+            <span className="text-slate-500">Try:</span>
+            <button
+              type="button"
+              className="px-2 py-[2px] rounded-full bg-slate-800 border border-slate-700 hover:bg-slate-700"
+              onClick={() =>
+                setInput(
+                  "plan: Plan a fun evening near 60515 for two adults who like burgers and arcade games."
+                )
+              }
+            >
+              Plan tonight in 60515
+            </button>
+            <button
+              type="button"
+              className="px-2 py-[2px] rounded-full bg-slate-800 border border-slate-700 hover:bg-slate-700"
+              onClick={() =>
+                setInput(
+                  "plan: Plan a relaxed family afternoon nearby with kid-friendly places."
+                )
+              }
+            >
+              Family afternoon nearby
+            </button>
+            <button
+              type="button"
+              className="px-2 py-[2px] rounded-full bg-slate-800 border border-slate-700 hover:bg-slate-700"
+              onClick={() =>
+                setInput(
+                  "plan: Plan a cozy date night in or near 60515 with dinner and one fun activity."
+                )
+              }
+            >
+              Date night in 60515
+            </button>
+          </div>
+        )}
+
         <form onSubmit={handleSend} className="flex items-center gap-2">
           <div className="flex items-center gap-2">
             <input
@@ -501,7 +558,7 @@ export default function MobileChatPage() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Type a message..."
+            placeholder="Type a message... (try: plan: Plan a fun evening near 60515)"
             className="flex-1 bg-slate-900 border border-slate-700 rounded-full px-3 py-2 text-xs outline-none focus:border-pink-500"
           />
 
