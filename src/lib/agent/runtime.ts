@@ -1,5 +1,3 @@
-// src/lib/agent/runtime.ts
-
 import OpenAI from "openai";
 import {
   FOUNDZIE_SYSTEM_PROMPT,
@@ -44,6 +42,64 @@ const openai = hasOpenAiKey
   : null;
 
 // -----------------------------------------------------
+// M8b: Build personalization context from Users store
+// -----------------------------------------------------
+async function buildUserContextSuffix(
+  req: AgentRequestPayload
+): Promise<string> {
+  try {
+    // dynamic import to avoid circular issues
+    const usersStore = await import("@/app/api/users/store");
+    const { getUser, findUserByRoomId } = usersStore as any;
+
+    let user: any | undefined;
+
+    if (req.userId && typeof getUser === "function") {
+      user = await getUser(String(req.userId));
+    }
+
+    if (!user && req.roomId && typeof findUserByRoomId === "function") {
+      user = await findUserByRoomId(String(req.roomId));
+    }
+
+    if (!user) return "";
+
+    const bits: string[] = [];
+
+    if (user.interactionMode === "child") {
+      bits.push("interactionMode=child");
+    } else if (user.interactionMode === "normal") {
+      bits.push("interactionMode=normal");
+    }
+
+    if (typeof user.interest === "string" && user.interest.trim()) {
+      bits.push(`interest="${user.interest.trim()}"`);
+    }
+
+    if (Array.isArray(user.tags) && user.tags.length > 0) {
+      const shortTags = user.tags.slice(0, 6).map((t: string) => String(t));
+      bits.push(`tags=[${shortTags.join(", ")}]`);
+    }
+
+    if (typeof user.source === "string" && user.source.trim()) {
+      bits.push(`source=${user.source.trim()}`);
+    }
+
+    if (typeof user.phone === "string" && user.phone.trim()) {
+      bits.push(`phone=${user.phone.trim()}`);
+    }
+
+    if (bits.length === 0) return "";
+
+    // appended at the end of the user message
+    return `\n\n[User profile context: ${bits.join("; ")}]`;
+  } catch (err) {
+    console.error("[agent runtime] buildUserContextSuffix failed:", err);
+    return "";
+  }
+}
+
+// -----------------------------------------------------
 // Stub agent (if key missing or errors)
 // -----------------------------------------------------
 async function runStubAgent(
@@ -53,8 +109,10 @@ async function runStubAgent(
   const trimmed = req.input.trim() || "a blank message";
 
   const replyText =
-    `Foundzie (stub): I received “${trimmed}”. ` +
-    `In the next milestone I'll use the full concierge brain + tools to respond automatically.`;
+    `Foundzie (demo): I got “${trimmed}”. ` +
+    `Right now I'm in a light demo mode on this device, ` +
+    `but normally I'd use my full concierge brain plus tools ` +
+    `to help you discover places, plan, or just chat with you.`;
 
   return {
     replyText,
@@ -66,6 +124,38 @@ async function runStubAgent(
       rawError: reason ? String(reason) : undefined,
     },
   };
+}
+
+// -----------------------------------------------------
+// Helper: extract text from OpenAI message.content
+// -----------------------------------------------------
+function extractMessageText(message: any): string {
+  if (!message) return "";
+
+  // classic: content is a plain string
+  if (typeof message.content === "string") {
+    return message.content.trim();
+  }
+
+  // newer shapes: content is an array of parts
+  if (Array.isArray(message.content)) {
+    const parts = message.content as any[];
+    const text = parts
+      .map((p) => {
+        if (!p) return "";
+        if (typeof p === "string") return p;
+        // v1 style: { type: "text", text: "..." }
+        if (typeof p.text === "string") return p.text;
+        // some new SDK shapes: { type: "...", text: { value: "..." } }
+        if (p.text && typeof p.text.value === "string") return p.text.value;
+        return "";
+      })
+      .join(" ")
+      .trim();
+    return text;
+  }
+
+  return "";
 }
 
 // -----------------------------------------------------
@@ -86,7 +176,10 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
   const contextSuffix =
     contextBits.length > 0 ? `\n\n(Context: ${contextBits.join(", ")})` : "";
 
-  const finalUserContent = userText + contextSuffix;
+  // personalization (interactionMode, interest, tags, etc.)
+  const profileSuffix = await buildUserContextSuffix(req);
+
+  const finalUserContent = userText + contextSuffix + profileSuffix;
 
   const toolsMode = req.toolsMode ?? "off";
   const useTools = toolsMode === "debug";
@@ -100,6 +193,7 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
     },
   }));
 
+  // 1) First attempt – with tools (for admin / debug)
   const completion = await openai.chat.completions.create({
     model: "gpt-4.1-mini",
     messages: [
@@ -117,27 +211,9 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
 
   console.log("[agent runtime] raw OpenAI message:", JSON.stringify(message));
 
-  // 1) Text reply
-  let replyText = "";
+  let replyText = extractMessageText(message);
 
-  if (typeof message.content === "string") {
-    replyText = message.content.trim();
-  } else if (Array.isArray(message.content)) {
-    const parts = message.content as any[];
-    replyText =
-      parts
-        .map((p) =>
-          typeof p === "string"
-            ? p
-            : typeof p?.text === "string"
-            ? p.text
-            : ""
-        )
-        .join(" ")
-        .trim() || "";
-  }
-
-  // 2) Tool calls
+  // 2) Handle tool calls from first attempt
   const usedTools: string[] = [];
   const toolResults: Array<{ name: string; result: unknown }> = [];
 
@@ -193,7 +269,40 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
     }
   }
 
-  // 3) If no text, but tools ran, synthesize a short reply
+  // 3) Second attempt if still no text (sometimes content can be empty)
+  if (!replyText) {
+    try {
+      const completion2 = await openai.chat.completions.create({
+        model: "gpt-4.1-mini",
+        messages: [
+          { role: "system", content: FOUNDZIE_SYSTEM_PROMPT },
+          {
+            role: "user",
+            content:
+              finalUserContent +
+              "\n\nSECOND ATTEMPT: Please respond with a short, friendly text answer for the concierge. Do NOT call tools this time.",
+          },
+        ],
+        temperature: 0.4,
+        max_tokens: 400,
+      });
+
+      const choice2: any = completion2.choices[0];
+      const message2: any = choice2?.message ?? {};
+      const secondText = extractMessageText(message2);
+
+      if (secondText) {
+        replyText = secondText;
+      }
+    } catch (err) {
+      console.error(
+        "[agent runtime] Second attempt for empty reply failed:",
+        err
+      );
+    }
+  }
+
+  // 4) If still no text at all, synthesize a safe generic reply
   if (!replyText) {
     if (toolResults.length > 0) {
       replyText =
@@ -204,7 +313,7 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
     }
   }
 
-  // 4) Friendly summary of tool actions
+  // 5) Friendly summary of any tool actions
   if (toolResults.length > 0) {
     const actions: string[] = [];
 

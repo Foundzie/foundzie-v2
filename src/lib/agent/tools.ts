@@ -1,9 +1,15 @@
+// src/lib/agent/tools.ts
+
 /**
  * Foundzie V3 - Agent Tool Handlers
  * ----------------------------------
  * This file connects the OpenAI Agent → Foundzie backend state.
- * Instead of HTTP calls, we call the in-memory stores directly so
- * SOS + Calls + Notifications update instantly in the Admin UI.
+ * Instead of HTTP calls for SOS/Calls/Notifications, we call the
+ * in-memory stores directly so changes appear instantly in Admin UI.
+ *
+ * NEW in M8c:
+ * - get_places_for_user: lets the agent fetch curated places
+ *   using your unified /api/places endpoint.
  */
 
 import "server-only";
@@ -128,8 +134,7 @@ export async function broadcast_notification(args: {
     message: args.message,
     type: safeType,
     time: now,
-    unread:
-      typeof args.unread === "boolean" ? args.unread : true,
+    unread: typeof args.unread === "boolean" ? args.unread : true,
     actionLabel: args.actionLabel ?? "",
     actionHref: args.actionHref ?? "",
     mediaUrl: args.mediaUrl ?? "",
@@ -137,6 +142,7 @@ export async function broadcast_notification(args: {
     mediaId: null,
   };
 
+  // This mutates the in-memory list used by /api/notifications
   mockNotifications.unshift(newItem);
 
   console.log("[agent tool] broadcast_notification →", newItem);
@@ -144,7 +150,60 @@ export async function broadcast_notification(args: {
 }
 
 /* ------------------------------------------------------------------ */
-/* 4. Tool registry – used by runtime + /api/agent                     */
+/* 4. Places recommendation tool (M8c)                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * get_places_for_user
+ * -------------------
+ * Used by the agent to fetch curated places from /api/places.
+ *
+ * We keep it simple to avoid coupling to the user store:
+ * - mode: "normal" | "child"    (controls child-safe filter)
+ * - interest: optional free-text (used as q=<interest>)
+ *
+ * The admin/agent prompt will usually say:
+ *   "For this guest (child-safe, loves pizza), get places…"
+ * and the model will choose the right mode + interest values.
+ */
+export async function get_places_for_user(args: {
+  mode?: "normal" | "child";
+  interest?: string;
+  locationHint?: string; // reserved for future (e.g. city/neighborhood text)
+}) {
+  const mode = args.mode === "child" ? "child" : "normal";
+  const q = (args.interest ?? "").trim();
+
+  const searchParams = new URLSearchParams();
+  searchParams.set("mode", mode);
+  if (q) searchParams.set("q", q);
+
+  // NOTE: relative URL works inside Next.js app router on the server.
+  const res = await fetch(`/api/places?${searchParams.toString()}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("[agent tool] get_places_for_user error:", res.status, text);
+    throw new Error("Failed to fetch places for user");
+  }
+
+  const json = await res.json();
+
+  const result = {
+    usedMode: mode,
+    usedQuery: q || null,
+    places: json?.places ?? json ?? [],
+  };
+
+  console.log("[agent tool] get_places_for_user →", result);
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. Tool registry – used by runtime + /api/agent                     */
 /* ------------------------------------------------------------------ */
 
 export const toolHandlers = {
@@ -152,6 +211,8 @@ export const toolHandlers = {
   add_sos_note,
   log_outbound_call,
   broadcast_notification,
+  get_places_for_user,
 } as const;
 
+// alias expected by your existing runtime
 export const toolImplementations = toolHandlers;
