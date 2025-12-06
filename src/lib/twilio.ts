@@ -14,6 +14,11 @@ export async function startTwilioCall(to: string, note?: string) {
   const from =
     process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_NUMBER;
 
+  // ✅ New: voice URL we control, with fallback to the old TwiML Bin
+  const voiceUrl =
+    process.env.TWILIO_VOICE_URL ||
+    "https://handler.twilio.com/twiml/EHe799022b06fd93132b819e795be155e3";
+
   // If any env vars missing → skip Twilio (fallback mode)
   if (!sid || !token || !from) {
     console.log("[twilio] Skipping real call (missing env vars)", {
@@ -30,7 +35,8 @@ export async function startTwilioCall(to: string, note?: string) {
     const call = await client.calls.create({
       to,
       from,
-      url: "https://handler.twilio.com/twiml/EHe799022b06fd93132b819e795be155e3",
+      url: voiceUrl,
+      method: "POST",
     });
 
     console.log("[twilio] Created call:", call.sid);
