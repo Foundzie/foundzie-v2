@@ -14,10 +14,13 @@ export async function startTwilioCall(to: string, note?: string) {
   const from =
     process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_NUMBER;
 
-  // ✅ New: voice URL we control, with fallback to the old TwiML Bin
+  // ✅ Our canonical voice URL (no more TwiML Bin fallback)
+  const DEFAULT_VOICE_URL = "https://foundzie-v2.vercel.app/api/twilio/voice";
+
+  // Use env if set, otherwise fall back to the stable project URL
   const voiceUrl =
-    process.env.TWILIO_VOICE_URL ||
-    "https://handler.twilio.com/twiml/EHe799022b06fd93132b819e795be155e3";
+    (process.env.TWILIO_VOICE_URL && process.env.TWILIO_VOICE_URL.trim()) ||
+    DEFAULT_VOICE_URL;
 
   // If any env vars missing → skip Twilio (fallback mode)
   if (!sid || !token || !from) {
@@ -28,6 +31,8 @@ export async function startTwilioCall(to: string, note?: string) {
     });
     return null;
   }
+
+  console.log("[twilio] Using voiceUrl:", voiceUrl);
 
   try {
     const client = twilio(sid, token);
