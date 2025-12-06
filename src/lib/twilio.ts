@@ -1,4 +1,3 @@
-// src/lib/twilio.ts
 import "server-only";
 import twilio from "twilio";
 
@@ -10,11 +9,18 @@ import twilio from "twilio";
 export async function startTwilioCall(to: string, note?: string) {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_PHONE_NUMBER;
+
+  // ✅ Support BOTH variable names so nothing breaks
+  const from =
+    process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_NUMBER;
 
   // If any env vars missing → skip Twilio (fallback mode)
   if (!sid || !token || !from) {
-    console.log("[twilio] Skipping real call (missing env vars)");
+    console.log("[twilio] Skipping real call (missing env vars)", {
+      hasSid: !!sid,
+      hasToken: !!token,
+      hasFrom: !!from,
+    });
     return null;
   }
 
@@ -24,9 +30,7 @@ export async function startTwilioCall(to: string, note?: string) {
     const call = await client.calls.create({
       to,
       from,
-      url: "https://handler.twilio.com/twiml/EHe799022b06fd93132b819e795be155e3", 
-      // Replace with a TwiML Bin URL or optional webhook.
-      // For now, a placeholder is fine.
+      url: "https://handler.twilio.com/twiml/EHe799022b06fd93132b819e795be155e3",
     });
 
     console.log("[twilio] Created call:", call.sid);
