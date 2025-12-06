@@ -237,7 +237,8 @@ export default function MobileChatPage() {
     const lower = rawText.toLowerCase();
 
     if (lower.startsWith("plan:")) {
-      const userRequest = rawText.slice(5).trim() || "Plan something fun for me.";
+      const userRequest =
+        rawText.slice(5).trim() || "Plan something fun for me.";
       transformedText =
         "TRIP_PLANNER_REQUEST:\n" +
         "You are Foundzie, a local concierge trip planner. " +
@@ -431,6 +432,32 @@ export default function MobileChatPage() {
           messages.map((msg, index) => {
             const isUser = msg.sender === "user";
 
+            // -------------- M10a: hide internal TRIP_PLANNER_REQUEST --------------
+            let displayText =
+              msg.text || (msg.attachmentName ? "(attachment)" : "");
+
+            if (
+              typeof displayText === "string" &&
+              displayText.startsWith("TRIP_PLANNER_REQUEST:")
+            ) {
+              const lines = displayText.split("\n");
+              const firstBlank = lines.findIndex(
+                (line) => line.trim().length === 0
+              );
+
+              if (
+                firstBlank !== -1 &&
+                lines[firstBlank + 1] &&
+                lines[firstBlank + 1].trim().length > 0
+              ) {
+                // Use the line right after the first blank line,
+                // which is our original user request.
+                displayText = lines[firstBlank + 1].trim();
+              } else {
+                displayText = "Trip planning request sent to concierge.";
+              }
+            }
+
             return (
               <div
                 key={`${msg.id}-${index}`}
@@ -457,7 +484,7 @@ export default function MobileChatPage() {
                   )}
 
                   <p className="whitespace-pre-wrap break-words">
-                    {msg.text || (msg.attachmentName ? "(attachment)" : "")}
+                    {displayText}
                   </p>
 
                   <p className="mt-1 text-[10px] text-slate-400 text-right">
