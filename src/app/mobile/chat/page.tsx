@@ -46,6 +46,10 @@ export default function MobileChatPage() {
   );
   const [voiceRequesting, setVoiceRequesting] = useState(false);
 
+  // Trip-plan saving (M10e)
+  const [savingTripId, setSavingTripId] = useState<string | null>(null);
+  const [savedTripIds, setSavedTripIds] = useState<string[]>([]);
+
   // ---------------- Visitor identity (roomId) ----------------
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -201,6 +205,46 @@ export default function MobileChatPage() {
       setProfileError("Could not save your details. Please try again.");
     } finally {
       setProfileSaving(false);
+    }
+  }
+
+  // ---------------- Trip-plan save handler (M10e) ----------------
+  async function handleSaveTripPlan(message: ChatMessage) {
+    if (!roomId) return;
+    if (!message.text || typeof message.text !== "string") return;
+
+    if (savedTripIds.includes(message.id)) return;
+    if (savingTripId === message.id) return;
+
+    setSavingTripId(message.id);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/trips", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomId,
+          messageId: message.id,
+          text: message.text,
+          createdAt: message.createdAt,
+          // userId: can be wired later if we have one
+        }),
+      });
+
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok || !data.ok) {
+        throw new Error(data.message || "Failed to save trip plan");
+      }
+
+      setSavedTripIds((prev) =>
+        prev.includes(message.id) ? prev : [...prev, message.id]
+      );
+    } catch (err) {
+      console.error("Save trip plan error", err);
+      setError("Could not save trip plan. Please try again.");
+    } finally {
+      setSavingTripId(null);
     }
   }
 
@@ -485,6 +529,14 @@ ${userRequest}
               }
             }
 
+            const isTripPlan =
+              !isUser &&
+              typeof msg.text === "string" &&
+              msg.text.includes("TRIP_PLAN_BEGIN");
+
+            const isSaved = savedTripIds.includes(msg.id);
+            const isSavingThis = savingTripId === msg.id;
+
             return (
               <div
                 key={`${msg.id}-${index}`}
@@ -513,6 +565,26 @@ ${userRequest}
                   <p className="whitespace-pre-wrap break-words">
                     {displayText}
                   </p>
+
+                  {isTripPlan && (
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center px-2 py-[2px] rounded-full bg-slate-900 text-[9px] uppercase tracking-wide text-slate-300">
+                        TRIP PLAN
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isSaved || isSavingThis || !roomId}
+                        onClick={() => handleSaveTripPlan(msg)}
+                        className="text-[10px] px-2 py-[2px] rounded-full bg-emerald-600 text-white font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {isSaved
+                          ? "Saved"
+                          : isSavingThis
+                          ? "Saving..."
+                          : "Save plan"}
+                      </button>
+                    </div>
+                  )}
 
                   <p className="mt-1 text-[10px] text-slate-400 text-right">
                     {new Date(msg.createdAt).toLocaleTimeString([], {
