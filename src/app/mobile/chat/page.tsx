@@ -204,42 +204,6 @@ export default function MobileChatPage() {
     }
   }
 
-  // ---------------- Trip planner detection helper (M10c) ----------------
-  function looksLikeTripPlannerText(text: string): boolean {
-    const lower = text.toLowerCase().trim();
-    if (!lower) return false;
-
-    // Explicit trigger with colon (old behaviour)
-    if (lower.startsWith("plan:")) return true;
-
-    // Simple "plan ..." phrases
-    if (lower.startsWith("plan ")) return true;
-    if (lower.startsWith("can you plan")) return true;
-    if (lower.startsWith("could you plan")) return true;
-    if (lower.startsWith("please plan")) return true;
-
-    // Common natural-language trip requests
-    if (lower.includes("plan an evening")) return true;
-    if (lower.includes("plan a date")) return true;
-    if (lower.includes("plan my evening")) return true;
-    if (lower.includes("plan my day")) return true;
-    if (lower.includes("plan something for me")) return true;
-
-    // "I don't know how to spend tonight / today" style
-    if (
-      (lower.includes("i don't know how to spend") ||
-        lower.includes("i dont know how to spend")) &&
-      (lower.includes("today") ||
-        lower.includes("tonight") ||
-        lower.includes("this evening") ||
-        lower.includes("this afternoon"))
-    ) {
-      return true;
-    }
-
-    return false;
-  }
-
   // ---------------- Send message (with optimistic UI) ----------------
   async function handleSend(e: FormEvent) {
     e.preventDefault();
@@ -266,27 +230,49 @@ export default function MobileChatPage() {
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
 
-    // 🔹 Trip-planner transform (M10a + M10c):
-    // Detect both "plan:" and natural-language "plan my evening" style phrases.
+    // 🔹 Trip-planner transform (M10a–M10d):
+    // If the message starts with "plan:", we wrap it in a special
+    // instruction so the agent returns a short, constraint-aware itinerary.
     let transformedText = rawText;
-    const isTripRequest = looksLikeTripPlannerText(rawText);
+    const lower = rawText.toLowerCase();
 
-    if (isTripRequest) {
-      // If the user explicitly used "plan:", strip it for the request text.
-      const withoutPrefix = rawText.replace(/^plan:/i, "").trim();
+    if (lower.startsWith("plan:")) {
       const userRequest =
-        withoutPrefix || rawText || "Plan something fun for me.";
+        rawText.slice(5).trim() || "Plan something fun for me.";
 
-      transformedText = `TRIP_PLANNER_REQUEST:
+      transformedText = `
+TRIP_PLANNER_REQUEST:
 You are Foundzie, a local concierge trip planner.
-Create a very short step-by-step plan with 2–3 stops only.
-For each stop, use this format:
-"<time> – <place>: one short sentence about why it's good."
-Keep sentences brief, like text messages, and avoid bullet lists.
-Finish with one friendly closing sentence (for example: "Enjoy, and message me if you want to tweak this.").
 
-User request:
-${userRequest}`;
+GOAL:
+Create a realistic, short outing plan that feels like it was made by a local who knows the area well.
+
+RULES:
+- Use 2–4 stops only.
+- Keep each stop to ONE short sentence.
+- Respect all constraints the user gives you:
+  • Time window (e.g. "only one hour", "afternoon", "tonight").
+  • Style (e.g. "indoors only", "kid-friendly", "for adults", "romantic").
+  • Budget or tone (e.g. "budget friendly", "splurge", "casual", "fancy").
+  • Location hints (ZIP, city, neighborhood) exactly as written.
+- Never repeat the same place or identical step inside a single plan.
+- Never ask obvious questions that are already answered in the user's request.
+- Only ask ONE quick clarifying question if the request is very ambiguous AND you truly cannot plan without that detail.
+- If you can reasonably guess what they want from the request, do NOT ask a question — just give the plan.
+- Keep the tone warm and friendly, like texting a friend.
+
+OUTPUT FORMAT:
+Start with this marker line exactly:
+TRIP_PLAN_BEGIN
+Then on new lines list the stops like:
+1. 6:30pm — Short description of the stop.
+2. 7:45pm — Short description of the next stop.
+3. 9:00pm — Short description of the last stop (if needed).
+End with ONE short closing sentence inviting them to tweak the plan.
+
+USER REQUEST:
+${userRequest}
+`;
     }
 
     try {
@@ -562,7 +548,7 @@ ${userRequest}`;
           </div>
         )}
 
-        {/* M10a/M10c: Quick trip-planner suggestions */}
+        {/* M10a: Quick trip-planner suggestions */}
         {roomId && (
           <div className="flex flex-wrap items-center gap-2 mb-1 text-[11px] text-slate-300">
             <span className="text-slate-500">Try:</span>
@@ -626,7 +612,7 @@ ${userRequest}`;
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Type a message... (try: Plan a fun evening near 60515)"
+            placeholder="Type a message... (try: plan: Plan a fun evening near 60515)"
             className="flex-1 bg-slate-900 border border-slate-700 rounded-full px-3 py-2 text-xs outline-none focus:border-pink-500"
           />
 
