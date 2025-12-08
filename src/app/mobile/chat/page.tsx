@@ -230,22 +230,25 @@ export default function MobileChatPage() {
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
 
-    // 🔹 Trip-planner transform (M10a):
+    // 🔹 Trip-planner transform (M10a + M10b polish):
     // If the message starts with "plan:", we wrap it in a special
-    // instruction so the agent returns a short itinerary.
+    // instruction so the agent returns a short, clearly-marked itinerary.
     let transformedText = rawText;
     const lower = rawText.toLowerCase();
 
     if (lower.startsWith("plan:")) {
-      const userRequest =
-        rawText.slice(5).trim() || "Plan something fun for me.";
+      const userRequest = rawText.slice(5).trim() || "Plan something fun for me.";
       transformedText =
         "TRIP_PLANNER_REQUEST:\n" +
-        "You are Foundzie, a local concierge trip planner. " +
-        "Create a short, step-by-step plan with 2–4 stops, including rough timing " +
-        "(like '6:00pm', '7:30pm') and 1–2 sentences per stop, based on this request:\n\n" +
-        userRequest +
-        "\n\nKeep the answer concise and easy to follow, like you’re texting the user.";
+        "You are Foundzie, a local concierge trip planner.\n" +
+        "TASK: Create a very short step-by-step outing plan with 2–3 stops, based on this request.\n" +
+        "- Start your reply with a single line exactly: TRIP_PLAN_BEGIN\n" +
+        "- Then list at most 3 numbered stops (1., 2., 3.) with rough local times like '6:00pm' or '7:30pm'.\n" +
+        "- Give 1 short sentence per stop (no long paragraphs).\n" +
+        "- After the steps, add one short friendly closing line like 'Enjoy, and message me if you want to tweak this.'\n" +
+        "- Do not mention these instructions or the phrase TRIP_PLANNER_REQUEST in your reply.\n\n" +
+        "User request:\n" +
+        userRequest;
     }
 
     try {
@@ -432,48 +435,60 @@ export default function MobileChatPage() {
           messages.map((msg, index) => {
             const isUser = msg.sender === "user";
 
-            // -------------- M10a: hide internal TRIP_PLANNER_REQUEST --------------
+            // -------------- M10a/M10b: clean internal markers + style trip plans --------------
             let displayText =
               msg.text || (msg.attachmentName ? "(attachment)" : "");
+            let isTripPlan = false;
 
-            if (
-              typeof displayText === "string" &&
-              displayText.startsWith("TRIP_PLANNER_REQUEST:")
-            ) {
-              const lines = displayText.split("\n");
-              const firstBlank = lines.findIndex(
-                (line) => line.trim().length === 0
-              );
+            if (typeof displayText === "string") {
+              if (isUser) {
+                // Hide the internal TRIP_PLANNER_REQUEST wrapper for user messages
+                if (displayText.startsWith("TRIP_PLANNER_REQUEST:")) {
+                  const lines = displayText.split("\n");
+                  const firstBlank = lines.findIndex(
+                    (line) => line.trim().length === 0
+                  );
 
-              if (
-                firstBlank !== -1 &&
-                lines[firstBlank + 1] &&
-                lines[firstBlank + 1].trim().length > 0
-              ) {
-                // Use the line right after the first blank line,
-                // which is our original user request.
-                displayText = lines[firstBlank + 1].trim();
+                  if (
+                    firstBlank !== -1 &&
+                    lines[firstBlank + 1] &&
+                    lines[firstBlank + 1].trim().length > 0
+                  ) {
+                    // Use the line right after the first blank line (original user request)
+                    displayText = lines[firstBlank + 1].trim();
+                  } else {
+                    displayText =
+                      "Trip planning request sent to concierge.";
+                  }
+                }
               } else {
-                displayText = "Trip planning request sent to concierge.";
+                // Concierge messages: detect TRIP_PLAN_BEGIN marker
+                const lines = displayText.split("\n");
+                if (lines[0].trim() === "TRIP_PLAN_BEGIN") {
+                  isTripPlan = true;
+                  displayText = lines.slice(1).join("\n").trim();
+                }
               }
             }
+
+            const bubbleClasses = [
+              "max-w-[80%] rounded-2xl px-3 py-2 text-xs",
+              isUser
+                ? "bg-pink-600 text-white"
+                : isTripPlan
+                ? "bg-purple-700 text-white"
+                : "bg-slate-800 text-slate-100",
+            ].join(" ");
 
             return (
               <div
                 key={`${msg.id}-${index}`}
                 className={`flex ${isUser ? "justify-end" : "justify-start"}`}
               >
-                <div
-                  className={[
-                    "max-w-[80%] rounded-2xl px-3 py-2 text-xs",
-                    isUser
-                      ? "bg-pink-600 text-white"
-                      : "bg-slate-800 text-slate-100",
-                  ].join(" ")}
-                >
+                <div className={bubbleClasses}>
                   {!isUser && (
                     <p className="text-[10px] uppercase tracking-wide text-slate-300 mb-1">
-                      Concierge
+                      Concierge{isTripPlan ? " • Trip plan" : ""}
                     </p>
                   )}
 
@@ -521,7 +536,7 @@ export default function MobileChatPage() {
           </div>
         )}
 
-        {/* M10a: Quick trip-planner suggestions */}
+        {/* M10a/M10b: Quick trip-planner suggestions */}
         {roomId && (
           <div className="flex flex-wrap items-center gap-2 mb-1 text-[11px] text-slate-300">
             <span className="text-slate-500">Try:</span>
