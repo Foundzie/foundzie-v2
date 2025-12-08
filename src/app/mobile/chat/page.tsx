@@ -204,6 +204,42 @@ export default function MobileChatPage() {
     }
   }
 
+  // ---------------- Trip planner detection helper (M10c) ----------------
+  function looksLikeTripPlannerText(text: string): boolean {
+    const lower = text.toLowerCase().trim();
+    if (!lower) return false;
+
+    // Explicit trigger with colon (old behaviour)
+    if (lower.startsWith("plan:")) return true;
+
+    // Simple "plan ..." phrases
+    if (lower.startsWith("plan ")) return true;
+    if (lower.startsWith("can you plan")) return true;
+    if (lower.startsWith("could you plan")) return true;
+    if (lower.startsWith("please plan")) return true;
+
+    // Common natural-language trip requests
+    if (lower.includes("plan an evening")) return true;
+    if (lower.includes("plan a date")) return true;
+    if (lower.includes("plan my evening")) return true;
+    if (lower.includes("plan my day")) return true;
+    if (lower.includes("plan something for me")) return true;
+
+    // "I don't know how to spend tonight / today" style
+    if (
+      (lower.includes("i don't know how to spend") ||
+        lower.includes("i dont know how to spend")) &&
+      (lower.includes("today") ||
+        lower.includes("tonight") ||
+        lower.includes("this evening") ||
+        lower.includes("this afternoon"))
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
   // ---------------- Send message (with optimistic UI) ----------------
   async function handleSend(e: FormEvent) {
     e.preventDefault();
@@ -230,25 +266,27 @@ export default function MobileChatPage() {
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
 
-    // 🔹 Trip-planner transform (M10a + M10b polish):
-    // If the message starts with "plan:", we wrap it in a special
-    // instruction so the agent returns a short, clearly-marked itinerary.
+    // 🔹 Trip-planner transform (M10a + M10c):
+    // Detect both "plan:" and natural-language "plan my evening" style phrases.
     let transformedText = rawText;
-    const lower = rawText.toLowerCase();
+    const isTripRequest = looksLikeTripPlannerText(rawText);
 
-    if (lower.startsWith("plan:")) {
-      const userRequest = rawText.slice(5).trim() || "Plan something fun for me.";
-      transformedText =
-        "TRIP_PLANNER_REQUEST:\n" +
-        "You are Foundzie, a local concierge trip planner.\n" +
-        "TASK: Create a very short step-by-step outing plan with 2–3 stops, based on this request.\n" +
-        "- Start your reply with a single line exactly: TRIP_PLAN_BEGIN\n" +
-        "- Then list at most 3 numbered stops (1., 2., 3.) with rough local times like '6:00pm' or '7:30pm'.\n" +
-        "- Give 1 short sentence per stop (no long paragraphs).\n" +
-        "- After the steps, add one short friendly closing line like 'Enjoy, and message me if you want to tweak this.'\n" +
-        "- Do not mention these instructions or the phrase TRIP_PLANNER_REQUEST in your reply.\n\n" +
-        "User request:\n" +
-        userRequest;
+    if (isTripRequest) {
+      // If the user explicitly used "plan:", strip it for the request text.
+      const withoutPrefix = rawText.replace(/^plan:/i, "").trim();
+      const userRequest =
+        withoutPrefix || rawText || "Plan something fun for me.";
+
+      transformedText = `TRIP_PLANNER_REQUEST:
+You are Foundzie, a local concierge trip planner.
+Create a very short step-by-step plan with 2–3 stops only.
+For each stop, use this format:
+"<time> – <place>: one short sentence about why it's good."
+Keep sentences brief, like text messages, and avoid bullet lists.
+Finish with one friendly closing sentence (for example: "Enjoy, and message me if you want to tweak this.").
+
+User request:
+${userRequest}`;
     }
 
     try {
@@ -435,60 +473,48 @@ export default function MobileChatPage() {
           messages.map((msg, index) => {
             const isUser = msg.sender === "user";
 
-            // -------------- M10a/M10b: clean internal markers + style trip plans --------------
+            // -------------- M10a: hide internal TRIP_PLANNER_REQUEST --------------
             let displayText =
               msg.text || (msg.attachmentName ? "(attachment)" : "");
-            let isTripPlan = false;
 
-            if (typeof displayText === "string") {
-              if (isUser) {
-                // Hide the internal TRIP_PLANNER_REQUEST wrapper for user messages
-                if (displayText.startsWith("TRIP_PLANNER_REQUEST:")) {
-                  const lines = displayText.split("\n");
-                  const firstBlank = lines.findIndex(
-                    (line) => line.trim().length === 0
-                  );
+            if (
+              typeof displayText === "string" &&
+              displayText.startsWith("TRIP_PLANNER_REQUEST:")
+            ) {
+              const lines = displayText.split("\n");
+              const firstBlank = lines.findIndex(
+                (line) => line.trim().length === 0
+              );
 
-                  if (
-                    firstBlank !== -1 &&
-                    lines[firstBlank + 1] &&
-                    lines[firstBlank + 1].trim().length > 0
-                  ) {
-                    // Use the line right after the first blank line (original user request)
-                    displayText = lines[firstBlank + 1].trim();
-                  } else {
-                    displayText =
-                      "Trip planning request sent to concierge.";
-                  }
-                }
+              if (
+                firstBlank !== -1 &&
+                lines[firstBlank + 1] &&
+                lines[firstBlank + 1].trim().length > 0
+              ) {
+                // Use the line right after the first blank line,
+                // which is our original user request.
+                displayText = lines[firstBlank + 1].trim();
               } else {
-                // Concierge messages: detect TRIP_PLAN_BEGIN marker
-                const lines = displayText.split("\n");
-                if (lines[0].trim() === "TRIP_PLAN_BEGIN") {
-                  isTripPlan = true;
-                  displayText = lines.slice(1).join("\n").trim();
-                }
+                displayText = "Trip planning request sent to concierge.";
               }
             }
-
-            const bubbleClasses = [
-              "max-w-[80%] rounded-2xl px-3 py-2 text-xs",
-              isUser
-                ? "bg-pink-600 text-white"
-                : isTripPlan
-                ? "bg-purple-700 text-white"
-                : "bg-slate-800 text-slate-100",
-            ].join(" ");
 
             return (
               <div
                 key={`${msg.id}-${index}`}
                 className={`flex ${isUser ? "justify-end" : "justify-start"}`}
               >
-                <div className={bubbleClasses}>
+                <div
+                  className={[
+                    "max-w-[80%] rounded-2xl px-3 py-2 text-xs",
+                    isUser
+                      ? "bg-pink-600 text-white"
+                      : "bg-slate-800 text-slate-100",
+                  ].join(" ")}
+                >
                   {!isUser && (
                     <p className="text-[10px] uppercase tracking-wide text-slate-300 mb-1">
-                      Concierge{isTripPlan ? " • Trip plan" : ""}
+                      Concierge
                     </p>
                   )}
 
@@ -536,7 +562,7 @@ export default function MobileChatPage() {
           </div>
         )}
 
-        {/* M10a/M10b: Quick trip-planner suggestions */}
+        {/* M10a/M10c: Quick trip-planner suggestions */}
         {roomId && (
           <div className="flex flex-wrap items-center gap-2 mb-1 text-[11px] text-slate-300">
             <span className="text-slate-500">Try:</span>
@@ -600,7 +626,7 @@ export default function MobileChatPage() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Type a message... (try: plan: Plan a fun evening near 60515)"
+            placeholder="Type a message... (try: Plan a fun evening near 60515)"
             className="flex-1 bg-slate-900 border border-slate-700 rounded-full px-3 py-2 text-xs outline-none focus:border-pink-500"
           />
 
