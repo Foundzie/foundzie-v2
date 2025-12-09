@@ -16,14 +16,15 @@ export default function AdminLayout({
     <div
       style={{
         minHeight: "100vh",
-        background: "#f3f4f6", // light grey background
+        background: "#f3f4f6",
         color: "#111827",
       }}
     >
       {/* Top bar */}
       <header
         style={{
-          background: "white",
+          background:
+            "linear-gradient(90deg, #ffffff 0%, #fff7f7 40%, #ffe4e6 100%)",
           borderBottom: "1px solid #e5e7eb",
           height: "64px",
           display: "flex",
@@ -33,7 +34,7 @@ export default function AdminLayout({
           position: "sticky",
           top: 0,
           zIndex: 100,
-          boxShadow: "0 1px 2px rgba(15,23,42,0.05)",
+          boxShadow: "0 4px 10px rgba(15,23,42,0.06)",
         }}
       >
         {/* Left side: logo + subtitle */}
@@ -43,7 +44,8 @@ export default function AdminLayout({
               fontWeight: 800,
               color: "#f97373",
               fontSize: "20px",
-              letterSpacing: "0.04em",
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
             }}
           >
             Foundzie Admin
@@ -51,10 +53,10 @@ export default function AdminLayout({
           <span
             style={{
               fontSize: "12px",
-              color: "#9ca3af",
+              color: "#6b7280",
             }}
           >
-            Concierge control center — calls, trips, SOS & more
+            Concierge control center — analytics, chats, calls, trips & SOS
           </span>
         </div>
 
@@ -103,7 +105,7 @@ export default function AdminLayout({
             gap: "8px",
           }}
         >
-          {/* Each item is a pill-style link */}
+          {/* Pill-style nav items */}
           <NavPill href="/admin" label="Dashboard" />
           <NavPill href="/admin/users" label="Users" />
           <NavPill href="/admin/chat" label="Chat" emphasis />
@@ -111,6 +113,7 @@ export default function AdminLayout({
           <NavPill href="/admin/notifications" label="Notifications" />
           <NavPill href="/admin/sos" label="SOS" />
           <NavPill href="/admin/trips" label="Trips" />
+          <NavPill href="/admin/agent" label="Agent console" />
         </div>
       </nav>
 
@@ -139,8 +142,8 @@ export default function AdminLayout({
 }
 
 /**
- * Simple pill-style nav link component for the admin header.
- * This is kept in the same file for simplicity.
+ * Pill-style nav link component for the admin header.
+ * NOTE: no event handlers here so it stays Server-Component-safe.
  */
 function NavPill({
   href,
@@ -159,7 +162,8 @@ function NavPill({
     fontSize: "13px",
     textDecoration: "none",
     border: "1px solid transparent",
-    transition: "background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease",
+    transition:
+      "background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease",
   };
 
   const normal: React.CSSProperties = {
