@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getUser } from "../../users/store";
 import { addCallLog } from "../store";
 import { startTwilioCall } from "@/lib/twilio";
+import { recordOutboundCall } from "../../health/store";
 
 export const dynamic = "force-dynamic";
 
@@ -12,11 +13,9 @@ export async function POST(req: Request) {
 
   const userId =
     typeof body.userId === "string" ? body.userId.trim() : "";
-  const note =
-    typeof body.note === "string" ? body.note.trim() : "";
+  const note = typeof body.note === "string" ? body.note.trim() : "";
 
-  let phone =
-    typeof body.phone === "string" ? body.phone.trim() : "";
+  let phone = typeof body.phone === "string" ? body.phone.trim() : "";
 
   let user = null;
 
@@ -41,7 +40,24 @@ export async function POST(req: Request) {
   const callId = `call-${Date.now()}`;
 
   // 1) Attempt Twilio call (auto-skips if env vars missing)
-  const twilioResult = await startTwilioCall(phone, note);
+  let twilioResult: any = null;
+  let twilioErrored = false;
+
+  try {
+    twilioResult = await startTwilioCall(phone, note);
+  } catch (err) {
+    twilioErrored = true;
+    console.error("[/api/calls/outbound] Twilio error:", err);
+  }
+
+  const twilioStatus: "started" | "skipped" | null = twilioResult
+    ? "started"
+    : "skipped";
+
+  await recordOutboundCall({
+    hadError: twilioErrored,
+    twilioStatus,
+  });
 
   // 2) Always log internally (preserves your Admin Calls page)
   const log = await addCallLog({
@@ -62,6 +78,6 @@ export async function POST(req: Request) {
     note: log.note,
     createdAt: log.createdAt,
     twilioSid: twilioResult?.sid ?? null,
-    twilioStatus: twilioResult ? "started" : "skipped",
+    twilioStatus,
   });
 }

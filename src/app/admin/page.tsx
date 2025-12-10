@@ -12,6 +12,7 @@ import { listRooms } from "@/app/api/chat/store";
 import { listEvents } from "@/app/api/sos/store";
 import { listCallLogs } from "@/app/api/calls/store";
 import { listTrips } from "@/app/api/trips/store";
+import { getHealthSnapshot } from "@/app/api/health/store";
 
 // make TS happy about the shape coming from data files
 type Place = (typeof mockPlaces)[number];
@@ -19,12 +20,13 @@ type AdminNotification = (typeof mockNotifications)[number];
 
 export default async function AdminPage() {
   // Fetch live stats in parallel
-  const [users, rooms, sosEvents, callLogs, trips] = await Promise.all([
+  const [users, rooms, sosEvents, callLogs, trips, health] = await Promise.all([
     listUsers(),
     listRooms(),
     listEvents(),
     listCallLogs(50),
     listTrips(),
+    getHealthSnapshot(),
   ]);
 
   const totalUsers = users.length;
@@ -37,6 +39,32 @@ export default async function AdminPage() {
   ).length;
 
   const totalCalls = callLogs.length;
+
+  // Health summaries
+  const agentErrors = health.agent.errors;
+  const agentCalls = health.agent.calls;
+
+  const callErrors = health.calls.errors;
+  const callOutbound = health.calls.outbound;
+
+  const placesTotal = health.places.totalRequests;
+  const placesFallbacks =
+    health.places.osmFallbacks + health.places.localFallbacks;
+
+  const agentLabel =
+    agentErrors === 0
+      ? "OK · no recent errors"
+      : `${agentErrors} error${agentErrors === 1 ? "" : "s"} recorded`;
+  const callsLabel =
+    callErrors === 0
+      ? "OK · all recent calls healthy or skipped"
+      : `${callErrors} issue${callErrors === 1 ? "" : "s"} recorded`;
+  const placesLabel =
+    placesFallbacks === 0
+      ? "OK · external places working"
+      : `${placesFallbacks} fallback${
+          placesFallbacks === 1 ? "" : "s"
+        } to OSM/local`;
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -51,7 +79,7 @@ export default async function AdminPage() {
           </p>
         </div>
         <span className="text-[11px] text-gray-400">
-          Analytics v1 · M11a
+          Analytics v1.1 · M11a–M11b
         </span>
       </header>
 
@@ -145,6 +173,56 @@ export default async function AdminPage() {
               >
                 View calls →
               </Link>
+            </div>
+          </div>
+        </section>
+
+        {/* SYSTEM HEALTH STRIP */}
+        <section>
+          <h2 className="text-sm font-semibold text-gray-900 mb-3">
+            System health
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Agent health */}
+            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col">
+              <p className="text-xs text-gray-400 mb-1">Agent</p>
+              <p className="text-sm font-semibold text-gray-900">
+                {agentErrors === 0 ? "Healthy" : "Attention needed"}
+              </p>
+              <p className="text-[11px] text-gray-500 mt-1">
+                {agentLabel}
+              </p>
+              <p className="text-[11px] text-gray-400 mt-2">
+                Total runs: {agentCalls}
+              </p>
+            </div>
+
+            {/* Calls health */}
+            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col">
+              <p className="text-xs text-gray-400 mb-1">Calls / Twilio</p>
+              <p className="text-sm font-semibold text-gray-900">
+                {callErrors === 0 ? "Healthy" : "Issues detected"}
+              </p>
+              <p className="text-[11px] text-gray-500 mt-1">
+                {callsLabel}
+              </p>
+              <p className="text-[11px] text-gray-400 mt-2">
+                Outbound calls: {callOutbound}
+              </p>
+            </div>
+
+            {/* Places health */}
+            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col">
+              <p className="text-xs text-gray-400 mb-1">Places API</p>
+              <p className="text-sm font-semibold text-gray-900">
+                {placesFallbacks === 0 ? "Healthy" : "Using fallbacks"}
+              </p>
+              <p className="text-[11px] text-gray-500 mt-1">
+                {placesLabel}
+              </p>
+              <p className="text-[11px] text-gray-400 mt-2">
+                Total requests: {placesTotal}
+              </p>
             </div>
           </div>
         </section>

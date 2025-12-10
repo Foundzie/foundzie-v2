@@ -1,6 +1,7 @@
 // src/app/api/places/route.ts
 import { NextResponse } from "next/server";
 import { allPlaces } from "@/app/data/places";
+import { recordPlacesSource } from "../health/store";
 
 export const dynamic = "force-dynamic";
 
@@ -371,6 +372,8 @@ export async function GET(req: Request) {
       places = getLocalPlaces(mode);
       source = "local";
     }
+
+    await recordPlacesSource(source);
 
     // tiny delay for realism (optional)
     await new Promise((r) => setTimeout(r, 80));

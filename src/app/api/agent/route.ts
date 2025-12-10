@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runFoundzieAgent } from "@/lib/agent/runtime";
 import { coreTools } from "@/lib/agent/spec";
 import { toolImplementations } from "@/lib/agent/tools";
+import { recordAgentCall } from "../health/store";
 
 export const dynamic = "force-dynamic";
 
@@ -27,26 +28,42 @@ export async function POST(req: NextRequest) {
       ? body.userId.trim()
       : null;
 
-  const agentResult = await runFoundzieAgent({
-    input: inputRaw,
-    roomId,
-    userId,
-    source: "admin",
-    toolsMode: "debug", // Admin debug: allow tools
-  });
+  try {
+    const agentResult = await runFoundzieAgent({
+      input: inputRaw,
+      roomId,
+      userId,
+      source: "admin",
+      toolsMode: "debug", // Admin debug: allow tools
+    });
 
-  const availableTools = coreTools.map((t) => t.name);
-  const implementedTools = Object.keys(toolImplementations);
+    await recordAgentCall(true);
 
-  return NextResponse.json({
-    ok: true,
-    agentReply: agentResult.replyText,
-    usedTools: agentResult.usedTools,
-    debug: agentResult.debug,
-    systemPromptPreview: agentResult.debug?.systemPromptPreview,
-    availableTools,
-    implementedTools,
-  });
+    const availableTools = coreTools.map((t) => t.name);
+    const implementedTools = Object.keys(toolImplementations);
+
+    return NextResponse.json({
+      ok: true,
+      agentReply: agentResult.replyText,
+      usedTools: agentResult.usedTools,
+      debug: agentResult.debug,
+      systemPromptPreview: agentResult.debug?.systemPromptPreview,
+      availableTools,
+      implementedTools,
+    });
+  } catch (err) {
+    console.error("[/api/agent] error:", err);
+    await recordAgentCall(false, err);
+
+    return NextResponse.json(
+      {
+        ok: false,
+        message:
+          "Foundzie agent encountered a problem while answering your request.",
+      },
+      { status: 500 }
+    );
+  }
 }
 
 // Simple sanity GET
