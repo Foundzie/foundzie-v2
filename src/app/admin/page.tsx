@@ -1,5 +1,3 @@
-// src/app/admin/page.tsx
-
 import Link from "next/link";
 
 // Existing mock data for content lists
@@ -13,22 +11,63 @@ import { listEvents } from "@/app/api/sos/store";
 import { listCallLogs } from "@/app/api/calls/store";
 import { listTrips } from "@/app/api/trips/store";
 import { getHealthSnapshot } from "@/app/api/health/store";
+
 import MaintenanceToggle from "./MaintenanceToggle";
 
 // make TS happy about the shape coming from data files
 type Place = (typeof mockPlaces)[number];
 type AdminNotification = (typeof mockNotifications)[number];
 
+// ---- Build info (M11d) ----------------------------------------------
+
+const BUILD_VERSION =
+  process.env.NEXT_PUBLIC_FOUNDZIE_VERSION || "v0.11d-dev";
+
+const BUILD_MILESTONE =
+  process.env.NEXT_PUBLIC_FOUNDZIE_MILESTONE || "M11a–M11d";
+
+const BUILD_LABEL =
+  process.env.NEXT_PUBLIC_FOUNDZIE_BUILD_LABEL || "Manual deploy (Vercel)";
+
+const BUILD_TIME =
+  process.env.NEXT_PUBLIC_FOUNDZIE_BUILT_AT ||
+  new Date().toLocaleString("en-US", {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
 export default async function AdminPage() {
-  // Fetch live stats in parallel
-  const [users, rooms, sosEvents, callLogs, trips, health] = await Promise.all([
-    listUsers(),
-    listRooms(),
-    listEvents(),
-    listCallLogs(50),
-    listTrips(),
-    getHealthSnapshot(),
-  ]);
+  // Fetch live stats + health in parallel
+  const [users, rooms, sosEvents, callLogs, trips, rawHealth] =
+    await Promise.all([
+      listUsers(),
+      listRooms(),
+      listEvents(),
+      listCallLogs(50),
+      listTrips(),
+      getHealthSnapshot(),
+    ]);
+
+  // Loosely typed health snapshot so TS stops complaining but we keep structure.
+  const health = rawHealth as {
+    agent?: {
+      recentErrors?: number;
+      totalRuns?: number;
+    };
+    calls?: {
+      twilioErrors?: number;
+      twilioSkipped?: number;
+      totalCalls?: number;
+    };
+    places?: {
+      osmFallbacks?: number;
+      localFallbacks?: number;
+      totalRequests?: number;
+    };
+  };
 
   const totalUsers = users.length;
   const activeChats = rooms.length;
@@ -41,31 +80,13 @@ export default async function AdminPage() {
 
   const totalCalls = callLogs.length;
 
-  // Health summaries
-  const agentErrors = health.agent.errors;
-  const agentCalls = health.agent.calls;
+  // ----- Health status helpers ---------------------------------------
 
-  const callErrors = health.calls.errors;
-  const callOutbound = health.calls.outbound;
-
-  const placesTotal = health.places.totalRequests;
-  const placesFallbacks =
-    health.places.osmFallbacks + health.places.localFallbacks;
-
-  const agentLabel =
-    agentErrors === 0
-      ? "OK · no recent errors"
-      : `${agentErrors} error${agentErrors === 1 ? "" : "s"} recorded`;
-  const callsLabel =
-    callErrors === 0
-      ? "OK · all recent calls healthy or skipped"
-      : `${callErrors} issue${callErrors === 1 ? "" : "s"} recorded`;
-  const placesLabel =
-    placesFallbacks === 0
-      ? "OK · external places working"
-      : `${placesFallbacks} fallback${
-          placesFallbacks === 1 ? "" : "s"
-        } to OSM/local`;
+  const agentHealthy = (health.agent?.recentErrors ?? 0) === 0;
+  const callsHealthy = (health.calls?.twilioErrors ?? 0) === 0;
+  const placesHealthy =
+    (health.places?.osmFallbacks ?? 0) + (health.places?.localFallbacks ?? 0) ===
+    0;
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -80,7 +101,7 @@ export default async function AdminPage() {
           </p>
         </div>
         <span className="text-[11px] text-gray-400">
-          Analytics v1.2 · M11a–M11c
+          Analytics v1.3 · {BUILD_MILESTONE}
         </span>
       </header>
 
@@ -178,57 +199,86 @@ export default async function AdminPage() {
           </div>
         </section>
 
-        {/* SYSTEM HEALTH + MAINTENANCE */}
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-gray-900">
+        {/* SYSTEM HEALTH ROW + MAINTENANCE */}
+        <section className="flex items-center justify-between gap-4">
+          <div className="flex-1">
+            <h2 className="text-sm font-semibold text-gray-900 mb-3">
               System health
             </h2>
-            <MaintenanceToggle />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Agent health */}
+              <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-gray-400 mb-1">Agent</p>
+                <p
+                  className={`text-sm font-semibold ${
+                    agentHealthy ? "text-emerald-600" : "text-amber-600"
+                  }`}
+                >
+                  {agentHealthy ? "Healthy" : "Attention needed"}
+                </p>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  {agentHealthy
+                    ? "OK · no recent errors"
+                    : `Recent errors: ${health.agent?.recentErrors ?? 0}`}
+                </p>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Total runs: {health.agent?.totalRuns ?? 0}
+                </p>
+              </div>
+
+              {/* Calls / Twilio health */}
+              <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-gray-400 mb-1">Calls / Twilio</p>
+                <p
+                  className={`text-sm font-semibold ${
+                    callsHealthy ? "text-emerald-600" : "text-amber-600"
+                  }`}
+                >
+                  {callsHealthy ? "Healthy" : "Issues detected"}
+                </p>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  {callsHealthy
+                    ? "OK · all recent calls healthy or skipped"
+                    : `Errors: ${health.calls?.twilioErrors ?? 0} · Skipped: ${
+                        health.calls?.twilioSkipped ?? 0
+                      }`}
+                </p>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Outbound calls: {health.calls?.totalCalls ?? 0}
+                </p>
+              </div>
+
+              {/* Places API health */}
+              <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-gray-400 mb-1">Places API</p>
+                <p
+                  className={`text-sm font-semibold ${
+                    placesHealthy ? "text-emerald-600" : "text-amber-600"
+                  }`}
+                >
+                  {placesHealthy ? "Healthy" : "Using fallbacks"}
+                </p>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  {placesHealthy
+                    ? "OK · external places working"
+                    : `Fallbacks · OSM: ${
+                        health.places?.osmFallbacks ?? 0
+                      }, local: ${health.places?.localFallbacks ?? 0}`}
+                </p>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Total requests: {health.places?.totalRequests ?? 0}
+                </p>
+              </div>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Agent health */}
-            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col">
-              <p className="text-xs text-gray-400 mb-1">Agent</p>
-              <p className="text-sm font-semibold text-gray-900">
-                {agentErrors === 0 ? "Healthy" : "Attention needed"}
-              </p>
-              <p className="text-[11px] text-gray-500 mt-1">{agentLabel}</p>
-              <p className="text-[11px] text-gray-400 mt-2">
-                Total runs: {agentCalls}
-              </p>
-            </div>
-
-            {/* Calls health */}
-            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col">
-              <p className="text-xs text-gray-400 mb-1">Calls / Twilio</p>
-              <p className="text-sm font-semibold text-gray-900">
-                {callErrors === 0 ? "Healthy" : "Issues detected"}
-              </p>
-              <p className="text-[11px] text-gray-500 mt-1">{callsLabel}</p>
-              <p className="text-[11px] text-gray-400 mt-2">
-                Outbound calls: {callOutbound}
-              </p>
-            </div>
-
-            {/* Places health */}
-            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col">
-              <p className="text-xs text-gray-400 mb-1">Places API</p>
-              <p className="text-sm font-semibold text-gray-900">
-                {placesFallbacks === 0 ? "Healthy" : "Using fallbacks"}
-              </p>
-              <p className="text-[11px] text-gray-500 mt-1">
-                {placesLabel}
-              </p>
-              <p className="text-[11px] text-gray-400 mt-2">
-                Total requests: {placesTotal}
-              </p>
-            </div>
+          {/* Maintenance toggle area */}
+          <div className="hidden md:flex flex-col items-end min-w-[180px] pt-6">
+            <MaintenanceToggle />
           </div>
         </section>
 
-        {/* PLACES & NOTIFICATIONS ROW */}
+        {/* DATA SOURCES ROW (still using mocks for now) */}
         <section>
           <h2 className="text-sm font-semibold text-gray-900 mb-3">
             Places & notifications data
@@ -268,7 +318,7 @@ export default async function AdminPage() {
               </Link>
             </div>
 
-            {/* quick links */}
+            {/* small “quick links” card */}
             <div className="bg-white border border-gray-200 rounded-lg p-4">
               <p className="text-xs text-gray-400 mb-2">Quick access</p>
               <div className="flex flex-col gap-1 text-xs">
@@ -301,7 +351,7 @@ export default async function AdminPage() {
           </div>
         </section>
 
-        {/* LOWER AREA: notifications + places */}
+        {/* lower area: notifications + places (unchanged lists) */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* latest notifications */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
@@ -385,6 +435,39 @@ export default async function AdminPage() {
                 </li>
               ))}
             </ul>
+          </div>
+        </section>
+
+        {/* ABOUT THIS BUILD (M11d) */}
+        <section>
+          <h2 className="text-sm font-semibold text-gray-900 mb-3">
+            About this build
+          </h2>
+          <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm text-xs text-gray-600 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <p className="font-semibold text-gray-900 mb-1">
+                {BUILD_VERSION}
+              </p>
+              <p className="text-[11px] text-gray-500">
+                Current milestone: {BUILD_MILESTONE}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-gray-500">
+                Build label: <span className="font-medium">{BUILD_LABEL}</span>
+              </p>
+              <p className="text-[11px] text-gray-500">
+                Built at: <span className="font-medium">{BUILD_TIME}</span>
+              </p>
+            </div>
+            <div className="max-w-xs text-[11px] text-gray-500">
+              <p>
+                Latest change:{" "}
+                <span className="font-medium">
+                  M11d – Version &amp; build info on admin dashboard.
+                </span>
+              </p>
+            </div>
           </div>
         </section>
       </div>

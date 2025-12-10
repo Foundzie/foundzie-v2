@@ -1,4 +1,3 @@
-// src/app/admin/MaintenanceToggle.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -33,9 +32,7 @@ export default function MaintenanceToggle() {
       } catch (err: any) {
         console.error("[MaintenanceToggle] load error:", err);
         if (!cancelled) {
-          setError(
-            err?.message || "Could not load maintenance state."
-          );
+          setError(err?.message || "Could not load maintenance state.");
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -66,9 +63,7 @@ export default function MaintenanceToggle() {
       setState(data.state);
     } catch (err: any) {
       console.error("[MaintenanceToggle] save error:", err);
-      setError(
-        err?.message || "Could not update maintenance state."
-      );
+      setError(err?.message || "Could not update maintenance state.");
     } finally {
       setSaving(false);
     }
