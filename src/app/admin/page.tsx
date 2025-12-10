@@ -13,6 +13,7 @@ import { listEvents } from "@/app/api/sos/store";
 import { listCallLogs } from "@/app/api/calls/store";
 import { listTrips } from "@/app/api/trips/store";
 import { getHealthSnapshot } from "@/app/api/health/store";
+import MaintenanceToggle from "./MaintenanceToggle";
 
 // make TS happy about the shape coming from data files
 type Place = (typeof mockPlaces)[number];
@@ -79,7 +80,7 @@ export default async function AdminPage() {
           </p>
         </div>
         <span className="text-[11px] text-gray-400">
-          Analytics v1.1 · M11a–M11b
+          Analytics v1.2 · M11a–M11c
         </span>
       </header>
 
@@ -177,11 +178,15 @@ export default async function AdminPage() {
           </div>
         </section>
 
-        {/* SYSTEM HEALTH STRIP */}
+        {/* SYSTEM HEALTH + MAINTENANCE */}
         <section>
-          <h2 className="text-sm font-semibold text-gray-900 mb-3">
-            System health
-          </h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-900">
+              System health
+            </h2>
+            <MaintenanceToggle />
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Agent health */}
             <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col">
@@ -189,9 +194,7 @@ export default async function AdminPage() {
               <p className="text-sm font-semibold text-gray-900">
                 {agentErrors === 0 ? "Healthy" : "Attention needed"}
               </p>
-              <p className="text-[11px] text-gray-500 mt-1">
-                {agentLabel}
-              </p>
+              <p className="text-[11px] text-gray-500 mt-1">{agentLabel}</p>
               <p className="text-[11px] text-gray-400 mt-2">
                 Total runs: {agentCalls}
               </p>
@@ -203,9 +206,7 @@ export default async function AdminPage() {
               <p className="text-sm font-semibold text-gray-900">
                 {callErrors === 0 ? "Healthy" : "Issues detected"}
               </p>
-              <p className="text-[11px] text-gray-500 mt-1">
-                {callsLabel}
-              </p>
+              <p className="text-[11px] text-gray-500 mt-1">{callsLabel}</p>
               <p className="text-[11px] text-gray-400 mt-2">
                 Outbound calls: {callOutbound}
               </p>
@@ -227,7 +228,7 @@ export default async function AdminPage() {
           </div>
         </section>
 
-        {/* DATA SOURCES ROW (still using mocks for now) */}
+        {/* PLACES & NOTIFICATIONS ROW */}
         <section>
           <h2 className="text-sm font-semibold text-gray-900 mb-3">
             Places & notifications data
@@ -267,7 +268,7 @@ export default async function AdminPage() {
               </Link>
             </div>
 
-            {/* small “quick links” card */}
+            {/* quick links */}
             <div className="bg-white border border-gray-200 rounded-lg p-4">
               <p className="text-xs text-gray-400 mb-2">Quick access</p>
               <div className="flex flex-col gap-1 text-xs">
@@ -300,7 +301,7 @@ export default async function AdminPage() {
           </div>
         </section>
 
-        {/* lower area: notifications + places (unchanged lists) */}
+        {/* LOWER AREA: notifications + places */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* latest notifications */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
