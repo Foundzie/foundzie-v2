@@ -32,7 +32,6 @@ export default function MobileHomePage() {
   const toggleSave = async (id: string) => {
     const isSaved = savedIds.includes(id);
 
-    // optimistic UI
     setSavedIds((prev) =>
       isSaved ? prev.filter((x) => x !== id) : [...prev, id]
     );
@@ -48,7 +47,6 @@ export default function MobileHomePage() {
       });
     } catch (err) {
       console.error("Failed to update saved on server", err);
-      // optional: revert – for now just log
     }
   };
 
@@ -69,6 +67,7 @@ export default function MobileHomePage() {
           email: "no-email@example.com",
           source: "mobile-home",
           interest: trimmed,
+          tags: ["home-interest"],
         }),
       });
       await res.json();
@@ -81,7 +80,6 @@ export default function MobileHomePage() {
     }
   };
 
-  // simple helpers to make the tabs feel different
   const trendingPlaces = mockPlaces.filter((p) => p.trending);
   const nearbyPlaces = [...mockPlaces].sort(
     (a, b) => (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999)
@@ -95,15 +93,18 @@ export default function MobileHomePage() {
   if (activeTab === "saved") shownPlaces = savedPlaces;
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white pb-16">
+    <main className="min-h-screen bg-slate-950 text-white pb-20">
       {/* Hero / header */}
-      <header className="px-4 pt-6 pb-4 space-y-2 bg-gradient-to-b from-slate-900/90 to-slate-950">
+      <header className="px-4 pt-6 pb-5 bg-gradient-to-b from-pink-500/15 via-slate-900 to-slate-950 border-b border-slate-800">
         <div className="flex items-center justify-between">
           <div>
+            <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400 mb-1">
+              Concierge preview
+            </p>
             <h1 className="text-2xl font-semibold tracking-tight">
               Foundzie
             </h1>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-slate-300">
               Lightning-fast concierge for what&apos;s around you.
             </p>
           </div>
@@ -112,15 +113,15 @@ export default function MobileHomePage() {
           </span>
         </div>
 
-        <p className="text-[11px] text-slate-400">
-          Open the app, see places instantly. Tap any spot to chat or book via
-          your concierge.
+        <p className="mt-3 text-[11px] text-slate-300">
+          Open the app, see places instantly. Tap any spot to view details,
+          save it, or talk to your concierge from the chat tab.
         </p>
       </header>
 
       {/* Tabs */}
       <section className="px-4 pt-3">
-        <div className="inline-flex rounded-full bg-slate-900 p-1 gap-1">
+        <div className="inline-flex rounded-full bg-slate-900 p-1 gap-1 border border-slate-800">
           {(["trending", "nearby", "saved"] as TabKey[]).map((tab) => {
             const isActive = activeTab === tab;
             const label =
@@ -135,10 +136,10 @@ export default function MobileHomePage() {
                 key={tab}
                 onClick={() => setActiveTab(tab)}
                 className={[
-                  "px-3 py-1.5 rounded-full text-xs transition-colors",
+                  "px-3 py-1.5 rounded-full text-xs transition-all",
                   isActive
-                    ? "bg-pink-500 text-white shadow-sm"
-                    : "text-slate-300",
+                    ? "bg-pink-500 text-white shadow-sm shadow-pink-500/40"
+                    : "text-slate-300 hover:text-slate-50",
                 ].join(" ")}
               >
                 {label}
@@ -167,13 +168,13 @@ export default function MobileHomePage() {
             </span>
           </div>
         ) : (
-          <ul className="divide-y divide-slate-800">
+          <ul className="divide-y divide-slate-900/80">
             {shownPlaces.map((p) => (
               <li
                 key={p.id}
-                className="px-4 py-4 flex justify-between items-center"
+                className="px-4 py-4 flex justify-between items-center bg-slate-950/60"
               >
-                <div className="space-y-1">
+                <div className="space-y-1 pr-3">
                   <p className="text-sm font-medium">{p.name}</p>
                   <p className="text-[11px] text-slate-400">
                     {p.category}
@@ -200,7 +201,7 @@ export default function MobileHomePage() {
                   </Link>
                   <button
                     onClick={() => toggleSave(p.id.toString())}
-                    className="text-xs px-2 py-1 rounded-full border border-slate-700 bg-slate-900/60"
+                    className="text-xs px-2 py-1 rounded-full border border-slate-700 bg-slate-900/80"
                   >
                     {savedIds.includes(p.id.toString()) ? "★ Saved" : "☆ Save"}
                   </button>
@@ -212,10 +213,10 @@ export default function MobileHomePage() {
       </section>
 
       {/* Interest capture area */}
-      <section className="px-4 py-5 mt-1 border-t border-slate-900/70 bg-slate-950/90 space-y-2">
+      <section className="px-4 py-5 mt-2 border-t border-slate-900/70 bg-slate-950/95 space-y-2">
         <p className="text-xs text-slate-300">
           Tell Foundzie what you&apos;re into and we&apos;ll use it to tune
-          suggestions.
+          suggestions even more.
         </p>
 
         <div className="flex gap-2">
@@ -231,7 +232,7 @@ export default function MobileHomePage() {
           <button
             onClick={sendCollectedUser}
             disabled={savingInterest || !interest.trim()}
-            className="text-xs px-3 py-2 rounded-lg bg-pink-500 disabled:opacity-60"
+            className="text-xs px-3 py-2 rounded-lg bg-pink-500 disabled:opacity-60 shadow-sm shadow-pink-500/40"
           >
             {savingInterest ? "Saving..." : "Save"}
           </button>

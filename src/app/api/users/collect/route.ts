@@ -10,6 +10,8 @@ type CollectBody = {
   email?: string;
   phone?: string;
   interest?: string;
+  interests?: string[]; // from onboarding
+  city?: string; // from onboarding
   source?: string;
   tags?: string[] | string;
 };
@@ -18,9 +20,7 @@ type CollectBody = {
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as CollectBody;
 
-  // Handle tags cleanly:
-  // - If mobile sends comma-separated string → split safely
-  // - If array → use directly (and trim)
+  // Normalise tags
   let tags: string[] = [];
 
   if (Array.isArray(body.tags)) {
@@ -34,13 +34,31 @@ export async function POST(req: Request) {
       .filter((t: string) => t.length > 0);
   }
 
+  // Add interests & city into tags as well for richer filtering
+  if (Array.isArray(body.interests)) {
+    for (const label of body.interests) {
+      const trimmed = typeof label === "string" ? label.trim() : "";
+      if (trimmed) tags.push(trimmed);
+    }
+  }
+
+  if (typeof body.city === "string" && body.city.trim()) {
+    tags.push(`city:${body.city.trim()}`);
+  }
+
+  const combinedInterest =
+    body.interest ??
+    (Array.isArray(body.interests) && body.interests.length > 0
+      ? body.interests.join(", ")
+      : "");
+
   const newUser = await createUser({
     name: body.name ?? body.firstName ?? "Anonymous visitor",
     email: body.email ?? "no-email@example.com",
     phone: body.phone ?? null,
     role: "viewer",
     status: "collected",
-    interest: body.interest ?? "",
+    interest: combinedInterest,
     source: body.source ?? "mobile",
     tags,
   });

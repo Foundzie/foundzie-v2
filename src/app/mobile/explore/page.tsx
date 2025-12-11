@@ -1,3 +1,4 @@
+// src/app/mobile/explore/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -31,7 +32,6 @@ export default function MobileExplorePage() {
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string>("");
 
-  // 🔐 Read interaction mode from localStorage (same key as Profile)
   const [interactionMode] = useState<InteractionMode>(() => {
     if (typeof window === "undefined") return "normal";
     const stored = window.localStorage.getItem("foundzie:interaction-mode");
@@ -47,7 +47,6 @@ export default function MobileExplorePage() {
 
       const modeParam = interactionMode === "child" ? "child" : "normal";
 
-      // helper that actually calls the API
       async function fetchPlaces(url: string) {
         try {
           const res = await fetch(url);
@@ -70,7 +69,6 @@ export default function MobileExplorePage() {
         }
       }
 
-      // Try geolocation first
       if (typeof navigator !== "undefined" && navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
           (pos) => {
@@ -80,7 +78,6 @@ export default function MobileExplorePage() {
             fetchPlaces(url);
           },
           () => {
-            // Permission denied or failed → fallback to generic list
             fetchPlaces(`/api/places?mode=${modeParam}`);
           },
           {
@@ -88,7 +85,6 @@ export default function MobileExplorePage() {
           }
         );
       } else {
-        // No geolocation in this environment
         fetchPlaces(`/api/places?mode=${modeParam}`);
       }
     }
@@ -110,15 +106,15 @@ export default function MobileExplorePage() {
   });
 
   return (
-    <main className="min-h-screen bg-[#0f172a] text-white pb-14">
-      <header className="px-4 pt-3 space-y-2">
-        <h1 className="text-lg font-semibold">Explore</h1>
+    <main className="min-h-screen bg-slate-950 text-white pb-20">
+      <header className="px-4 pt-4 pb-3 border-b border-slate-900 bg-gradient-to-b from-slate-900 to-slate-950">
+        <h1 className="text-lg font-semibold tracking-tight">Explore</h1>
         <p className="text-sm text-slate-300">
           Browse places and ideas around you.
         </p>
 
         {source && (
-          <p className="text-[11px] text-slate-500">
+          <p className="mt-1 text-[11px] text-slate-500">
             Data source:{" "}
             <span className="font-medium">
               {source === "google"
@@ -131,21 +127,23 @@ export default function MobileExplorePage() {
         )}
 
         {interactionMode === "child" && (
-          <p className="text-[11px] text-emerald-300">
+          <p className="text-[11px] text-emerald-300 mt-0.5">
             Child-safe suggestions enabled on this device.
           </p>
         )}
 
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search places..."
-          className="w-full bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-slate-400"
-        />
+        <div className="mt-3">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search places, coffee, brunch..."
+            className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2 text-sm outline-none focus:border-slate-300"
+          />
+        </div>
       </header>
 
       {loading ? (
-        <p className="text-center py-8 text-slate-400">Loading...</p>
+        <p className="text-center py-8 text-slate-400 text-sm">Loading...</p>
       ) : (
         <div className="px-4 mt-4 space-y-3">
           {error && (
@@ -153,43 +151,54 @@ export default function MobileExplorePage() {
           )}
 
           {filtered.length === 0 ? (
-            <p className="text-center text-slate-400 py-6">
+            <p className="text-center text-slate-400 py-6 text-sm">
               No matches found.
             </p>
           ) : (
-            filtered.map((p) => (
-              <Link
-                key={p.id}
-                href={`/mobile/places/${p.id}`}
-                className="flex items-center justify-between border-b border-slate-800 py-3"
-              >
-                <div>
-                  <p className="font-medium">{p.name}</p>
-                  <p className="text-xs text-slate-400">
-                    {p.category}
-                    {p.distanceMiles != null && (
-                      <span className="ml-1 text-[11px] text-slate-500">
-                        • {p.distanceMiles.toFixed(1)} mi
-                      </span>
-                    )}
-                  </p>
-                </div>
-                <span className="text-xs text-slate-500">View</span>
-              </Link>
-            ))
+            <div className="space-y-3">
+              {filtered.map((p) => (
+                <Link
+                  key={p.id}
+                  href={`/mobile/places/${p.id}`}
+                  className="block rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 shadow-sm shadow-slate-950/40"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">{p.name}</p>
+                      <p className="text-[11px] text-slate-400">
+                        {p.category}
+                        {p.distanceMiles != null && (
+                          <span className="ml-1 text-[11px] text-slate-500">
+                            • {p.distanceMiles.toFixed(1)} mi
+                          </span>
+                        )}
+                      </p>
+                      {typeof p.rating === "number" && (
+                        <p className="text-[11px] text-slate-400">
+                          ★ {p.rating.toFixed(1)}{" "}
+                          {typeof p.reviews === "number" && p.reviews > 0 && (
+                            <span className="text-slate-500">
+                              • {p.reviews} reviews
+                            </span>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-pink-400 underline">
+                      View
+                    </span>
+                  </div>
+                  {p.address && (
+                    <p className="mt-1 text-[10px] text-slate-500 line-clamp-1">
+                      {p.address}
+                    </p>
+                  )}
+                </Link>
+              ))}
+            </div>
           )}
         </div>
       )}
-
-      <nav className="fixed bottom-0 left-0 right-0 bg-[#0f172a] border-t border-slate-800 flex justify-around py-2 text-xs text-slate-300">
-        <Link href="/mobile">Home</Link>
-        <Link href="/mobile/explore" className="text-white">
-          Explore
-        </Link>
-        <Link href="/mobile/nearby">Nearby</Link>
-        <Link href="/mobile/profile">Profile</Link>
-        <Link href="/admin">Admin</Link>
-      </nav>
     </main>
   );
 }
