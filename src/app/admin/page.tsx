@@ -10,7 +10,10 @@ import { listRooms } from "@/app/api/chat/store";
 import { listEvents } from "@/app/api/sos/store";
 import { listCallLogs } from "@/app/api/calls/store";
 import { listTrips } from "@/app/api/trips/store";
-import { getHealthSnapshot } from "@/app/api/health/store";
+import {
+  getHealthSnapshot,
+  type HealthSnapshot,
+} from "@/app/api/health/store";
 
 import MaintenanceToggle from "./MaintenanceToggle";
 
@@ -51,23 +54,7 @@ export default async function AdminPage() {
       getHealthSnapshot(),
     ]);
 
-  // Loosely typed health snapshot so TS stops complaining but we keep structure.
-  const health = rawHealth as {
-    agent?: {
-      recentErrors?: number;
-      totalRuns?: number;
-    };
-    calls?: {
-      twilioErrors?: number;
-      twilioSkipped?: number;
-      totalCalls?: number;
-    };
-    places?: {
-      osmFallbacks?: number;
-      localFallbacks?: number;
-      totalRequests?: number;
-    };
-  };
+  const health = rawHealth as HealthSnapshot;
 
   const totalUsers = users.length;
   const activeChats = rooms.length;
@@ -85,7 +72,8 @@ export default async function AdminPage() {
   const agentHealthy = (health.agent?.recentErrors ?? 0) === 0;
   const callsHealthy = (health.calls?.twilioErrors ?? 0) === 0;
   const placesHealthy =
-    (health.places?.osmFallbacks ?? 0) + (health.places?.localFallbacks ?? 0) ===
+    (health.places?.osmFallbacks ?? 0) +
+      (health.places?.localFallbacks ?? 0) ===
     0;
 
   return (
@@ -224,6 +212,12 @@ export default async function AdminPage() {
                 <p className="text-[11px] text-gray-400 mt-1">
                   Total runs: {health.agent?.totalRuns ?? 0}
                 </p>
+                <Link
+                  href="/admin/health#agent"
+                  className="mt-2 inline-block text-[11px] text-purple-600 hover:underline"
+                >
+                  View details →
+                </Link>
               </div>
 
               {/* Calls / Twilio health */}
@@ -246,6 +240,12 @@ export default async function AdminPage() {
                 <p className="text-[11px] text-gray-400 mt-1">
                   Outbound calls: {health.calls?.totalCalls ?? 0}
                 </p>
+                <Link
+                  href="/admin/health#calls"
+                  className="mt-2 inline-block text-[11px] text-purple-600 hover:underline"
+                >
+                  View details →
+                </Link>
               </div>
 
               {/* Places API health */}
@@ -268,6 +268,12 @@ export default async function AdminPage() {
                 <p className="text-[11px] text-gray-400 mt-1">
                   Total requests: {health.places?.totalRequests ?? 0}
                 </p>
+                <Link
+                  href="/admin/health#places"
+                  className="mt-2 inline-block text-[11px] text-purple-600 hover:underline"
+                >
+                  View details →
+                </Link>
               </div>
             </div>
           </div>
