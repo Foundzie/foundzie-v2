@@ -1,5 +1,5 @@
-import type { Metadata } from "next";
-import Script from "next/script";
+// src/app/layout.tsx
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -13,16 +13,32 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+export const viewport: Viewport = {
+  themeColor: "#0b0b0f",
+};
+
 export const metadata: Metadata = {
   title: "Foundzie – Lightning-fast personal concierge",
   description:
     "Foundzie helps you instantly discover nearby food, fun, trips and experiences with chat, voice concierge, and SOS support.",
+
+  // This is correct for Next App Router manifest.ts
   manifest: "/manifest.webmanifest",
-  themeColor: "#0b1020",
+
   icons: {
-    icon: "/favicon.ico",
-    shortcut: "/favicon.ico",
-    apple: "/favicon.ico",
+    icon: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [
+      { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+    ],
+  },
+
+  appleWebApp: {
+    capable: true,
+    title: "Foundzie",
+    statusBarStyle: "black-translucent",
   },
 };
 
@@ -37,20 +53,6 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
         {children}
-
-        {/* M12d: register a lightweight SW so install prompts work better */}
-        <Script id="foundzie-sw" strategy="afterInteractive">
-          {`
-            (function() {
-              try {
-                if (!('serviceWorker' in navigator)) return;
-                window.addEventListener('load', function () {
-                  navigator.serviceWorker.register('/sw.js').catch(function(){});
-                });
-              } catch (e) {}
-            })();
-          `}
-        </Script>
       </body>
     </html>
   );
