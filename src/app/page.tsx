@@ -1,4 +1,5 @@
 import Link from "next/link";
+import GetAppButton from "./components/GetAppButton";
 
 const features = [
   {
@@ -44,6 +45,12 @@ export default function Home() {
           >
             Open app
           </Link>
+
+          {/* M12d */}
+          <div className="hidden sm:block">
+            <GetAppButton />
+          </div>
+
           <Link
             href="/admin"
             className="px-3 py-1.5 rounded-full text-[11px] font-medium text-gray-500 border border-gray-200 bg-white hover:text-gray-700 hover:border-gray-300 transition-colors"
@@ -82,6 +89,9 @@ export default function Home() {
                 Open Foundzie app
                 <span className="ml-2 text-xs">↗</span>
               </Link>
+
+              {/* M12d - visible on mobile too */}
+              <GetAppButton />
 
               <Link
                 href="/admin"
