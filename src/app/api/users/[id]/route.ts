@@ -4,6 +4,14 @@ import { listUsers, updateUser, deleteUser } from "../store";
 
 export const dynamic = "force-dynamic";
 
+// Next.js 15+: context.params may be a Promise
+async function unwrapParams(context: any): Promise<any> {
+  const p = context?.params;
+  if (!p) return {};
+  if (typeof p?.then === "function") return await p; // Promise-like
+  return p;
+}
+
 // Robust id resolver: try params first, then fall back to URL last segment
 function resolveId(req: Request, params: any) {
   const fromParams = params?.id;
@@ -19,7 +27,9 @@ function resolveId(req: Request, params: any) {
 
 // GET /api/users/:id
 export async function GET(req: Request, context: any) {
-  const id = resolveId(req, context?.params);
+  const params = await unwrapParams(context);
+  const id = resolveId(req, params);
+
   if (!id) {
     return NextResponse.json(
       { ok: false, message: "Missing id" },
@@ -49,7 +59,9 @@ export async function GET(req: Request, context: any) {
 
 // PATCH /api/users/:id
 export async function PATCH(req: Request, context: any) {
-  const id = resolveId(req, context?.params);
+  const params = await unwrapParams(context);
+  const id = resolveId(req, params);
+
   if (!id) {
     return NextResponse.json(
       { ok: false, message: "Missing id" },
@@ -72,7 +84,9 @@ export async function PATCH(req: Request, context: any) {
 
 // DELETE /api/users/:id
 export async function DELETE(req: Request, context: any) {
-  const id = resolveId(req, context?.params);
+  const params = await unwrapParams(context);
+  const id = resolveId(req, params);
+
   if (!id) {
     return NextResponse.json(
       { ok: false, message: "Missing id" },

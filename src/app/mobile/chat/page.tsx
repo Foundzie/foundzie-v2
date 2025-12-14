@@ -39,7 +39,7 @@ export default function MobileChatPage() {
   const [profileSavedMessage, setProfileSavedMessage] =
     useState<string | null>(null);
 
-  // Voice sheet state (M5a)
+  // Voice sheet state
   const [showVoiceSheet, setShowVoiceSheet] = useState(false);
   const [voiceRequestError, setVoiceRequestError] = useState<string | null>(
     null
@@ -228,7 +228,6 @@ export default function MobileChatPage() {
           messageId: message.id,
           text: message.text,
           createdAt: message.createdAt,
-          // userId: can be wired later if we have one
         }),
       });
 
@@ -270,13 +269,11 @@ export default function MobileChatPage() {
       attachmentKind: attachmentName ? "image" : null, // mock
     };
 
-    // optimistic add – show exactly what user typed
+    // optimistic add
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
 
-    // 🔹 Trip-planner transform (M10a–M10d):
-    // If the message starts with "plan:", we wrap it in a special
-    // instruction so the agent returns a short, constraint-aware itinerary.
+    // Trip-planner transform (M10)
     let transformedText = rawText;
     const lower = rawText.toLowerCase();
 
@@ -323,8 +320,8 @@ ${userRequest}
       const body: any = {
         text: transformedText,
         sender: "user" as const,
-        userId: roomId, // identity sent to backend
-        roomId, // explicitly tell backend which chat room
+        userId: roomId,
+        roomId,
       };
 
       if (attachmentName) {
@@ -349,12 +346,8 @@ ${userRequest}
         const withoutTemp = prev.filter((m) => m.id !== tempId);
         const final: ChatMessage[] = [...withoutTemp];
 
-        if (data.item) {
-          final.push(data.item as ChatMessage);
-        }
-        if (data.reply) {
-          final.push(data.reply as ChatMessage);
-        }
+        if (data.item) final.push(data.item as ChatMessage);
+        if (data.reply) final.push(data.reply as ChatMessage);
 
         return final;
       });
@@ -371,10 +364,15 @@ ${userRequest}
     }
   }
 
-  // ---------------- Voice: create session + go to concierge ----------------
+  // ---------------- Voice: live WebRTC ----------------
+  function handleLiveVoiceClick() {
+    setShowVoiceSheet(false);
+    router.push("/mobile/voice");
+  }
+
+  // ---------------- Voice: create session + go to concierge (fallback) ----------------
   async function handleVoiceConciergeClick() {
     if (!roomId) {
-      // just in case, still navigate so user can type phone in concierge form
       router.push("/mobile/concierge");
       return;
     }
@@ -406,7 +404,6 @@ ${userRequest}
       setVoiceRequestError(
         "We couldn’t flag your call request, but your concierge can still call you from the next screen."
       );
-      // we still continue to concierge page
     } finally {
       setVoiceRequesting(false);
       setShowVoiceSheet(false);
@@ -431,7 +428,6 @@ ${userRequest}
             )}
           </div>
 
-          {/* Voice button scaffold */}
           <button
             type="button"
             onClick={() => setShowVoiceSheet(true)}
@@ -503,7 +499,6 @@ ${userRequest}
           messages.map((msg, index) => {
             const isUser = msg.sender === "user";
 
-            // -------------- M10a: hide internal TRIP_PLANNER_REQUEST --------------
             let displayText =
               msg.text || (msg.attachmentName ? "(attachment)" : "");
 
@@ -521,8 +516,6 @@ ${userRequest}
                 lines[firstBlank + 1] &&
                 lines[firstBlank + 1].trim().length > 0
               ) {
-                // Use the line right after the first blank line,
-                // which is our original user request.
                 displayText = lines[firstBlank + 1].trim();
               } else {
                 displayText = "Trip planning request sent to concierge.";
@@ -620,7 +613,6 @@ ${userRequest}
           </div>
         )}
 
-        {/* M10a: Quick trip-planner suggestions */}
         {roomId && (
           <div className="flex flex-wrap items-center gap-2 mb-1 text-[11px] text-slate-300">
             <span className="text-slate-500">Try:</span>
@@ -690,9 +682,7 @@ ${userRequest}
 
           <button
             type="submit"
-            disabled={
-              sending || (!input.trim() && !attachmentName) || !roomId
-            }
+            disabled={sending || (!input.trim() && !attachmentName) || !roomId}
             className="px-3 py-2 text-xs rounded-full bg-pink-600 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {sending ? "Sending..." : "Send"}
@@ -711,9 +701,7 @@ ${userRequest}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2">
-              <h2 className="text-base font-semibold">
-                Talk to Foundzie (voice)
-              </h2>
+              <h2 className="text-base font-semibold">Talk to Foundzie</h2>
               <button
                 type="button"
                 onClick={() => setShowVoiceSheet(false)}
@@ -724,15 +712,19 @@ ${userRequest}
             </div>
 
             <p className="text-xs text-slate-300">
-              Voice calls are coming soon. For now, your concierge can call you
-              by phone. We&rsquo;ll flag your request and then take you to a
-              quick form to confirm your number.
+              Choose live voice (WebRTC) or request a phone call via concierge.
             </p>
 
+            <button
+              type="button"
+              onClick={handleLiveVoiceClick}
+              className="w-full px-4 py-2 rounded-full bg-emerald-600 text-xs font-medium text-white hover:bg-emerald-500"
+            >
+              Live voice (WebRTC)
+            </button>
+
             {voiceRequestError && (
-              <p className="text-[11px] text-amber-300">
-                {voiceRequestError}
-              </p>
+              <p className="text-[11px] text-amber-300">{voiceRequestError}</p>
             )}
 
             <button

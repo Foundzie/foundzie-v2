@@ -1,10 +1,7 @@
 // src/app/api/users/room/[roomId]/route.ts
 
 import { NextResponse } from "next/server";
-import {
-  ensureUserForRoom,
-  updateUser,
-} from "../../store";
+import { ensureUserForRoom, updateUser } from "../../store";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +13,14 @@ type RoomProfileBody = {
   tags?: string[] | string;
   interactionMode?: "normal" | "child";
 };
+
+// Next.js 15+: context.params may be a Promise
+async function unwrapParams(context: any): Promise<any> {
+  const p = context?.params;
+  if (!p) return {};
+  if (typeof p?.then === "function") return await p; // Promise-like
+  return p;
+}
 
 // Robust roomId resolver: prefer params, fall back to URL last segment
 function resolveRoomId(req: Request, params: any): string | null {
@@ -35,7 +40,9 @@ function resolveRoomId(req: Request, params: any): string | null {
 /* GET /api/users/room/[roomId] – lookup / create by room */
 /* ------------------------------------------------------ */
 export async function GET(req: Request, context: any) {
-  const roomId = resolveRoomId(req, context?.params);
+  const params = await unwrapParams(context);
+  const roomId = resolveRoomId(req, params);
+
   if (!roomId) {
     return NextResponse.json(
       { ok: false, message: "Missing roomId" },
@@ -54,7 +61,9 @@ export async function GET(req: Request, context: any) {
 /* POST /api/users/room/[roomId] – create/update profile  */
 /* ------------------------------------------------------ */
 export async function POST(req: Request, context: any) {
-  const roomId = resolveRoomId(req, context?.params);
+  const params = await unwrapParams(context);
+  const roomId = resolveRoomId(req, params);
+
   if (!roomId) {
     return NextResponse.json(
       { ok: false, message: "Missing roomId" },
@@ -65,17 +74,15 @@ export async function POST(req: Request, context: any) {
   const body = (await req.json().catch(() => ({}))) as RoomProfileBody;
 
   const baseName =
-    typeof body.name === "string" && body.name.trim()
-      ? body.name.trim()
-      : undefined;
+    typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined;
+
   const interest =
     typeof body.interest === "string" && body.interest.trim()
       ? body.interest.trim()
       : undefined;
+
   const phone =
-    typeof body.phone === "string" && body.phone.trim()
-      ? body.phone.trim()
-      : undefined;
+    typeof body.phone === "string" && body.phone.trim() ? body.phone.trim() : undefined;
 
   const interactionMode: "normal" | "child" | undefined =
     body.interactionMode === "child"
