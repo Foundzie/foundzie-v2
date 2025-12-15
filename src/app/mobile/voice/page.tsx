@@ -75,7 +75,7 @@ export default function MobileVoicePage() {
         text,
       },
       ...prev,
-    ].slice(0, 60));
+    ].slice(0, 50));
   }
 
   async function setVoiceSessionStatus(next: VoiceStatus, lastError?: string) {
@@ -169,14 +169,14 @@ export default function MobileVoicePage() {
     // M9d: Pull shared chat memory
     const thread = await fetchThreadContext(roomId);
 
-    // IMPORTANT: session.type + output_modalities (not modalities)
+    // ✅ Correct Realtime schema:
+    // - session.type required
+    // - output_modalities (NOT modalities)
+    // - audio.turn_detection nested
     safeSend({
       type: "session.update",
       session: {
         type: "realtime",
-        model: "gpt-realtime",
-        output_modalities: ["audio", "text"],
-        turn_detection: { type: "server_vad" },
         instructions: [
           "You are Foundzie, a lightning-fast personal concierge.",
           "You are speaking in real time on a voice call inside the app (WebRTC).",
@@ -189,6 +189,10 @@ export default function MobileVoicePage() {
         ]
           .filter(Boolean)
           .join("\n"),
+        output_modalities: ["audio", "text"],
+        audio: {
+          turn_detection: { type: "server_vad" },
+        },
       },
     });
 
@@ -201,7 +205,6 @@ export default function MobileVoicePage() {
   function absorbRealtimeEvent(msg: any) {
     const type = typeof msg?.type === "string" ? msg.type : "";
 
-    // Realtime versions vary; we try common fields safely.
     const transcriptText =
       typeof msg?.transcript === "string"
         ? msg.transcript
@@ -228,15 +231,17 @@ export default function MobileVoicePage() {
     }
 
     // ASSISTANT text streaming (delta)
-    // (some versions: response.output_text.delta, others: response.output_audio_transcript.delta)
-    if (type.includes("response") && type.includes("delta")) {
-      // Prefer transcript deltas if present; fall back to delta/text fields
+    if (type.includes("response") && type.includes("output_text") && type.includes("delta")) {
       if (transcriptText) assistantTextBufRef.current += transcriptText;
       return;
     }
 
-    // ASSISTANT completed
-    if (type.includes("response") && (type.includes("done") || type.includes("completed"))) {
+    // ASSISTANT text completed
+    if (
+      type.includes("response") &&
+      type.includes("output_text") &&
+      (type.includes("done") || type.includes("completed"))
+    ) {
       const t = assistantTextBufRef.current.trim();
       assistantTextBufRef.current = "";
       if (t && t !== lastAssistantCommitRef.current) {
@@ -269,17 +274,13 @@ export default function MobileVoicePage() {
 
     try {
       // 1) Microphone
-      const localStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      });
+      const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       localStreamRef.current = localStream;
 
       // 2) Peer connection
       const pc = new RTCPeerConnection();
       pcRef.current = pc;
 
-      // Remote audio output
       pc.ontrack = (evt) => {
         const [remoteStream] = evt.streams;
         if (remoteAudioRef.current) {
@@ -289,10 +290,7 @@ export default function MobileVoicePage() {
         logEvent("remote_track", "Remote audio track connected.");
       };
 
-      // Add mic tracks
-      for (const track of localStream.getTracks()) {
-        pc.addTrack(track, localStream);
-      }
+      for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
 
       // 3) Data channel
       const dc = pc.createDataChannel("oai-events");
@@ -302,11 +300,10 @@ export default function MobileVoicePage() {
         logEvent("datachannel_open", "Control channel connected.");
         bootstrapSessionUpdate().catch(() => {});
 
-        // greet once
+        // ✅ Correct Realtime schema: output_modalities
         safeSend({
           type: "response.create",
           response: {
-            // IMPORTANT: output_modalities (not modalities)
             output_modalities: ["audio", "text"],
             instructions:
               "Greet the user briefly as Foundzie (one short sentence), then wait for them to speak.",
@@ -318,8 +315,8 @@ export default function MobileVoicePage() {
         try {
           const msg = JSON.parse(String(evt.data));
           const t = typeof msg?.type === "string" ? msg.type : "event";
-
           let preview: string | undefined;
+
           if (typeof msg?.delta === "string") preview = msg.delta;
           if (typeof msg?.text === "string") preview = msg.text;
           if (typeof msg?.error?.message === "string") preview = msg.error.message;
@@ -349,7 +346,7 @@ export default function MobileVoicePage() {
 
       if (!sdpRes.ok) {
         const j = await sdpRes.json().catch(() => null);
-        throw new Error(j?.message || "Failed to create realtime session.");
+        throw new Error(j?.message || "Realtime session creation failed.");
       }
 
       const answerSdp = await sdpRes.text();
@@ -404,9 +401,7 @@ export default function MobileVoicePage() {
     const stream = localStreamRef.current;
     if (!stream) return;
     const next = !muted;
-    for (const t of stream.getAudioTracks()) {
-      t.enabled = !next;
-    }
+    for (const t of stream.getAudioTracks()) t.enabled = !next;
     setMuted(next);
     logEvent(next ? "muted" : "unmuted");
   }
@@ -485,7 +480,9 @@ export default function MobileVoicePage() {
                 <li key={`${e.ts}-${idx}`} className="text-xs">
                   <span className="text-slate-500 font-mono mr-2">{e.ts}</span>
                   <span className="text-slate-200">{e.type}</span>
-                  {e.text ? <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span> : null}
+                  {e.text ? (
+                    <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span>
+                  ) : null}
                 </li>
               ))}
             </ul>

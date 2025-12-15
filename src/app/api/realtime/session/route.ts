@@ -4,34 +4,68 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
-  const apiKey = process.env.OPENAI_API_KEY; // make sure this matches your Vercel env var name
+function json(body: any, status = 200, headers?: Record<string, string>) {
+  return NextResponse.json(body, { status, headers });
+}
 
-  if (!apiKey) {
-    return NextResponse.json(
-      { ok: false, message: "Missing OPENAI_API_KEY on server." },
-      { status: 500 }
-    );
-  }
+function getApiKey() {
+  return (
+    process.env.OPENAI_API_KEY?.trim() ||
+    (process.env.OPENAI_KEY?.trim() as string | undefined) ||
+    ""
+  );
+}
+
+function pickVoice() {
+  // Valid Realtime voices per OpenAI docs
+  // alloy, ash, ballad, coral, echo, sage, shimmer, verse
+  return process.env.REALTIME_VOICE?.trim() || "alloy";
+}
+
+function pickModel() {
+  return process.env.REALTIME_MODEL?.trim() || "gpt-realtime";
+}
+
+function looksLikeSdp(text: string) {
+  const t = (text || "").trim();
+  if (t.length < 10) return false;
+  return t.includes("v=0") && (t.includes("o=") || t.includes("s=") || t.includes("t="));
+}
+
+export async function GET() {
+  const apiKey = getApiKey();
+  return json({
+    ok: true,
+    message:
+      "Realtime session endpoint is live. POST SDP offer (Content-Type: text/plain or application/sdp).",
+    env: {
+      hasOpenAIKey: Boolean(apiKey),
+      model: pickModel(),
+      voice: pickVoice(),
+    },
+  });
+}
+
+export async function POST(req: NextRequest) {
+  const apiKey = getApiKey();
+  if (!apiKey) return json({ ok: false, message: "Missing OPENAI_API_KEY on server." }, 500);
 
   const sdpOffer = await req.text().catch(() => "");
-  if (!sdpOffer || sdpOffer.trim().length < 10) {
-    return NextResponse.json(
-      { ok: false, message: "Missing SDP offer body." },
-      { status: 400 }
+  if (!looksLikeSdp(sdpOffer)) {
+    return json(
+      {
+        ok: false,
+        message: "Missing/invalid SDP offer body. Make sure you POST raw offer.sdp.",
+      },
+      400
     );
   }
 
-  // Session config must include session.type per Realtime docs.
-  // Also: use output_modalities (not response.modalities).
   const sessionConfig = {
     type: "realtime",
-    model: "gpt-realtime",
-    output_modalities: ["audio", "text"],
+    model: pickModel(),
     audio: {
-      output: {
-        voice: "marin",
-      },
+      output: { voice: pickVoice() },
     },
   };
 
@@ -42,50 +76,37 @@ export async function POST(req: NextRequest) {
   try {
     const r = await fetch("https://api.openai.com/v1/realtime/calls", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers: { Authorization: `Bearer ${apiKey}` },
       body: fd,
     });
 
-    const answerSdp = await r.text().catch(() => "");
+    const text = await r.text().catch(() => "");
 
     if (!r.ok) {
-      return NextResponse.json(
+      return json(
         {
           ok: false,
           message: "Realtime session creation failed.",
           status: r.status,
-          detail: answerSdp?.slice(0, 1200) ?? null,
+          detail: text?.slice(0, 2000) || null,
+          hint: "Most common causes: invalid voice/model name, missing key, or bad SDP.",
         },
-        { status: 500 }
+        500
       );
     }
 
-    // OpenAI may return a Location header with a call id
     const location = r.headers.get("Location") || "";
     const callId = location ? location.split("/").pop() : "";
 
-    // IMPORTANT: ensure headers are always valid strings (fixes your build error)
+    // ✅ Fix TS build error: never put undefined into headers
     const headers = new Headers();
     headers.set("Content-Type", "application/sdp");
     headers.set("Cache-Control", "no-store");
     if (callId) headers.set("x-foundzie-realtime-call-id", callId);
 
-    return new NextResponse(answerSdp, { status: 200, headers });
+    return new NextResponse(text, { status: 200, headers });
   } catch (err) {
     console.error("[/api/realtime/session] error:", err);
-    return NextResponse.json(
-      { ok: false, message: "Server error creating realtime session." },
-      { status: 500 }
-    );
+    return json({ ok: false, message: "Server error creating realtime session." }, 500);
   }
-}
-
-// Optional GET sanity check
-export async function GET() {
-  return NextResponse.json({
-    ok: true,
-    message: "Realtime session endpoint is live. POST SDP offer to initialize.",
-  });
 }
