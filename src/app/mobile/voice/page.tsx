@@ -1,8 +1,8 @@
-// src/app/mobile/voice/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import type { ChatMessage } from "@/app/data/chat";
 
 const VISITOR_ID_STORAGE_KEY = "foundzie_visitor_id";
 
@@ -10,9 +10,7 @@ function createVisitorId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return `visitor-${crypto.randomUUID()}`;
   }
-  return `visitor-${Date.now().toString(16)}-${Math.random()
-    .toString(16)
-    .slice(2)}`;
+  return `visitor-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
 }
 
 type VoiceStatus = "none" | "requested" | "active" | "ended" | "failed";
@@ -23,12 +21,20 @@ type EventLogItem = {
   text?: string;
 };
 
+function formatThreadForVoice(items: ChatMessage[], max = 14) {
+  const tail = items.slice(Math.max(0, items.length - max));
+  return tail
+    .map((m) => `${m.sender === "user" ? "User" : "Foundzie"}: ${m.text ?? ""}`.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
 export default function MobileVoicePage() {
   const [roomId, setRoomId] = useState<string | null>(null);
 
-  const [status, setStatus] = useState<
-    "idle" | "connecting" | "connected" | "ended" | "error"
-  >("idle");
+  const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "ended" | "error">(
+    "idle"
+  );
   const [error, setError] = useState<string | null>(null);
 
   const [muted, setMuted] = useState(false);
@@ -38,6 +44,12 @@ export default function MobileVoicePage() {
   const dcRef = useRef<RTCDataChannel | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // voice → shared memory buffers
+  const userTextBufRef = useRef<string>("");
+  const assistantTextBufRef = useRef<string>("");
+  const lastUserCommitRef = useRef<string>("");
+  const lastAssistantCommitRef = useRef<string>("");
 
   const canUseWebRTC = useMemo(() => {
     return typeof window !== "undefined" && "RTCPeerConnection" in window;
@@ -83,137 +95,6 @@ export default function MobileVoicePage() {
     }
   }
 
-  async function start() {
-    setError(null);
-
-    if (!canUseWebRTC) {
-      setStatus("error");
-      setError("WebRTC is not supported in this browser.");
-      return;
-    }
-
-    if (!roomId) {
-      setStatus("error");
-      setError("Missing roomId (visitor id). Refresh and try again.");
-      return;
-    }
-
-    // If already running, ignore
-    if (pcRef.current) return;
-
-    setStatus("connecting");
-    logEvent("connecting", "Starting microphone + WebRTC session…");
-
-    try {
-      // 1) Microphone
-      const localStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      });
-      localStreamRef.current = localStream;
-
-      // 2) Peer connection
-      const pc = new RTCPeerConnection();
-      pcRef.current = pc;
-
-      // Remote audio output
-      pc.ontrack = (evt) => {
-        const [remoteStream] = evt.streams;
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = remoteStream;
-          remoteAudioRef.current.play().catch(() => {});
-        }
-        logEvent("remote_track", "Remote audio track connected.");
-      };
-
-      // Add mic track(s)
-      for (const track of localStream.getTracks()) {
-        pc.addTrack(track, localStream);
-      }
-
-      // 3) Data channel (events + control messages)
-      // Docs commonly use an events channel for client/server events. 
-      const dc = pc.createDataChannel("oai-events");
-      dcRef.current = dc;
-
-      dc.onopen = () => {
-        logEvent("datachannel_open", "Control channel connected.");
-
-        // Pull lightweight user context (name/interest/tags) so voice feels personal.
-        // (This is a first step toward M9d; full shared memory comes next.)
-        bootstrapSessionUpdate().catch(() => {});
-
-        // Optional: Ask Foundzie to greet the user once connected.
-        // Some setups require an explicit response.create event. 
-        safeSend({
-          type: "response.create",
-          response: {
-            modalities: ["audio", "text"],
-            instructions:
-              "Greet the user briefly as Foundzie (one short sentence), then wait for them to speak.",
-          },
-        });
-      };
-
-      dc.onmessage = (evt) => {
-        // We’ll log key event types; later we can build full transcript UI.
-        try {
-          const msg = JSON.parse(String(evt.data));
-          const t = typeof msg?.type === "string" ? msg.type : "event";
-          // Capture a little text when present (avoid spamming huge payloads)
-          let preview: string | undefined;
-
-          if (typeof msg?.delta === "string") preview = msg.delta;
-          if (typeof msg?.text === "string") preview = msg.text;
-          if (typeof msg?.error?.message === "string") preview = msg.error.message;
-
-          logEvent(t, preview);
-        } catch {
-          logEvent("message", String(evt.data).slice(0, 200));
-        }
-      };
-
-      dc.onerror = () => {
-        logEvent("datachannel_error");
-      };
-
-      // 4) Create SDP offer
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      // 5) Send offer.sdp to our server → OpenAI → get answer SDP back
-      const sdpRes = await fetch("/api/realtime/session", {
-        method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body: offer.sdp ?? "",
-      });
-
-      if (!sdpRes.ok) {
-        const j = await sdpRes.json().catch(() => null);
-        throw new Error(j?.message || "Failed to create realtime session.");
-      }
-
-      const answerSdp = await sdpRes.text();
-      const answer: RTCSessionDescriptionInit = {
-        type: "answer",
-        sdp: answerSdp,
-      };
-      await pc.setRemoteDescription(answer);
-
-      setStatus("connected");
-      logEvent("connected", "Live voice session ready.");
-      await setVoiceSessionStatus("active");
-    } catch (e: any) {
-      console.error("[voice] start error:", e);
-      const msg = typeof e?.message === "string" ? e.message : "Voice start failed.";
-      setError(msg);
-      setStatus("error");
-      logEvent("error", msg);
-      await setVoiceSessionStatus("failed", msg);
-      await stopInternal();
-    }
-  }
-
   function safeSend(payload: any) {
     try {
       const dc = dcRef.current;
@@ -221,6 +102,35 @@ export default function MobileVoicePage() {
       dc.send(JSON.stringify(payload));
     } catch {
       // ignore
+    }
+  }
+
+  async function postTurn(sender: "user" | "concierge", text: string) {
+    if (!roomId) return;
+    const clean = (text || "").trim();
+    if (!clean) return;
+
+    try {
+      await fetch("/api/conversation/turn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId, sender, text: clean }),
+      });
+    } catch {
+      // non-blocking
+    }
+  }
+
+  async function fetchThreadContext(roomIdVal: string) {
+    try {
+      const encoded = encodeURIComponent(roomIdVal);
+      const res = await fetch(`/api/chat/${encoded}?t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) return "";
+      const data = await res.json().catch(() => ({} as any));
+      const items = Array.isArray(data?.items) ? (data.items as ChatMessage[]) : [];
+      return formatThreadForVoice(items, 14);
+    } catch {
+      return "";
     }
   }
 
@@ -256,53 +166,224 @@ export default function MobileVoicePage() {
     const interestLine = interest ? `User interests/context: ${interest}.` : "";
     const tagsLine = tags.length ? `User tags: ${tags.join(", ")}.` : "";
 
-    // session.update lets us steer instructions + turn detection, etc. 
+    // M9d: Pull shared chat memory
+    const thread = await fetchThreadContext(roomId);
+
     safeSend({
       type: "session.update",
       session: {
         instructions: [
           "You are Foundzie, a lightning-fast personal concierge.",
-          "Be warm, confident, and practical.",
-          "Keep answers short and conversational (1–3 sentences) unless the user asks for detail.",
-          "If the user asks for nearby places, assume they mean near their home city/ZIP in their profile when available; otherwise ask ONE quick clarifying question.",
+          "You are speaking in real time on a voice call inside the app (WebRTC).",
+          "Be warm, natural, and human. Keep answers short (1–3 sentences).",
+          "Ask at most ONE follow-up question when needed.",
           identityLine,
           interestLine,
           tagsLine,
+          thread ? `Conversation so far (shared memory):\n${thread}` : "",
         ]
           .filter(Boolean)
           .join("\n"),
-        // Let the server detect when the user stops speaking (hands-free feel).
-        // 
         turn_detection: { type: "server_vad" },
-        // Ask for text alongside audio so we can display transcript later.
-        // (We’ll use this more in M9d.)
         modalities: ["audio", "text"],
       },
     });
 
-    logEvent("session.update", "Voice persona + VAD configured.");
+    logEvent("session.update", thread ? "Voice persona + shared memory loaded." : "Voice persona configured.");
+  }
+
+  function absorbRealtimeEvent(msg: any) {
+    const type = typeof msg?.type === "string" ? msg.type : "";
+
+    // These event names vary slightly by Realtime versions.
+    // We handle a few common patterns safely (no crashes if missing).
+    const transcriptText =
+      typeof msg?.transcript === "string"
+        ? msg.transcript
+        : typeof msg?.text === "string"
+        ? msg.text
+        : typeof msg?.delta === "string"
+        ? msg.delta
+        : "";
+
+    // USER transcription completed
+    if (
+      type.includes("input_audio_transcription") &&
+      (type.includes("completed") || type.includes("done"))
+    ) {
+      const t = transcriptText.trim();
+      if (t) {
+        userTextBufRef.current = t;
+        if (t !== lastUserCommitRef.current) {
+          lastUserCommitRef.current = t;
+          postTurn("user", t).catch(() => {});
+        }
+      }
+      return;
+    }
+
+    // ASSISTANT text streaming (delta)
+    if (type.includes("response") && type.includes("output_text") && type.includes("delta")) {
+      if (transcriptText) {
+        assistantTextBufRef.current += transcriptText;
+      }
+      return;
+    }
+
+    // ASSISTANT text completed
+    if (
+      type.includes("response") &&
+      type.includes("output_text") &&
+      (type.includes("done") || type.includes("completed"))
+    ) {
+      const t = assistantTextBufRef.current.trim();
+      assistantTextBufRef.current = "";
+      if (t && t !== lastAssistantCommitRef.current) {
+        lastAssistantCommitRef.current = t;
+        postTurn("concierge", t).catch(() => {});
+      }
+      return;
+    }
+  }
+
+  async function start() {
+    setError(null);
+
+    if (!canUseWebRTC) {
+      setStatus("error");
+      setError("WebRTC is not supported in this browser.");
+      return;
+    }
+
+    if (!roomId) {
+      setStatus("error");
+      setError("Missing roomId (visitor id). Refresh and try again.");
+      return;
+    }
+
+    if (pcRef.current) return;
+
+    setStatus("connecting");
+    logEvent("connecting", "Starting microphone + WebRTC session…");
+
+    try {
+      // 1) Microphone
+      const localStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
+      localStreamRef.current = localStream;
+
+      // 2) Peer connection
+      const pc = new RTCPeerConnection();
+      pcRef.current = pc;
+
+      // Remote audio output
+      pc.ontrack = (evt) => {
+        const [remoteStream] = evt.streams;
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.play().catch(() => {});
+        }
+        logEvent("remote_track", "Remote audio track connected.");
+      };
+
+      // Add mic tracks
+      for (const track of localStream.getTracks()) {
+        pc.addTrack(track, localStream);
+      }
+
+      // 3) Data channel
+      const dc = pc.createDataChannel("oai-events");
+      dcRef.current = dc;
+
+      dc.onopen = () => {
+        logEvent("datachannel_open", "Control channel connected.");
+        bootstrapSessionUpdate().catch(() => {});
+
+        // greet once
+        safeSend({
+          type: "response.create",
+          response: {
+            modalities: ["audio", "text"],
+            instructions: "Greet the user briefly as Foundzie (one short sentence), then wait for them to speak.",
+          },
+        });
+      };
+
+      dc.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(String(evt.data));
+          const t = typeof msg?.type === "string" ? msg.type : "event";
+          let preview: string | undefined;
+
+          if (typeof msg?.delta === "string") preview = msg.delta;
+          if (typeof msg?.text === "string") preview = msg.text;
+          if (typeof msg?.error?.message === "string") preview = msg.error.message;
+
+          logEvent(t, preview);
+          absorbRealtimeEvent(msg);
+        } catch {
+          logEvent("message", String(evt.data).slice(0, 200));
+        }
+      };
+
+      dc.onerror = () => {
+        logEvent("datachannel_error");
+      };
+
+      // 4) Create SDP offer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      // 5) POST SDP to server (include roomId header for future expansion)
+      const sdpRes = await fetch("/api/realtime/session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "x-foundzie-room-id": roomId,
+        },
+        body: offer.sdp ?? "",
+      });
+
+      if (!sdpRes.ok) {
+        const j = await sdpRes.json().catch(() => null);
+        throw new Error(j?.message || "Failed to create realtime session.");
+      }
+
+      const answerSdp = await sdpRes.text();
+      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+
+      setStatus("connected");
+      logEvent("connected", "Live voice session ready.");
+      await setVoiceSessionStatus("active");
+    } catch (e: any) {
+      console.error("[voice] start error:", e);
+      const msg = typeof e?.message === "string" ? e.message : "Voice start failed.";
+      setError(msg);
+      setStatus("error");
+      logEvent("error", msg);
+      await setVoiceSessionStatus("failed", msg);
+      await stopInternal();
+    }
   }
 
   async function stopInternal() {
-    // close datachannel
     try {
       dcRef.current?.close();
     } catch {}
     dcRef.current = null;
 
-    // close peer connection
     try {
       pcRef.current?.close();
     } catch {}
     pcRef.current = null;
 
-    // stop mic tracks
     try {
       localStreamRef.current?.getTracks().forEach((t) => t.stop());
     } catch {}
     localStreamRef.current = null;
 
-    // clear remote audio
     if (remoteAudioRef.current) {
       try {
         remoteAudioRef.current.pause();
@@ -338,9 +419,7 @@ export default function MobileVoicePage() {
           </Link>
           <h1 className="text-lg font-semibold">Live Voice (WebRTC)</h1>
         </div>
-        {roomId ? (
-          <span className="text-[10px] text-slate-500 font-mono">{roomId}</span>
-        ) : null}
+        {roomId ? <span className="text-[10px] text-slate-500 font-mono">{roomId}</span> : null}
       </header>
 
       <section className="px-4 py-4 space-y-3">
@@ -356,9 +435,7 @@ export default function MobileVoicePage() {
 
         {!canUseWebRTC && (
           <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
-            <p className="text-xs text-slate-200">
-              WebRTC is not available in this browser.
-            </p>
+            <p className="text-xs text-slate-200">WebRTC is not available in this browser.</p>
           </div>
         )}
 
@@ -391,29 +468,16 @@ export default function MobileVoicePage() {
           </button>
         </div>
 
-        {/* Remote audio sink */}
         <audio ref={remoteAudioRef} autoPlay playsInline />
 
         <div className="mt-3 p-3 rounded-2xl bg-slate-900/60 border border-slate-800">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold">Realtime events</h2>
-            <span className="text-[10px] text-slate-400">
-              {status === "connected"
-                ? "connected"
-                : status === "connecting"
-                ? "connecting"
-                : status === "ended"
-                ? "ended"
-                : status === "error"
-                ? "error"
-                : "idle"}
-            </span>
+            <span className="text-[10px] text-slate-400">{status}</span>
           </div>
 
           {events.length === 0 ? (
-            <p className="text-xs text-slate-400 mt-2">
-              No events yet. Start voice to see live activity.
-            </p>
+            <p className="text-xs text-slate-400 mt-2">No events yet. Start voice to see live activity.</p>
           ) : (
             <ul className="mt-2 space-y-2">
               {events.map((e, idx) => (
@@ -430,11 +494,10 @@ export default function MobileVoicePage() {
         </div>
 
         <div className="text-[11px] text-slate-500">
-          Tip: If you hear nothing, confirm your browser audio output is enabled and microphone permission is granted.
+          Tip: M9d is now active — voice remembers chat, and voice turns get saved back into chat automatically.
         </div>
       </section>
 
-      {/* Bottom nav (keep consistent with your other mobile pages) */}
       <nav className="fixed bottom-0 left-0 right-0 bg-slate-950 border-t border-slate-800 flex justify-around py-2 text-xs text-slate-300">
         <Link href="/mobile">Home</Link>
         <Link href="/mobile/explore">Explore</Link>

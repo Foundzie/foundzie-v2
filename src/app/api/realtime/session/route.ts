@@ -5,10 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 // Browser POSTs SDP offer (text/plain or application/sdp)
-// We forward it to OpenAI Realtime unified interface and return SDP answer.
-//
-// Docs: POST https://api.openai.com/v1/realtime/calls (multipart form: sdp + session)
-// :contentReference[oaicite:2]{index=2}
+// We forward it to OpenAI Realtime and return SDP answer.
 export async function POST(req: NextRequest) {
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -19,6 +16,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Optional: passed from client so we can tag the realtime session (useful later)
+  const roomId = req.headers.get("x-foundzie-room-id")?.trim() || "";
+
   const sdpOffer = await req.text().catch(() => "");
   if (!sdpOffer || sdpOffer.trim().length < 10) {
     return NextResponse.json(
@@ -28,16 +28,16 @@ export async function POST(req: NextRequest) {
   }
 
   // You can tune these later (voice, model, turn detection, etc.).
-  const sessionConfig = {
+  const sessionConfig: any = {
     type: "realtime",
-    // Use the realtime model name as per OpenAI docs.
     model: "gpt-realtime",
     audio: {
       output: {
-        // Voice name per your preference. You can change this later.
         voice: "marin",
       },
     },
+    // Helpful for debugging/analytics later (safe no-op if OpenAI ignores it)
+    ...(roomId ? { metadata: { roomId } } : {}),
   };
 
   const fd = new FormData();
@@ -67,8 +67,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // OpenAI may return a Location header containing the call id (useful for sideband controls later).
-    // :contentReference[oaicite:3]{index=3}
+    // OpenAI may return a Location header containing the call id
     const location = r.headers.get("Location") || "";
     const callId = location ? location.split("/").pop() : null;
 
