@@ -75,7 +75,7 @@ export default function MobileVoicePage() {
         text,
       },
       ...prev,
-    ].slice(0, 50));
+    ].slice(0, 60));
   }
 
   async function setVoiceSessionStatus(next: VoiceStatus, lastError?: string) {
@@ -169,9 +169,14 @@ export default function MobileVoicePage() {
     // M9d: Pull shared chat memory
     const thread = await fetchThreadContext(roomId);
 
+    // IMPORTANT: session.type + output_modalities (not modalities)
     safeSend({
       type: "session.update",
       session: {
+        type: "realtime",
+        model: "gpt-realtime",
+        output_modalities: ["audio", "text"],
+        turn_detection: { type: "server_vad" },
         instructions: [
           "You are Foundzie, a lightning-fast personal concierge.",
           "You are speaking in real time on a voice call inside the app (WebRTC).",
@@ -184,19 +189,19 @@ export default function MobileVoicePage() {
         ]
           .filter(Boolean)
           .join("\n"),
-        turn_detection: { type: "server_vad" },
-        modalities: ["audio", "text"],
       },
     });
 
-    logEvent("session.update", thread ? "Voice persona + shared memory loaded." : "Voice persona configured.");
+    logEvent(
+      "session.update",
+      thread ? "Voice persona + shared memory loaded." : "Voice persona configured."
+    );
   }
 
   function absorbRealtimeEvent(msg: any) {
     const type = typeof msg?.type === "string" ? msg.type : "";
 
-    // These event names vary slightly by Realtime versions.
-    // We handle a few common patterns safely (no crashes if missing).
+    // Realtime versions vary; we try common fields safely.
     const transcriptText =
       typeof msg?.transcript === "string"
         ? msg.transcript
@@ -223,19 +228,15 @@ export default function MobileVoicePage() {
     }
 
     // ASSISTANT text streaming (delta)
-    if (type.includes("response") && type.includes("output_text") && type.includes("delta")) {
-      if (transcriptText) {
-        assistantTextBufRef.current += transcriptText;
-      }
+    // (some versions: response.output_text.delta, others: response.output_audio_transcript.delta)
+    if (type.includes("response") && type.includes("delta")) {
+      // Prefer transcript deltas if present; fall back to delta/text fields
+      if (transcriptText) assistantTextBufRef.current += transcriptText;
       return;
     }
 
-    // ASSISTANT text completed
-    if (
-      type.includes("response") &&
-      type.includes("output_text") &&
-      (type.includes("done") || type.includes("completed"))
-    ) {
+    // ASSISTANT completed
+    if (type.includes("response") && (type.includes("done") || type.includes("completed"))) {
       const t = assistantTextBufRef.current.trim();
       assistantTextBufRef.current = "";
       if (t && t !== lastAssistantCommitRef.current) {
@@ -305,8 +306,10 @@ export default function MobileVoicePage() {
         safeSend({
           type: "response.create",
           response: {
-            modalities: ["audio", "text"],
-            instructions: "Greet the user briefly as Foundzie (one short sentence), then wait for them to speak.",
+            // IMPORTANT: output_modalities (not modalities)
+            output_modalities: ["audio", "text"],
+            instructions:
+              "Greet the user briefly as Foundzie (one short sentence), then wait for them to speak.",
           },
         });
       };
@@ -315,8 +318,8 @@ export default function MobileVoicePage() {
         try {
           const msg = JSON.parse(String(evt.data));
           const t = typeof msg?.type === "string" ? msg.type : "event";
-          let preview: string | undefined;
 
+          let preview: string | undefined;
           if (typeof msg?.delta === "string") preview = msg.delta;
           if (typeof msg?.text === "string") preview = msg.text;
           if (typeof msg?.error?.message === "string") preview = msg.error.message;
@@ -328,15 +331,13 @@ export default function MobileVoicePage() {
         }
       };
 
-      dc.onerror = () => {
-        logEvent("datachannel_error");
-      };
+      dc.onerror = () => logEvent("datachannel_error");
 
       // 4) Create SDP offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // 5) POST SDP to server (include roomId header for future expansion)
+      // 5) POST SDP to server
       const sdpRes = await fetch("/api/realtime/session", {
         method: "POST",
         headers: {
@@ -484,9 +485,7 @@ export default function MobileVoicePage() {
                 <li key={`${e.ts}-${idx}`} className="text-xs">
                   <span className="text-slate-500 font-mono mr-2">{e.ts}</span>
                   <span className="text-slate-200">{e.type}</span>
-                  {e.text ? (
-                    <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span>
-                  ) : null}
+                  {e.text ? <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span> : null}
                 </li>
               ))}
             </ul>
