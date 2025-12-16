@@ -166,13 +166,12 @@ export default function MobileVoicePage() {
     const interestLine = interest ? `User interests/context: ${interest}.` : "";
     const tagsLine = tags.length ? `User tags: ${tags.join(", ")}.` : "";
 
-    // M9d: Pull shared chat memory
+    // Pull shared chat memory
     const thread = await fetchThreadContext(roomId);
 
-    // ✅ Correct Realtime schema:
-    // - session.type required
-    // - output_modalities (NOT modalities)
-    // - audio.turn_detection nested
+    // ✅ Fixes BOTH of your runtime errors:
+    // - output_modalities must be ONLY ["audio"]
+    // - turn_detection must be at session root (NOT session.audio.turn_detection)
     safeSend({
       type: "session.update",
       session: {
@@ -189,10 +188,8 @@ export default function MobileVoicePage() {
         ]
           .filter(Boolean)
           .join("\n"),
-        output_modalities: ["audio", "text"],
-        audio: {
-          turn_detection: { type: "server_vad" },
-        },
+        output_modalities: ["audio"],
+        turn_detection: { type: "server_vad" },
       },
     });
 
@@ -214,9 +211,9 @@ export default function MobileVoicePage() {
         ? msg.delta
         : "";
 
-    // USER transcription completed
+    // USER transcription completed (different versions use different names)
     if (
-      type.includes("input_audio_transcription") &&
+      (type.includes("input_audio_transcription") || type.includes("input_audio_transcript")) &&
       (type.includes("completed") || type.includes("done"))
     ) {
       const t = transcriptText.trim();
@@ -230,16 +227,16 @@ export default function MobileVoicePage() {
       return;
     }
 
-    // ASSISTANT text streaming (delta)
-    if (type.includes("response") && type.includes("output_text") && type.includes("delta")) {
+    // ASSISTANT transcript streaming (audio transcript deltas)
+    if (type.includes("response") && type.includes("output_audio_transcript") && type.includes("delta")) {
       if (transcriptText) assistantTextBufRef.current += transcriptText;
       return;
     }
 
-    // ASSISTANT text completed
+    // ASSISTANT transcript completed
     if (
       type.includes("response") &&
-      type.includes("output_text") &&
+      type.includes("output_audio_transcript") &&
       (type.includes("done") || type.includes("completed"))
     ) {
       const t = assistantTextBufRef.current.trim();
@@ -300,11 +297,11 @@ export default function MobileVoicePage() {
         logEvent("datachannel_open", "Control channel connected.");
         bootstrapSessionUpdate().catch(() => {});
 
-        // ✅ Correct Realtime schema: output_modalities
+        // ✅ audio-only
         safeSend({
           type: "response.create",
           response: {
-            output_modalities: ["audio", "text"],
+            output_modalities: ["audio"],
             instructions:
               "Greet the user briefly as Foundzie (one short sentence), then wait for them to speak.",
           },
