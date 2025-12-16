@@ -45,9 +45,9 @@ export default function MobileVoicePage() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // voice → shared memory buffers
+  // Buffers for saving voice turns into chat
   const userTextBufRef = useRef<string>("");
-  const assistantTextBufRef = useRef<string>("");
+  const assistantTranscriptBufRef = useRef<string>("");
   const lastUserCommitRef = useRef<string>("");
   const lastAssistantCommitRef = useRef<string>("");
 
@@ -55,7 +55,6 @@ export default function MobileVoicePage() {
     return typeof window !== "undefined" && "RTCPeerConnection" in window;
   }, []);
 
-  // roomId boot
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -75,7 +74,7 @@ export default function MobileVoicePage() {
         text,
       },
       ...prev,
-    ].slice(0, 50));
+    ].slice(0, 60));
   }
 
   async function setVoiceSessionStatus(next: VoiceStatus, lastError?: string) {
@@ -137,7 +136,7 @@ export default function MobileVoicePage() {
   async function bootstrapSessionUpdate() {
     if (!roomId) return;
 
-    // Fetch user profile context so voice is personalized
+    // Pull user profile context
     let name = "";
     let interest = "";
     let tags: string[] = [];
@@ -166,20 +165,21 @@ export default function MobileVoicePage() {
     const interestLine = interest ? `User interests/context: ${interest}.` : "";
     const tagsLine = tags.length ? `User tags: ${tags.join(", ")}.` : "";
 
-    // Pull shared chat memory
     const thread = await fetchThreadContext(roomId);
 
-    // ✅ Fixes BOTH of your runtime errors:
-    // - output_modalities must be ONLY ["audio"]
-    // - turn_detection must be at session root (NOT session.audio.turn_detection)
+    // IMPORTANT:
+    // - Keep this AUDIO-ONLY to avoid "Invalid modalities ['audio','text']"
+    // - Do NOT send turn_detection fields (some backends reject them)
     safeSend({
       type: "session.update",
       session: {
         type: "realtime",
         instructions: [
           "You are Foundzie, a lightning-fast personal concierge.",
-          "You are speaking in real time on a voice call inside the app (WebRTC).",
-          "Be warm, natural, and human. Keep answers short (1–3 sentences).",
+          "You are speaking LIVE on a voice call inside the app (WebRTC).",
+          "Always speak ENGLISH unless the user explicitly asks for another language.",
+          "Never call the user 'Foundzie'. Your name is Foundzie; the user is the caller.",
+          "Be warm, natural, and human. Keep answers short (1–2 sentences).",
           "Ask at most ONE follow-up question when needed.",
           identityLine,
           interestLine,
@@ -188,21 +188,18 @@ export default function MobileVoicePage() {
         ]
           .filter(Boolean)
           .join("\n"),
+        // audio-only (this avoids the invalid modalities error)
         output_modalities: ["audio"],
-        turn_detection: { type: "server_vad" },
       },
     });
 
-    logEvent(
-      "session.update",
-      thread ? "Voice persona + shared memory loaded." : "Voice persona configured."
-    );
+    logEvent("session.update", thread ? "Voice persona + shared memory loaded." : "Voice persona configured.");
   }
 
   function absorbRealtimeEvent(msg: any) {
     const type = typeof msg?.type === "string" ? msg.type : "";
 
-    const transcriptText =
+    const text =
       typeof msg?.transcript === "string"
         ? msg.transcript
         : typeof msg?.text === "string"
@@ -211,12 +208,12 @@ export default function MobileVoicePage() {
         ? msg.delta
         : "";
 
-    // USER transcription completed (different versions use different names)
+    // USER transcription completed
     if (
-      (type.includes("input_audio_transcription") || type.includes("input_audio_transcript")) &&
+      type.includes("input_audio_transcription") &&
       (type.includes("completed") || type.includes("done"))
     ) {
-      const t = transcriptText.trim();
+      const t = (text || "").trim();
       if (t) {
         userTextBufRef.current = t;
         if (t !== lastUserCommitRef.current) {
@@ -227,20 +224,16 @@ export default function MobileVoicePage() {
       return;
     }
 
-    // ASSISTANT transcript streaming (audio transcript deltas)
-    if (type.includes("response") && type.includes("output_audio_transcript") && type.includes("delta")) {
-      if (transcriptText) assistantTextBufRef.current += transcriptText;
+    // ASSISTANT transcript streaming (audio transcript delta)
+    if (type.includes("response.output_audio_transcript") && type.includes("delta")) {
+      if (text) assistantTranscriptBufRef.current += text;
       return;
     }
 
     // ASSISTANT transcript completed
-    if (
-      type.includes("response") &&
-      type.includes("output_audio_transcript") &&
-      (type.includes("done") || type.includes("completed"))
-    ) {
-      const t = assistantTextBufRef.current.trim();
-      assistantTextBufRef.current = "";
+    if (type.includes("response.output_audio_transcript") && (type.includes("done") || type.includes("completed"))) {
+      const t = assistantTranscriptBufRef.current.trim();
+      assistantTranscriptBufRef.current = "";
       if (t && t !== lastAssistantCommitRef.current) {
         lastAssistantCommitRef.current = t;
         postTurn("concierge", t).catch(() => {});
@@ -270,13 +263,15 @@ export default function MobileVoicePage() {
     logEvent("connecting", "Starting microphone + WebRTC session…");
 
     try {
-      // 1) Microphone
       const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       localStreamRef.current = localStream;
 
-      // 2) Peer connection
       const pc = new RTCPeerConnection();
       pcRef.current = pc;
+
+      pc.oniceconnectionstatechange = () => {
+        logEvent("ice_state", pc.iceConnectionState);
+      };
 
       pc.ontrack = (evt) => {
         const [remoteStream] = evt.streams;
@@ -289,7 +284,6 @@ export default function MobileVoicePage() {
 
       for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
 
-      // 3) Data channel
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
@@ -297,13 +291,13 @@ export default function MobileVoicePage() {
         logEvent("datachannel_open", "Control channel connected.");
         bootstrapSessionUpdate().catch(() => {});
 
-        // ✅ audio-only
+        // AUDIO-ONLY response.create
         safeSend({
           type: "response.create",
           response: {
             output_modalities: ["audio"],
             instructions:
-              "Greet the user briefly as Foundzie (one short sentence), then wait for them to speak.",
+              "Say: 'Hey! This is Foundzie. How can I help you right now?' ثم انتظر.",
           },
         });
       };
@@ -312,8 +306,8 @@ export default function MobileVoicePage() {
         try {
           const msg = JSON.parse(String(evt.data));
           const t = typeof msg?.type === "string" ? msg.type : "event";
-          let preview: string | undefined;
 
+          let preview: string | undefined;
           if (typeof msg?.delta === "string") preview = msg.delta;
           if (typeof msg?.text === "string") preview = msg.text;
           if (typeof msg?.error?.message === "string") preview = msg.error.message;
@@ -327,11 +321,9 @@ export default function MobileVoicePage() {
 
       dc.onerror = () => logEvent("datachannel_error");
 
-      // 4) Create SDP offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // 5) POST SDP to server
       const sdpRes = await fetch("/api/realtime/session", {
         method: "POST",
         headers: {
@@ -477,9 +469,7 @@ export default function MobileVoicePage() {
                 <li key={`${e.ts}-${idx}`} className="text-xs">
                   <span className="text-slate-500 font-mono mr-2">{e.ts}</span>
                   <span className="text-slate-200">{e.type}</span>
-                  {e.text ? (
-                    <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span>
-                  ) : null}
+                  {e.text ? <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span> : null}
                 </li>
               ))}
             </ul>
@@ -487,7 +477,7 @@ export default function MobileVoicePage() {
         </div>
 
         <div className="text-[11px] text-slate-500">
-          Tip: M9d is now active — voice remembers chat, and voice turns get saved back into chat automatically.
+          Tip: Voice turns are saved back into chat via transcripts.
         </div>
       </section>
 
