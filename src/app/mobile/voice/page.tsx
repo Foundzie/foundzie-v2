@@ -51,6 +51,9 @@ export default function MobileVoicePage() {
   const lastUserCommitRef = useRef<string>("");
   const lastAssistantCommitRef = useRef<string>("");
 
+  // Prevent re-sending session.update repeatedly if datachannel reconnects
+  const didBootstrapRef = useRef<boolean>(false);
+
   const canUseWebRTC = useMemo(() => {
     return typeof window !== "undefined" && "RTCPeerConnection" in window;
   }, []);
@@ -159,41 +162,51 @@ export default function MobileVoicePage() {
 
     const identityLine =
       name && !name.toLowerCase().startsWith("anonymous visitor")
-        ? `User name: ${name}.`
-        : "User name unknown.";
+        ? `Caller name: ${name}.`
+        : "Caller name unknown.";
 
-    const interestLine = interest ? `User interests/context: ${interest}.` : "";
-    const tagsLine = tags.length ? `User tags: ${tags.join(", ")}.` : "";
+    const interestLine = interest ? `Caller preferences/context: ${interest}.` : "";
+    const tagsLine = tags.length ? `Caller tags: ${tags.join(", ")}.` : "";
 
     const thread = await fetchThreadContext(roomId);
 
-    // IMPORTANT:
-    // - Keep this AUDIO-ONLY to avoid "Invalid modalities ['audio','text']"
-    // - Do NOT send turn_detection fields (some backends reject them)
+    // AUDIO-ONLY; no turn_detection fields.
     safeSend({
       type: "session.update",
       session: {
         type: "realtime",
+        // ✅ Hard lock persona + behavior
         instructions: [
+          "SYSTEM / ROLE:",
           "You are Foundzie, a lightning-fast personal concierge.",
-          "You are speaking LIVE on a voice call inside the app (WebRTC).",
-          "Always speak ENGLISH unless the user explicitly asks for another language.",
-          "Never call the user 'Foundzie'. Your name is Foundzie; the user is the caller.",
-          "Be warm, natural, and human. Keep answers short (1–2 sentences).",
-          "Ask at most ONE follow-up question when needed.",
+          "This is a LIVE voice call inside the Foundzie app (WebRTC).",
+          "",
+          "VOICE BEHAVIOR:",
+          "- Speak natural, warm, confident English.",
+          "- Keep responses short: 1–2 sentences.",
+          "- Ask at most ONE follow-up question when necessary.",
+          "- Do NOT repeat greetings or re-introduce yourself once the call is connected.",
+          "- Do NOT say: 'Hey this is Foundzie' unless the user explicitly asks who you are.",
+          "- IMPORTANT: Wait silently until the user speaks first. Do not start talking on connect.",
+          "",
+          "IDENTITY:",
+          "- Your name is Foundzie.",
+          "- Never call the user 'Foundzie'. The user is the caller.",
           identityLine,
           interestLine,
           tagsLine,
-          thread ? `Conversation so far (shared memory):\n${thread}` : "",
+          thread ? `SHARED MEMORY (recent conversation):\n${thread}` : "",
         ]
           .filter(Boolean)
           .join("\n"),
-        // audio-only (this avoids the invalid modalities error)
         output_modalities: ["audio"],
       },
     });
 
-    logEvent("session.update", thread ? "Voice persona + shared memory loaded." : "Voice persona configured.");
+    logEvent(
+      "session.update",
+      thread ? "Voice persona + shared memory loaded (wait for user to speak)." : "Voice persona configured (wait for user)."
+    );
   }
 
   function absorbRealtimeEvent(msg: any) {
@@ -224,14 +237,17 @@ export default function MobileVoicePage() {
       return;
     }
 
-    // ASSISTANT transcript streaming (audio transcript delta)
+    // ASSISTANT transcript streaming
     if (type.includes("response.output_audio_transcript") && type.includes("delta")) {
       if (text) assistantTranscriptBufRef.current += text;
       return;
     }
 
     // ASSISTANT transcript completed
-    if (type.includes("response.output_audio_transcript") && (type.includes("done") || type.includes("completed"))) {
+    if (
+      type.includes("response.output_audio_transcript") &&
+      (type.includes("done") || type.includes("completed"))
+    ) {
       const t = assistantTranscriptBufRef.current.trim();
       assistantTranscriptBufRef.current = "";
       if (t && t !== lastAssistantCommitRef.current) {
@@ -258,6 +274,11 @@ export default function MobileVoicePage() {
     }
 
     if (pcRef.current) return;
+
+    // reset per session
+    didBootstrapRef.current = false;
+    assistantTranscriptBufRef.current = "";
+    userTextBufRef.current = "";
 
     setStatus("connecting");
     logEvent("connecting", "Starting microphone + WebRTC session…");
@@ -289,17 +310,14 @@ export default function MobileVoicePage() {
 
       dc.onopen = () => {
         logEvent("datachannel_open", "Control channel connected.");
-        bootstrapSessionUpdate().catch(() => {});
 
-        // AUDIO-ONLY response.create
-        safeSend({
-          type: "response.create",
-          response: {
-            output_modalities: ["audio"],
-            instructions:
-              "Say: 'Hey! This is Foundzie. How can I help you right now?' ثم انتظر.",
-          },
-        });
+        // ✅ Only do persona/memory bootstrap; DO NOT force a greeting.
+        if (!didBootstrapRef.current) {
+          didBootstrapRef.current = true;
+          bootstrapSessionUpdate().catch(() => {});
+        }
+
+        logEvent("ready", "Connected. Speak first — Foundzie will respond.");
       };
 
       dc.onmessage = (evt) => {
@@ -409,7 +427,7 @@ export default function MobileVoicePage() {
 
       <section className="px-4 py-4 space-y-3">
         <p className="text-xs text-slate-400">
-          This is the realtime voice concierge. Tap Start, allow microphone, and speak naturally.
+          Tap Start, allow microphone, then speak naturally. (Foundzie will wait for you to speak first.)
         </p>
 
         {error && (
@@ -469,7 +487,9 @@ export default function MobileVoicePage() {
                 <li key={`${e.ts}-${idx}`} className="text-xs">
                   <span className="text-slate-500 font-mono mr-2">{e.ts}</span>
                   <span className="text-slate-200">{e.type}</span>
-                  {e.text ? <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span> : null}
+                  {e.text ? (
+                    <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span>
+                  ) : null}
                 </li>
               ))}
             </ul>
