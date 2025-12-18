@@ -1,4 +1,3 @@
-// src/app/api/twilio/gather/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { runFoundzieAgent } from "@/lib/agent/runtime";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
@@ -120,7 +119,9 @@ function formatThreadForAgent(items: any[], max = 16) {
 
 export async function GET() {
   return twiml(
-    buildConversationalTwiml("Twilio gather is live. Call your Foundzie number to chat.")
+    buildConversationalTwiml(
+      "Twilio gather fallback is live. If realtime streaming is enabled, you should not hear this."
+    )
   );
 }
 
@@ -136,42 +137,31 @@ export async function POST(req: NextRequest) {
     typeof callSidRaw === "string" && callSidRaw.trim() ? callSidRaw.trim() : "unknown-call";
   const fromPhone = typeof fromRaw === "string" ? fromRaw.trim() : "";
 
-  if (!speechText) {
-    return twiml(buildNoSpeechTwiml());
-  }
+  if (!speechText) return twiml(buildNoSpeechTwiml());
 
-  // Load memory
   let memory: CallMemory = { startedAt: new Date().toISOString(), turns: [] };
 
   try {
     const existing = await kvGetJSON<CallMemory>(memKey(callSid));
     if (existing && Array.isArray(existing.turns)) memory = existing;
-  } catch {
-    // ignore
-  }
+  } catch {}
 
-  // Map caller → roomId
   const roomId = memory.roomId || normalizePhoneToRoomId(fromPhone);
   memory.roomId = roomId;
 
-  // Ensure user exists for this roomId
   try {
     await ensureUserForRoom(roomId, {
       source: "twilio",
       tags: ["phone-call"],
       ...(fromPhone ? { phone: fromPhone } : {}),
     } as any);
-  } catch {
-    // ignore
-  }
+  } catch {}
 
-  // Turn limit
   const userTurnsSoFar = memory.turns.filter((t) => t.role === "user").length;
   if (userTurnsSoFar >= 10) {
     return twiml(buildGoodbyeTwiml("We’ve covered a lot—let’s continue in the Foundzie app."));
   }
 
-  // Save user turn
   memory.turns.push({ role: "user", text: speechText, at: new Date().toISOString() });
   memory.turns = trimTurns(memory.turns, 10);
 
@@ -182,18 +172,13 @@ export async function POST(req: NextRequest) {
       attachmentName: null,
       attachmentKind: null,
     });
-  } catch {
-    // ignore
-  }
+  } catch {}
 
-  // Build agent input from shared thread
   let thread = "";
   try {
     const items = await listMessages(roomId);
     thread = formatThreadForAgent(items as any[], 16);
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   const agentInput =
     `You are Foundzie, a lightning-fast personal concierge.\n` +
@@ -220,15 +205,12 @@ export async function POST(req: NextRequest) {
     console.error("[twilio/gather] Agent error:", err);
   }
 
-  // Save assistant turn
   memory.turns.push({ role: "assistant", text: replyText, at: new Date().toISOString() });
   memory.turns = trimTurns(memory.turns, 10);
 
   try {
     await kvSetJSON(memKey(callSid), memory);
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   try {
     await addMessage(roomId, {
@@ -237,9 +219,7 @@ export async function POST(req: NextRequest) {
       attachmentName: null,
       attachmentKind: null,
     });
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   return twiml(buildConversationalTwiml(replyText));
 }
