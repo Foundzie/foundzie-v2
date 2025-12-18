@@ -25,9 +25,14 @@ function safeJsonParse(s) {
 }
 
 const server = http.createServer((req, res) => {
-  if (req.url === "/" || req.url === "/health") {
+  if (req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  if (req.url === "/") {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("Foundzie Bridge is running");
     return;
   }
   res.writeHead(404);
@@ -37,11 +42,11 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server, path: "/twilio/stream" });
 
 wss.on("connection", (twilioWs) => {
-  let streamSid = null;
+  console.log("[twilio] ws connected");
 
-  // Tracks whether OpenAI is ready and whether caller is currently speaking
+  let streamSid = null;
   let openaiReady = false;
-  let callerSpeaking = false;
+  let greeted = false;
 
   const openaiWs = new WebSocket(OPENAI_REALTIME_URL, {
     headers: {
@@ -50,20 +55,7 @@ wss.on("connection", (twilioWs) => {
     },
   });
 
-  // Helper: tell Twilio to play an audio chunk
-  function sendToTwilioAudio(base64Ulaw) {
-    if (!streamSid) return;
-    twilioWs.send(
-      JSON.stringify({
-        event: "media",
-        streamSid,
-        media: { payload: base64Ulaw },
-      })
-    );
-  }
-
   openaiWs.on("open", () => {
-    // IMPORTANT: Use server-side VAD so the model waits until the user finishes speaking.
     openaiWs.send(
       JSON.stringify({
         type: "session.update",
@@ -73,83 +65,64 @@ wss.on("connection", (twilioWs) => {
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
 
-          // Key to naturalness:
-          // - server_vad lets OpenAI decide when speech starts/stops
-          // - creates responses only after speech stops (we do that below)
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.6,
-            prefix_padding_ms: 250,
-            silence_duration_ms: 650,
-          },
+          // Let OpenAI detect turn boundaries (when user stops speaking)
+          turn_detection: { type: "server_vad" },
 
-          // Make it sound human on phone
           instructions:
-            "You are Foundzie, a friendly, human-sounding concierge on a phone call. " +
-            "Speak naturally with short sentences, warm tone, and contractions (I'm, you're). " +
-            "Never sound like a bot. No bullet points. " +
-            "Ask at most one question at a time. " +
-            "If the caller is silent, ask a gentle follow-up.",
+            "You are Foundzie, a lightning-fast personal concierge on a REAL phone call. " +
+            "Sound natural, warm, confident. Keep replies short (1–2 sentences). " +
+            "Ask only ONE follow-up question when needed. " +
+            "Do not mention being an AI unless asked.",
         },
       })
     );
 
     openaiReady = true;
-
-    // One-time greeting
-    openaiWs.send(
-      JSON.stringify({
-        type: "response.create",
-        response: {
-          instructions:
-            "Greet the caller naturally in one sentence, then ask what they need help with.",
-        },
-      })
-    );
+    console.log("[openai] session ready");
   });
 
   openaiWs.on("message", (data) => {
     const msg = safeJsonParse(data.toString());
     if (!msg) return;
 
-    // OpenAI tells us when caller speech starts/stops (server VAD)
-    if (msg.type === "input_audio_buffer.speech_started") {
-      callerSpeaking = true;
+    // After OpenAI is ready and Twilio has streamSid, greet once
+    if (!greeted && openaiReady && streamSid) {
+      greeted = true;
+      openaiWs.send(
+        JSON.stringify({
+          type: "response.create",
+          response: { instructions: "Greet the caller briefly and ask how you can help." },
+        })
+      );
+    }
 
-      // If the user interrupts while the AI is talking, clear output so it doesn't talk over them
-      openaiWs.send(JSON.stringify({ type: "output_audio_buffer.clear" }));
+    // Send audio back to Twilio
+    if (msg.type === "response.audio.delta" && msg.delta && streamSid) {
+      twilioWs.send(
+        JSON.stringify({
+          event: "media",
+          streamSid,
+          media: { payload: msg.delta },
+        })
+      );
       return;
     }
 
+    // When VAD detects user finished speaking, ask OpenAI to respond
     if (msg.type === "input_audio_buffer.speech_stopped") {
-      callerSpeaking = false;
-
-      // Caller finished a thought -> now ask the model to respond ONCE
       openaiWs.send(JSON.stringify({ type: "response.create" }));
       return;
     }
-
-    // Stream AI audio back to Twilio
-    if (msg.type === "response.audio.delta" && msg.delta) {
-      sendToTwilioAudio(msg.delta);
-      return;
-    }
-
-    // If you want to see text for debugging (optional):
-    // if (msg.type === "response.text.delta" && msg.delta) console.log("AI:", msg.delta);
   });
 
   openaiWs.on("close", () => {
-    try {
-      twilioWs.close();
-    } catch {}
+    console.log("[openai] closed");
+    try { twilioWs.close(); } catch {}
   });
 
   openaiWs.on("error", (e) => {
-    console.error("OpenAI WS error:", e);
-    try {
-      twilioWs.close();
-    } catch {}
+    console.error("[openai] ws error:", e);
+    try { twilioWs.close(); } catch {}
   });
 
   twilioWs.on("message", (data) => {
@@ -158,45 +131,39 @@ wss.on("connection", (twilioWs) => {
 
     if (msg.event === "start") {
       streamSid = msg.start?.streamSid || null;
+      console.log("[twilio] start streamSid=", streamSid);
+
+      // greeting will happen via openaiWs message handler once both ready
       return;
     }
 
     if (msg.event === "media") {
-      if (!openaiReady) return;
-
       const payload = msg.media?.payload;
-      if (!payload) return;
+      if (!payload || !openaiReady) return;
 
-      // IMPORTANT: DO NOT commit/create response here.
-      // Just continuously append. VAD will decide speech boundaries.
+      // Just append continuously; server_vad will decide when user stops talking
       openaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: payload }));
       return;
     }
 
     if (msg.event === "stop") {
-      try {
-        openaiWs.close();
-      } catch {}
-      try {
-        twilioWs.close();
-      } catch {}
+      console.log("[twilio] stop");
+      try { openaiWs.close(); } catch {}
+      try { twilioWs.close(); } catch {}
     }
   });
 
   twilioWs.on("close", () => {
-    try {
-      openaiWs.close();
-    } catch {}
+    console.log("[twilio] closed");
+    try { openaiWs.close(); } catch {}
   });
 
   twilioWs.on("error", (e) => {
-    console.error("Twilio WS error:", e);
-    try {
-      openaiWs.close();
-    } catch {}
+    console.error("[twilio] ws error:", e);
+    try { openaiWs.close(); } catch {}
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`Foundzie Bridge listening on :${PORT}`);
+  console.log(`Bridge listening on :${PORT}`);
 });
