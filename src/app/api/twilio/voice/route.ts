@@ -4,13 +4,17 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 /**
- * We strongly prefer absolute URLs for Twilio <Gather action> and <Redirect>.
- * Set ONE of these env vars (recommended):
- * - TWILIO_BASE_URL="https://your-app.vercel.app"
+ * Modes:
+ * - Gather mode (default): classic <Gather> loop to /api/twilio/gather (your current working flow)
+ * - Stream mode (M9e-C): <Connect><Stream> to a WebSocket bridge that talks to OpenAI Realtime (speech-to-speech)
  *
- * Optional:
- * - TWILIO_VOICE_URL="https://your-app.vercel.app/api/twilio/voice"
+ * Env:
+ * - TWILIO_USE_MEDIA_STREAMS=1          (optional toggle)
+ * - TWILIO_MEDIA_STREAM_WSS_URL=wss://.../twilio/stream   (required for stream mode)
+ * - TWILIO_BASE_URL=https://your-app.vercel.app           (recommended)
+ * - TWILIO_VOICE_URL=https://.../api/twilio/voice         (optional)
  */
+
 function getBaseUrl(): string | null {
   const explicit = process.env.TWILIO_BASE_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
@@ -28,7 +32,6 @@ function getBaseUrl(): string | null {
   const nextPublic = process.env.NEXT_PUBLIC_SITE_URL?.trim();
   if (nextPublic) return nextPublic.replace(/\/+$/, "");
 
-  // Vercel provides this without protocol
   const vercelUrl = process.env.VERCEL_URL?.trim();
   if (vercelUrl) return `https://${vercelUrl.replace(/\/+$/, "")}`;
 
@@ -42,15 +45,24 @@ function twiml(xml: string) {
   });
 }
 
-export async function GET() {
-  return POST();
+function escapeForXml(text: string): string {
+  return (text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
-export async function POST() {
+function shouldUseStreams() {
+  const flag = (process.env.TWILIO_USE_MEDIA_STREAMS || "").trim();
+  const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
+  return (flag === "1" || flag.toLowerCase() === "true") && !!wss;
+}
+
+function buildGatherTwiml() {
   const base = getBaseUrl();
 
-  // If we can't build absolute URLs, fall back to relative paths (still works often),
-  // but absolute is more reliable for Twilio.
   const gatherUrl = base ? `${base}/api/twilio/gather` : `/api/twilio/gather`;
   const voiceUrl = base ? `${base}/api/twilio/voice` : `/api/twilio/voice`;
 
@@ -75,5 +87,47 @@ export async function POST() {
   <Redirect method="POST">${voiceUrl}</Redirect>
 </Response>`;
 
-  return twiml(xml);
+  return xml;
+}
+
+function buildStreamTwiml(req: Request) {
+  const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
+
+  // Twilio will connect to this WSS and start sending audio frames.
+  // We pass a few helpful values as <Parameter> so the bridge can map CallSid → roomId, etc.
+  const url = new URL(req.url);
+  const roomId = (url.searchParams.get("roomId") || "").trim();
+
+  const safeRoom = escapeForXml(roomId);
+
+  // Important: Twilio supports <Connect><Stream>. The bridge must speak Twilio’s Media Streams JSON protocol.
+  // We still include a friendly intro line so the caller knows they’re connected.
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">One moment — connecting you to Foundzie.</Say>
+  <Connect>
+    <Stream url="${escapeForXml(wss)}">
+      ${
+        safeRoom
+          ? `<Parameter name="roomId" value="${safeRoom}" />`
+          : ``
+      }
+      <Parameter name="source" value="twilio-media-streams" />
+    </Stream>
+  </Connect>
+
+  <!-- If the stream ends unexpectedly, fall back to Gather mode -->
+  ${buildGatherTwiml().replace(`<?xml version="1.0" encoding="UTF-8"?>`, "")}
+</Response>`;
+}
+
+export async function GET(req: Request) {
+  return POST(req);
+}
+
+export async function POST(req: Request) {
+  if (shouldUseStreams()) {
+    return twiml(buildStreamTwiml(req));
+  }
+  return twiml(buildGatherTwiml());
 }
