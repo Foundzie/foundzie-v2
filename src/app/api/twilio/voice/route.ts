@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 function twiml(xml: string) {
   return new NextResponse(xml, {
     status: 200,
-    headers: { "Content-Type": "text/xml" },
+    headers: { "Content-Type": "text/xml; charset=utf-8" },
   });
 }
 
@@ -32,47 +32,59 @@ function getBaseUrl(): string {
   return "https://foundzie-v2.vercel.app"; // safe fallback
 }
 
-function buildGatherTwiml(marker: string) {
+/**
+ * IMPORTANT:
+ * Return ONLY the *inside* of <Response> ... </Response>
+ * (No XML header, no outer <Response>.)
+ */
+function gatherBody(marker: string) {
   const base = getBaseUrl();
   const gatherUrl = `${base}/api/twilio/gather`;
   const voiceUrl = `${base}/api/twilio/voice`;
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
+  return `
   <!-- FOUNDZIE_VOICE_MARKER ${escapeForXml(marker)} -->
   <Gather input="speech" action="${escapeForXml(gatherUrl)}" method="POST" timeout="7" speechTimeout="auto">
     <Say voice="alice">Hi, this is Foundzie. Tell me what you need help with.</Say>
   </Gather>
-  <Say voice="alice">I didn’t hear anything. Let’s try again.</Say>
+  <Say voice="alice">I did not hear anything. Let us try again.</Say>
   <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
-</Response>`;
+`.trim();
 }
 
-function buildStreamTwiml(req: Request, marker: string) {
+function buildVoiceTwiml(req: Request, marker: string) {
   const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
   const base = getBaseUrl();
 
-  // No WSS -> cannot stream
-  if (!wss) return buildGatherTwiml(marker + " wss=EMPTY");
+  // If no WSS configured → go straight to Gather
+  if (!wss) {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+${gatherBody(marker + " mode=GATHER_ONLY wss=EMPTY")}
+</Response>`;
+  }
 
   const url = new URL(req.url);
   const roomId = (url.searchParams.get("roomId") || "").trim();
   const safeRoom = escapeForXml(roomId);
 
-  // IMPORTANT: no <Say> here (Twilio voice sounds robotic).
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
+  const streamBlock = `
   <!-- FOUNDZIE_VOICE_MARKER ${escapeForXml(marker)} -->
   <Connect>
     <Stream url="${escapeForXml(wss)}">
       ${safeRoom ? `<Parameter name="roomId" value="${safeRoom}" />` : ``}
-      <Parameter name="source" value="twilio-media-streams" />
+      <Parameter name="source" value="twilio-media-stream" />
       <Parameter name="base" value="${escapeForXml(base)}" />
     </Stream>
   </Connect>
+`.trim();
 
-  <!-- If stream ends, fall back to Gather -->
-  ${buildGatherTwiml(marker + " fallback=gather").replace(`<?xml version="1.0" encoding="UTF-8"?>`, "")}
+  // IMPORTANT: still only one <Response>. Gather is fallback after stream ends.
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+${streamBlock}
+
+${gatherBody(marker + " fallback=gather")}
 </Response>`;
 }
 
@@ -89,5 +101,5 @@ export async function POST(req: Request) {
   const wssPresent = !!(process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
   const marker = `mode=STREAM sha=${sha} wssPresent=${wssPresent}`;
 
-  return twiml(buildStreamTwiml(req, marker));
+  return twiml(buildVoiceTwiml(req, marker));
 }

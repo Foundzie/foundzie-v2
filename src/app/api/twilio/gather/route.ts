@@ -25,7 +25,7 @@ function escapeForXml(text: string): string {
 function twiml(xml: string) {
   return new NextResponse(xml, {
     status: 200,
-    headers: { "Content-Type": "text/xml" },
+    headers: { "Content-Type": "text/xml; charset=utf-8" },
   });
 }
 
@@ -76,9 +76,9 @@ function buildNoSpeechTwiml() {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Gather input="speech" action="${escapeForXml(gatherUrl)}" method="POST" timeout="7" speechTimeout="auto">
-    <Say voice="alice">Sorry, I didn’t catch that. Please say it again.</Say>
+    <Say voice="alice">Sorry, I did not catch that. Please say it again.</Say>
   </Gather>
-  <Say voice="alice">No problem. Let’s restart.</Say>
+  <Say voice="alice">No problem. Let us restart.</Say>
   <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
 </Response>`;
 }
@@ -128,7 +128,8 @@ export async function POST(req: NextRequest) {
   const fromRaw = form ? form.get("From") : null;
 
   const speechText = typeof speechTextRaw === "string" ? speechTextRaw.trim() : "";
-  const callSid = typeof callSidRaw === "string" && callSidRaw.trim() ? callSidRaw.trim() : "unknown-call";
+  const callSid =
+    typeof callSidRaw === "string" && callSidRaw.trim() ? callSidRaw.trim() : "unknown-call";
   const fromPhone = typeof fromRaw === "string" ? fromRaw.trim() : "";
 
   if (!speechText) return twiml(buildNoSpeechTwiml());
@@ -146,16 +147,21 @@ export async function POST(req: NextRequest) {
 
   // Ensure user
   try {
-    await ensureUserForRoom(roomId, {
-      source: "twilio",
-      tags: ["phone-call"],
-      ...(fromPhone ? { phone: fromPhone } : {}),
-    } as any);
+    await ensureUserForRoom(
+      roomId,
+      {
+        source: "twilio",
+        tags: ["phone-call"],
+        ...(fromPhone ? { phone: fromPhone } : {}),
+      } as any
+    );
   } catch {}
 
   // Turn limit
   const userTurnsSoFar = memory.turns.filter((t) => t.role === "user").length;
-  if (userTurnsSoFar >= 10) return twiml(buildGoodbyeTwiml("We’ve covered a lot—let’s continue in the Foundzie app."));
+  if (userTurnsSoFar >= 10) {
+    return twiml(buildGoodbyeTwiml("We have covered a lot. Let us continue in the Foundzie app."));
+  }
 
   // Save user turn
   memory.turns.push({ role: "user", text: speechText, at: new Date().toISOString() });
@@ -191,7 +197,7 @@ export async function POST(req: NextRequest) {
       input: agentInput,
       roomId,
       userId: roomId,
-      source: "mobile", // IMPORTANT: fixes your TypeScript error
+      source: "mobile", // keep as you had it
       toolsMode: "off",
     });
 
