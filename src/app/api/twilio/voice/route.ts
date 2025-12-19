@@ -19,59 +19,60 @@ function escapeForXml(text: string): string {
     .replace(/'/g, "&apos;");
 }
 
-function getBaseUrl(): string | null {
+function getBaseUrl(): string {
   const explicit = process.env.TWILIO_BASE_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
-
-  const nextPublic = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  if (nextPublic) return nextPublic.replace(/\/+$/, "");
 
   const vercelUrl = process.env.VERCEL_URL?.trim();
   if (vercelUrl) return `https://${vercelUrl.replace(/\/+$/, "")}`;
 
-  return null;
-}
+  const nextPublic = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (nextPublic) return nextPublic.replace(/\/+$/, "");
 
-function streamDecision() {
-  const flag = (process.env.TWILIO_USE_MEDIA_STREAMS || "").trim().toLowerCase();
-  const enabled = flag === "1" || flag === "true" || flag === "yes" || flag === "on";
-  const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
-  return { enabled, wss, ok: enabled && !!wss };
+  return "https://foundzie-v2.vercel.app"; // safe fallback
 }
 
 function buildGatherTwiml(marker: string) {
   const base = getBaseUrl();
-  const gatherUrl = base ? `${base}/api/twilio/gather` : `/api/twilio/gather`;
-  const voiceUrl = base ? `${base}/api/twilio/voice` : `/api/twilio/voice`;
+  const gatherUrl = `${base}/api/twilio/gather`;
+  const voiceUrl = `${base}/api/twilio/voice`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  ${marker}
-  <Gather input="speech" action="${gatherUrl}" method="POST" timeout="7" speechTimeout="auto">
+  <!-- FOUNDZIE_VOICE_MARKER ${escapeForXml(marker)} -->
+  <Gather input="speech" action="${escapeForXml(gatherUrl)}" method="POST" timeout="7" speechTimeout="auto">
     <Say voice="alice">Hi, this is Foundzie. Tell me what you need help with.</Say>
   </Gather>
   <Say voice="alice">I didn’t hear anything. Let’s try again.</Say>
-  <Redirect method="POST">${voiceUrl}</Redirect>
+  <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
 </Response>`;
 }
 
 function buildStreamTwiml(req: Request, marker: string) {
-  const { ok, wss } = streamDecision();
-  if (!ok) return buildGatherTwiml(marker);
+  const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
+  const base = getBaseUrl();
+
+  // No WSS -> cannot stream
+  if (!wss) return buildGatherTwiml(marker + " wss=EMPTY");
 
   const url = new URL(req.url);
   const roomId = (url.searchParams.get("roomId") || "").trim();
   const safeRoom = escapeForXml(roomId);
 
+  // IMPORTANT: no <Say> here (Twilio voice sounds robotic).
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  ${marker}
+  <!-- FOUNDZIE_VOICE_MARKER ${escapeForXml(marker)} -->
   <Connect>
     <Stream url="${escapeForXml(wss)}">
       ${safeRoom ? `<Parameter name="roomId" value="${safeRoom}" />` : ``}
       <Parameter name="source" value="twilio-media-streams" />
+      <Parameter name="base" value="${escapeForXml(base)}" />
     </Stream>
   </Connect>
+
+  <!-- If stream ends, fall back to Gather -->
+  ${buildGatherTwiml(marker + " fallback=gather").replace(`<?xml version="1.0" encoding="UTF-8"?>`, "")}
 </Response>`;
 }
 
@@ -80,14 +81,13 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const { enabled, ok, wss } = streamDecision();
-  const commit =
+  const sha =
     process.env.VERCEL_GIT_COMMIT_SHA ||
-    process.env.VERCEL_GIT_COMMIT_REF ||
-    "no-vercel-commit-env";
+    process.env.VERCEL_GITHUB_COMMIT_SHA ||
+    "sha-unknown";
 
-  const wssPreview = wss ? `${wss.slice(0, 20)}…${wss.slice(-12)}` : "EMPTY";
-  const marker = `<!-- FOUNDZIE_MARKER commit=${commit} streamsEnabled=${enabled} streamOK=${ok} wss=${wssPreview} -->`;
+  const wssPresent = !!(process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
+  const marker = `mode=STREAM sha=${sha} wssPresent=${wssPresent}`;
 
   return twiml(buildStreamTwiml(req, marker));
 }
