@@ -23,8 +23,6 @@ function getBaseUrl(): string {
   const explicit = process.env.TWILIO_BASE_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
 
-  // If you don't set TWILIO_BASE_URL, you can accidentally end up on a protected preview URL.
-  // Strongly recommended to always set TWILIO_BASE_URL in Vercel.
   const nextPublic = process.env.NEXT_PUBLIC_SITE_URL?.trim();
   if (nextPublic) return nextPublic.replace(/\/+$/, "");
 
@@ -34,20 +32,24 @@ function getBaseUrl(): string {
   return "https://foundzie-v2.vercel.app";
 }
 
-function buildGatherFallbackTwiml(marker: string) {
+/**
+ * IMPORTANT:
+ * This returns ONLY TwiML verbs (NO <Response> wrapper).
+ * We will embed it inside a single root <Response>.
+ */
+function buildGatherFallbackVerbs(marker: string) {
   const base = getBaseUrl();
   const gatherUrl = `${base}/api/twilio/gather`;
   const voiceUrl = `${base}/api/twilio/voice`;
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
+  return `
   <!-- FOUNDZIE_FALLBACK ${escapeForXml(marker)} -->
   <Gather input="speech" action="${escapeForXml(gatherUrl)}" method="POST" timeout="7" speechTimeout="auto">
     <Say voice="alice">Hi, this is Foundzie. Tell me what you need help with.</Say>
   </Gather>
   <Say voice="alice">I didn’t hear anything. Let’s try again.</Say>
   <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
-</Response>`;
+  `.trim();
 }
 
 function buildStreamTwiml(opts: {
@@ -59,21 +61,19 @@ function buildStreamTwiml(opts: {
   const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
   const base = getBaseUrl();
 
-  if (!wss) {
-    return buildGatherFallbackTwiml(`${opts.marker} wss=EMPTY`);
-  }
-
   const safeRoom = escapeForXml((opts.roomId || "").trim());
   const safeCallSid = escapeForXml((opts.callSid || "").trim());
   const safeFrom = escapeForXml((opts.from || "").trim());
 
-  // STREAM first. No <Say> here (avoid Twilio TTS if streaming works).
-  // If the stream ends, Twilio will continue and execute the fallback redirect.
-  const fallback = buildGatherFallbackTwiml(`${opts.marker} fallback=gather`).replace(
-    `<?xml version="1.0" encoding="UTF-8"?>`,
-    ""
-  );
+  // If no WSS configured, go straight to Gather flow (single Response)
+  if (!wss) {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  ${buildGatherFallbackVerbs(`${opts.marker} wss=EMPTY`)}
+</Response>`;
+  }
 
+  // STREAM first. If stream ends immediately, Twilio will continue to the fallback verbs.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <!-- FOUNDZIE_STREAM ${escapeForXml(opts.marker)} -->
@@ -87,12 +87,11 @@ function buildStreamTwiml(opts: {
     </Stream>
   </Connect>
 
-  ${fallback}
+  ${buildGatherFallbackVerbs(`${opts.marker} fallback=gather`)}
 </Response>`;
 }
 
 export async function GET(req: NextRequest) {
-  // Debug GET (browser): shows stream TwiML
   const sha =
     process.env.VERCEL_GIT_COMMIT_SHA ||
     process.env.VERCEL_GITHUB_COMMIT_SHA ||
@@ -120,7 +119,6 @@ export async function POST(req: NextRequest) {
 
   const wssPresent = !!(process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
 
-  // Twilio hits this as application/x-www-form-urlencoded
   const form = await req.formData().catch(() => null);
   const callSidRaw = form ? form.get("CallSid") : null;
   const fromRaw = form ? form.get("From") : null;
@@ -128,7 +126,6 @@ export async function POST(req: NextRequest) {
   const callSid = typeof callSidRaw === "string" ? callSidRaw.trim() : "";
   const from = typeof fromRaw === "string" ? fromRaw.trim() : "";
 
-  // Use CallSid as roomId to keep each call isolated unless you want phone-based continuity.
   const roomId = callSid ? `call:${callSid}` : from ? `phone:${from}` : undefined;
 
   const marker = `mode=STREAM sha=${sha} wssPresent=${wssPresent} method=POST`;
