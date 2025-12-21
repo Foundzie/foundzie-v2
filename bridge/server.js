@@ -12,7 +12,6 @@ if (!OPENAI_API_KEY) {
 const REALTIME_MODEL = (process.env.REALTIME_MODEL || "gpt-4o-realtime-preview").trim();
 
 // IMPORTANT: Voice here is OpenAI realtime voice (NOT Twilio TTS).
-// Try: alloy / shimmer / verse (depends on model availability in your account)
 const REALTIME_VOICE = (process.env.REALTIME_VOICE || "alloy").trim();
 
 const OPENAI_REALTIME_URL = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(
@@ -60,6 +59,10 @@ wss.on("connection", (twilioWs) => {
   let greeted = false;
   let closed = false;
 
+  // ✅ Guards to fix the exact errors you saw
+  let responseInProgress = false;
+  let hasAudioSinceLastResponse = false;
+
   const openaiWs = new WebSocket(OPENAI_REALTIME_URL, {
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -73,13 +76,13 @@ wss.on("connection", (twilioWs) => {
     if (!streamSid) return;
 
     greeted = true;
+    responseInProgress = true; // greeting is a response
 
-    // Ask OpenAI to speak immediately
     wsSend(openaiWs, {
       type: "response.create",
       response: {
         instructions:
-          "Greet the caller warmly in one short sentence, then ask how you can help.",
+          "Start in ENGLISH. Greet the caller warmly in one short sentence, then ask how you can help (one short question).",
       },
     });
 
@@ -121,8 +124,12 @@ wss.on("connection", (twilioWs) => {
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
         turn_detection: { type: "server_vad" },
+
+        // ✅ Hardwire English + natural call behavior
         instructions:
           "You are Foundzie, a lightning-fast personal concierge on a REAL phone call. " +
+          "ALWAYS start and continue in ENGLISH unless the caller explicitly asks for another language. " +
+          "If the caller speaks another language, politely ask: 'Can we continue in English?' " +
           "Sound natural, warm, confident, like a human. " +
           "Keep replies short (1–2 sentences). " +
           "Ask only ONE follow-up question when needed. " +
@@ -141,10 +148,7 @@ wss.on("connection", (twilioWs) => {
     const msg = safeJsonParse(data.toString());
     if (!msg) return;
 
-    // Useful debug if needed:
-    // console.log("[openai] msg", msg.type);
-
-    // Audio from OpenAI -> Twilio
+    // OpenAI -> Twilio audio
     if (msg.type === "response.audio.delta" && msg.delta && streamSid) {
       wsSend(twilioWs, {
         event: "media",
@@ -154,17 +158,28 @@ wss.on("connection", (twilioWs) => {
       return;
     }
 
-    // When OpenAI thinks user stopped talking -> ask it to respond
-    if (msg.type === "input_audio_buffer.speech_stopped") {
-      // Commit buffer then create a response (more reliable)
-      wsSend(openaiWs, { type: "input_audio_buffer.commit" });
-      wsSend(openaiWs, { type: "response.create" });
-      // Optional cleanup
-      wsSend(openaiWs, { type: "input_audio_buffer.clear" });
+    // ✅ When OpenAI finishes speaking, allow next response
+    if (msg.type === "response.done" || msg.type === "response.completed") {
+      responseInProgress = false;
+      hasAudioSinceLastResponse = false;
       return;
     }
 
-    // If OpenAI tells us about errors, log them
+    // ✅ VAD says user stopped speaking -> request response (guarded)
+    if (msg.type === "input_audio_buffer.speech_stopped") {
+      // Guard 1: don't overlap responses
+      if (responseInProgress) return;
+
+      // Guard 2: don't request a response if we got no audio
+      if (!hasAudioSinceLastResponse) return;
+
+      responseInProgress = true;
+
+      // IMPORTANT: Do NOT commit/clear blindly (caused your errors).
+      wsSend(openaiWs, { type: "response.create" });
+      return;
+    }
+
     if (msg.type === "error") {
       console.error("[openai] error:", msg);
       return;
@@ -205,7 +220,9 @@ wss.on("connection", (twilioWs) => {
       if (!payload) return;
       if (!openaiReady) return;
 
-      // Feed audio to OpenAI
+      // ✅ Mark that we actually received audio this turn
+      hasAudioSinceLastResponse = true;
+
       wsSend(openaiWs, {
         type: "input_audio_buffer.append",
         audio: payload,
