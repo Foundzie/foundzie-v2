@@ -13,6 +13,9 @@ type CallMemory = {
   turns: Array<{ role: "user" | "assistant"; text: string; at: string }>;
 };
 
+const FALLBACK_TTS_VOICE =
+  (process.env.TWILIO_FALLBACK_VOICE || "").trim() || "Polly.Joanna-Neural";
+
 function escapeForXml(text: string): string {
   return (text || "")
     .replace(/&/g, "&amp;")
@@ -51,11 +54,11 @@ function buildConversationalTwiml(sayMessage: string) {
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="alice">${safe}</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${safe}</Say>
   <Gather input="speech" action="${escapeForXml(gatherUrl)}" method="POST" timeout="7" speechTimeout="auto">
-    <Say voice="alice">What else can I help you with?</Say>
+    <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">What can I do for you next?</Say>
   </Gather>
-  <Say voice="alice">I did not hear anything. We can try again.</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">I didn’t hear anything. Let’s restart.</Say>
   <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
 </Response>`;
 }
@@ -68,9 +71,9 @@ function buildNoSpeechTwiml() {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Gather input="speech" action="${escapeForXml(gatherUrl)}" method="POST" timeout="7" speechTimeout="auto">
-    <Say voice="alice">Sorry, I didn’t catch that. Please say it again.</Say>
+    <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Sorry, I didn’t catch that. Say it one more time.</Say>
   </Gather>
-  <Say voice="alice">No problem. Let’s restart.</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">No worries. Restarting.</Say>
   <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
 </Response>`;
 }
@@ -79,8 +82,8 @@ function buildGoodbyeTwiml(message: string) {
   const safe = escapeForXml((message || "").trim());
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="alice">${safe}</Say>
-  <Say voice="alice">Thanks for calling Foundzie. Goodbye.</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${safe}</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Thanks for calling Foundzie. Bye for now.</Say>
   <Hangup/>
 </Response>`;
 }
@@ -113,7 +116,7 @@ function formatThreadForAgent(items: any[], max = 16) {
 export async function GET() {
   return twiml(
     buildConversationalTwiml(
-      "Twilio gather is live. If streaming is working, you should not hear this much."
+      "Fallback voice mode is active. If realtime streaming is working, you should barely hear me here."
     )
   );
 }
@@ -160,7 +163,7 @@ export async function POST(req: NextRequest) {
     const userTurnsSoFar = memory.turns.filter((t) => t.role === "user").length;
     if (userTurnsSoFar >= 10) {
       return twiml(
-        buildGoodbyeTwiml("We’ve covered a lot—let’s continue in the Foundzie app.")
+        buildGoodbyeTwiml("We covered a lot—let’s continue inside the Foundzie app.")
       );
     }
 
@@ -190,13 +193,13 @@ export async function POST(req: NextRequest) {
 
     const agentInput =
       `You are Foundzie, a lightning-fast personal concierge.\n` +
-      `You are speaking on a PHONE CALL. Keep replies short (1–3 sentences).\n` +
+      `You are speaking on a PHONE CALL. Sound natural.\n` +
+      `Keep replies short (1–2 sentences).\n` +
       `Ask exactly ONE follow-up question when needed.\n\n` +
       (thread ? `Shared conversation memory:\n${thread}\n\n` : "") +
       `Now respond to the caller's latest message:\n${speechText}`;
 
-    let replyText =
-      "Got it. What city or ZIP code are you in so I can tailor it?";
+    let replyText = "Got it — what city or ZIP code are you in?";
 
     try {
       const agentResult = await runFoundzieAgent({
@@ -213,7 +216,7 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       console.error("[twilio/gather] Agent error:", err);
       replyText =
-        "I hit a small snag on my side. What city or ZIP code are you in, and what are you looking for?";
+        "I hit a small snag on my side. What city or ZIP code are you in, and what are you trying to do?";
     }
 
     // Save assistant turn
@@ -242,9 +245,7 @@ export async function POST(req: NextRequest) {
     console.error("[twilio/gather] fatal:", e);
     // Never return 500 to Twilio. Always return TwiML.
     return twiml(
-      buildConversationalTwiml(
-        "Sorry—something went wrong on my side. Please say that again."
-      )
+      buildConversationalTwiml("Sorry — something glitched. Say that again for me.")
     );
   }
 }

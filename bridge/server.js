@@ -10,7 +10,10 @@ if (!OPENAI_API_KEY) {
 }
 
 const REALTIME_MODEL = (process.env.REALTIME_MODEL || "gpt-4o-realtime-preview").trim();
-const REALTIME_VOICE = (process.env.REALTIME_VOICE || "shimmer").trim();
+
+// IMPORTANT: Voice here is OpenAI realtime voice (NOT Twilio TTS).
+// Try: alloy / shimmer / verse (depends on model availability in your account)
+const REALTIME_VOICE = (process.env.REALTIME_VOICE || "alloy").trim();
 
 const OPENAI_REALTIME_URL = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(
   REALTIME_MODEL
@@ -22,6 +25,14 @@ function safeJsonParse(s) {
   } catch {
     return null;
   }
+}
+
+function wsSend(ws, obj) {
+  if (!ws) return;
+  if (ws.readyState !== WebSocket.OPEN) return;
+  try {
+    ws.send(JSON.stringify(obj));
+  } catch {}
 }
 
 const server = http.createServer((req, res) => {
@@ -47,6 +58,7 @@ wss.on("connection", (twilioWs) => {
   let streamSid = null;
   let openaiReady = false;
   let greeted = false;
+  let closed = false;
 
   const openaiWs = new WebSocket(OPENAI_REALTIME_URL, {
     headers: {
@@ -55,74 +67,124 @@ wss.on("connection", (twilioWs) => {
     },
   });
 
+  function tryGreet() {
+    if (greeted) return;
+    if (!openaiReady) return;
+    if (!streamSid) return;
+
+    greeted = true;
+
+    // Ask OpenAI to speak immediately
+    wsSend(openaiWs, {
+      type: "response.create",
+      response: {
+        instructions:
+          "Greet the caller warmly in one short sentence, then ask how you can help.",
+      },
+    });
+
+    console.log("[bridge] greeting triggered");
+  }
+
+  // Keepalive ping (helps prevent silent disconnects)
+  const pingInterval = setInterval(() => {
+    try {
+      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
+    } catch {}
+    try {
+      if (openaiWs.readyState === WebSocket.OPEN) openaiWs.ping();
+    } catch {}
+  }, 15000);
+
+  function shutdown(reason) {
+    if (closed) return;
+    closed = true;
+    clearInterval(pingInterval);
+
+    console.log("[bridge] shutdown:", reason || "unknown");
+
+    try {
+      if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
+    } catch {}
+    try {
+      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
+    } catch {}
+  }
+
   openaiWs.on("open", () => {
-    openaiWs.send(
-      JSON.stringify({
-        type: "session.update",
-        session: {
-          modalities: ["audio", "text"],
-          voice: REALTIME_VOICE,
-          input_audio_format: "g711_ulaw",
-          output_audio_format: "g711_ulaw",
-
-          // Let OpenAI detect turn boundaries (when user stops speaking)
-          turn_detection: { type: "server_vad" },
-
-          instructions:
-            "You are Foundzie, a lightning-fast personal concierge on a REAL phone call. " +
-            "Sound natural, warm, confident. Keep replies short (1–2 sentences). " +
-            "Ask only ONE follow-up question when needed. " +
-            "Do not mention being an AI unless asked.",
-        },
-      })
-    );
+    // Create/update the realtime session
+    wsSend(openaiWs, {
+      type: "session.update",
+      session: {
+        modalities: ["audio", "text"],
+        voice: REALTIME_VOICE,
+        input_audio_format: "g711_ulaw",
+        output_audio_format: "g711_ulaw",
+        turn_detection: { type: "server_vad" },
+        instructions:
+          "You are Foundzie, a lightning-fast personal concierge on a REAL phone call. " +
+          "Sound natural, warm, confident, like a human. " +
+          "Keep replies short (1–2 sentences). " +
+          "Ask only ONE follow-up question when needed. " +
+          "Do not mention being an AI unless asked.",
+      },
+    });
 
     openaiReady = true;
-    console.log("[openai] session ready");
+    console.log("[openai] ws open; session.update sent");
+
+    // If Twilio already started, greet now
+    tryGreet();
   });
 
   openaiWs.on("message", (data) => {
     const msg = safeJsonParse(data.toString());
     if (!msg) return;
 
-    // After OpenAI is ready and Twilio has streamSid, greet once
-    if (!greeted && openaiReady && streamSid) {
-      greeted = true;
-      openaiWs.send(
-        JSON.stringify({
-          type: "response.create",
-          response: { instructions: "Greet the caller briefly and ask how you can help." },
-        })
-      );
-    }
+    // Useful debug if needed:
+    // console.log("[openai] msg", msg.type);
 
-    // Send audio back to Twilio
+    // Audio from OpenAI -> Twilio
     if (msg.type === "response.audio.delta" && msg.delta && streamSid) {
-      twilioWs.send(
-        JSON.stringify({
-          event: "media",
-          streamSid,
-          media: { payload: msg.delta },
-        })
-      );
+      wsSend(twilioWs, {
+        event: "media",
+        streamSid,
+        media: { payload: msg.delta },
+      });
       return;
     }
 
-    // When VAD detects user finished speaking, ask OpenAI to respond
+    // When OpenAI thinks user stopped talking -> ask it to respond
     if (msg.type === "input_audio_buffer.speech_stopped") {
-      openaiWs.send(JSON.stringify({ type: "response.create" }));
+      // Commit buffer then create a response (more reliable)
+      wsSend(openaiWs, { type: "input_audio_buffer.commit" });
+      wsSend(openaiWs, { type: "response.create" });
+      // Optional cleanup
+      wsSend(openaiWs, { type: "input_audio_buffer.clear" });
+      return;
+    }
+
+    // If OpenAI tells us about errors, log them
+    if (msg.type === "error") {
+      console.error("[openai] error:", msg);
+      return;
+    }
+
+    // If a session event comes, we can attempt greeting again
+    if (msg.type === "session.created" || msg.type === "session.updated") {
+      tryGreet();
       return;
     }
   });
 
   openaiWs.on("close", () => {
     console.log("[openai] closed");
-    try { twilioWs.close(); } catch {}
+    shutdown("openai_closed");
   });
 
   openaiWs.on("error", (e) => {
     console.error("[openai] ws error:", e);
-    try { twilioWs.close(); } catch {}
+    shutdown("openai_error");
   });
 
   twilioWs.on("message", (data) => {
@@ -133,34 +195,38 @@ wss.on("connection", (twilioWs) => {
       streamSid = msg.start?.streamSid || null;
       console.log("[twilio] start streamSid=", streamSid);
 
-      // greeting will happen via openaiWs message handler once both ready
+      // If OpenAI is ready, greet immediately
+      tryGreet();
       return;
     }
 
     if (msg.event === "media") {
       const payload = msg.media?.payload;
-      if (!payload || !openaiReady) return;
+      if (!payload) return;
+      if (!openaiReady) return;
 
-      // Just append continuously; server_vad will decide when user stops talking
-      openaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: payload }));
+      // Feed audio to OpenAI
+      wsSend(openaiWs, {
+        type: "input_audio_buffer.append",
+        audio: payload,
+      });
       return;
     }
 
     if (msg.event === "stop") {
       console.log("[twilio] stop");
-      try { openaiWs.close(); } catch {}
-      try { twilioWs.close(); } catch {}
+      shutdown("twilio_stop");
     }
   });
 
   twilioWs.on("close", () => {
     console.log("[twilio] closed");
-    try { openaiWs.close(); } catch {}
+    shutdown("twilio_closed");
   });
 
   twilioWs.on("error", (e) => {
     console.error("[twilio] ws error:", e);
-    try { openaiWs.close(); } catch {}
+    shutdown("twilio_error");
   });
 });
 

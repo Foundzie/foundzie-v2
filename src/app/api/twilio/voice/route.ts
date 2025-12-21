@@ -32,6 +32,11 @@ function getBaseUrl(): string {
   return "https://foundzie-v2.vercel.app";
 }
 
+// Fallback voice (Twilio TTS). Still not as good as realtime stream,
+// but MUCH more human than "alice".
+const FALLBACK_TTS_VOICE =
+  (process.env.TWILIO_FALLBACK_VOICE || "").trim() || "Polly.Joanna-Neural";
+
 /**
  * IMPORTANT:
  * This returns ONLY TwiML verbs (NO <Response> wrapper).
@@ -45,9 +50,9 @@ function buildGatherFallbackVerbs(marker: string) {
   return `
   <!-- FOUNDZIE_FALLBACK ${escapeForXml(marker)} -->
   <Gather input="speech" action="${escapeForXml(gatherUrl)}" method="POST" timeout="7" speechTimeout="auto">
-    <Say voice="alice">Hi, this is Foundzie. Tell me what you need help with.</Say>
+    <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Hi, this is Foundzie. How can I help?</Say>
   </Gather>
-  <Say voice="alice">I didn’t hear anything. Let’s try again.</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">I didn’t catch that. Let’s try again.</Say>
   <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
   `.trim();
 }
@@ -73,7 +78,7 @@ function buildStreamTwiml(opts: {
 </Response>`;
   }
 
-  // STREAM first. If stream ends immediately, Twilio will continue to the fallback verbs.
+  // STREAM first. If stream ends immediately, Twilio continues to fallback verbs.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <!-- FOUNDZIE_STREAM ${escapeForXml(opts.marker)} -->
