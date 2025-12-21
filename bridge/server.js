@@ -10,8 +10,6 @@ if (!OPENAI_API_KEY) {
 }
 
 const REALTIME_MODEL = (process.env.REALTIME_MODEL || "gpt-4o-realtime-preview").trim();
-
-// IMPORTANT: Voice here is OpenAI realtime voice (NOT Twilio TTS).
 const REALTIME_VOICE = (process.env.REALTIME_VOICE || "alloy").trim();
 
 const OPENAI_REALTIME_URL = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(
@@ -33,6 +31,17 @@ function wsSend(ws, obj) {
     ws.send(JSON.stringify(obj));
   } catch {}
 }
+
+/**
+ * Tuning knobs to reduce “cutting you off”
+ * - MIN_MEDIA_FRAMES: require at least N Twilio media packets before responding
+ *   (Twilio media packets are typically ~20ms each)
+ * - SPEECH_STOP_DEBOUNCE_MS: wait a bit after speech_stopped before responding
+ * - VAD_SILENCE_MS: tell OpenAI to wait longer silence before declaring “stopped”
+ */
+const MIN_MEDIA_FRAMES = Number(process.env.MIN_MEDIA_FRAMES || 10); // ~200ms
+const SPEECH_STOP_DEBOUNCE_MS = Number(process.env.SPEECH_STOP_DEBOUNCE_MS || 450);
+const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 700);
 
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
@@ -56,12 +65,20 @@ wss.on("connection", (twilioWs) => {
 
   let streamSid = null;
   let openaiReady = false;
-  let greeted = false;
-  let closed = false;
 
-  // ✅ Guards to fix the exact errors you saw
+  // Prevent duplicate responses / overlapping responses
   let responseInProgress = false;
-  let hasAudioSinceLastResponse = false;
+
+  // Track if we actually received enough audio before responding
+  let mediaFramesSinceLastResponse = 0;
+
+  // Greeting protection
+  let greeted = false;
+
+  // Debounce timer so speech_stopped doesn’t instantly trigger response
+  let pendingResponseTimer = null;
+
+  let closed = false;
 
   const openaiWs = new WebSocket(OPENAI_REALTIME_URL, {
     headers: {
@@ -70,38 +87,18 @@ wss.on("connection", (twilioWs) => {
     },
   });
 
-  function tryGreet() {
-    if (greeted) return;
-    if (!openaiReady) return;
-    if (!streamSid) return;
-
-    greeted = true;
-    responseInProgress = true; // greeting is a response
-
-    wsSend(openaiWs, {
-      type: "response.create",
-      response: {
-        instructions:
-          "Start in ENGLISH. Greet the caller warmly in one short sentence, then ask how you can help (one short question).",
-      },
-    });
-
-    console.log("[bridge] greeting triggered");
+  function clearPendingTimer() {
+    if (pendingResponseTimer) {
+      clearTimeout(pendingResponseTimer);
+      pendingResponseTimer = null;
+    }
   }
-
-  // Keepalive ping (helps prevent silent disconnects)
-  const pingInterval = setInterval(() => {
-    try {
-      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
-    } catch {}
-    try {
-      if (openaiWs.readyState === WebSocket.OPEN) openaiWs.ping();
-    } catch {}
-  }, 15000);
 
   function shutdown(reason) {
     if (closed) return;
     closed = true;
+
+    clearPendingTimer();
     clearInterval(pingInterval);
 
     console.log("[bridge] shutdown:", reason || "unknown");
@@ -114,8 +111,38 @@ wss.on("connection", (twilioWs) => {
     } catch {}
   }
 
+  function tryGreet() {
+    if (greeted) return;
+    if (!openaiReady) return;
+    if (!streamSid) return;
+
+    greeted = true;
+    responseInProgress = true;
+
+    wsSend(openaiWs, {
+      type: "response.create",
+      response: {
+        // HARDWIRE ENGLISH
+        instructions:
+          "You are Foundzie on a real phone call. Speak ONLY ENGLISH. " +
+          "Greet the caller warmly in ONE short sentence, then ask ONE short question: “How can I help?”",
+      },
+    });
+
+    console.log("[bridge] greeting triggered");
+  }
+
+  // Keepalive ping
+  const pingInterval = setInterval(() => {
+    try {
+      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
+    } catch {}
+    try {
+      if (openaiWs.readyState === WebSocket.OPEN) openaiWs.ping();
+    } catch {}
+  }, 15000);
+
   openaiWs.on("open", () => {
-    // Create/update the realtime session
     wsSend(openaiWs, {
       type: "session.update",
       session: {
@@ -123,13 +150,16 @@ wss.on("connection", (twilioWs) => {
         voice: REALTIME_VOICE,
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
-        turn_detection: { type: "server_vad" },
 
-        // ✅ Hardwire English + natural call behavior
+        // Wait longer before deciding you stopped speaking
+        turn_detection: {
+          type: "server_vad",
+          silence_duration_ms: VAD_SILENCE_MS,
+        },
+
         instructions:
           "You are Foundzie, a lightning-fast personal concierge on a REAL phone call. " +
-          "ALWAYS start and continue in ENGLISH unless the caller explicitly asks for another language. " +
-          "If the caller speaks another language, politely ask: 'Can we continue in English?' " +
+          "ALWAYS speak ENGLISH unless the caller explicitly asks for another language. " +
           "Sound natural, warm, confident, like a human. " +
           "Keep replies short (1–2 sentences). " +
           "Ask only ONE follow-up question when needed. " +
@@ -140,7 +170,6 @@ wss.on("connection", (twilioWs) => {
     openaiReady = true;
     console.log("[openai] ws open; session.update sent");
 
-    // If Twilio already started, greet now
     tryGreet();
   });
 
@@ -148,7 +177,7 @@ wss.on("connection", (twilioWs) => {
     const msg = safeJsonParse(data.toString());
     if (!msg) return;
 
-    // OpenAI -> Twilio audio
+    // Audio from OpenAI -> Twilio
     if (msg.type === "response.audio.delta" && msg.delta && streamSid) {
       wsSend(twilioWs, {
         event: "media",
@@ -158,34 +187,62 @@ wss.on("connection", (twilioWs) => {
       return;
     }
 
-    // ✅ When OpenAI finishes speaking, allow next response
-    if (msg.type === "response.done" || msg.type === "response.completed") {
+    // Response lifecycle (different models may emit different “done” events)
+    if (
+      msg.type === "response.done" ||
+      msg.type === "response.completed" ||
+      msg.type === "response.stopped"
+    ) {
       responseInProgress = false;
-      hasAudioSinceLastResponse = false;
+      mediaFramesSinceLastResponse = 0;
+      clearPendingTimer();
       return;
     }
 
-    // ✅ VAD says user stopped speaking -> request response (guarded)
+    // Some implementations emit response.created/started
+    if (msg.type === "response.created" || msg.type === "response.started") {
+      responseInProgress = true;
+      return;
+    }
+
+    // VAD says user stopped speaking → create response (guarded + debounced)
     if (msg.type === "input_audio_buffer.speech_stopped") {
-      // Guard 1: don't overlap responses
+      // If assistant is already talking, ignore
       if (responseInProgress) return;
 
-      // Guard 2: don't request a response if we got no audio
-      if (!hasAudioSinceLastResponse) return;
+      // If we barely received audio, ignore (prevents commit_empty behavior)
+      if (mediaFramesSinceLastResponse < MIN_MEDIA_FRAMES) return;
 
-      responseInProgress = true;
+      // Debounce so short pauses don't trigger instantly
+      clearPendingTimer();
+      pendingResponseTimer = setTimeout(() => {
+        if (closed) return;
+        if (responseInProgress) return;
+        if (mediaFramesSinceLastResponse < MIN_MEDIA_FRAMES) return;
 
-      // IMPORTANT: Do NOT commit/clear blindly (caused your errors).
-      wsSend(openaiWs, { type: "response.create" });
+        responseInProgress = true;
+
+        wsSend(openaiWs, { type: "response.create" });
+      }, SPEECH_STOP_DEBOUNCE_MS);
+
       return;
     }
 
+    // Log errors (and prevent spam loops)
     if (msg.type === "error") {
+      const code = msg?.error?.code || msg?.code;
+
+      // If we tried to create while already active, just mark in progress and move on
+      if (code === "conversation_already_has_active_response") {
+        responseInProgress = true;
+        return;
+      }
+
       console.error("[openai] error:", msg);
       return;
     }
 
-    // If a session event comes, we can attempt greeting again
+    // If session changes, try greet again (safe)
     if (msg.type === "session.created" || msg.type === "session.updated") {
       tryGreet();
       return;
@@ -209,8 +266,6 @@ wss.on("connection", (twilioWs) => {
     if (msg.event === "start") {
       streamSid = msg.start?.streamSid || null;
       console.log("[twilio] start streamSid=", streamSid);
-
-      // If OpenAI is ready, greet immediately
       tryGreet();
       return;
     }
@@ -220,8 +275,7 @@ wss.on("connection", (twilioWs) => {
       if (!payload) return;
       if (!openaiReady) return;
 
-      // ✅ Mark that we actually received audio this turn
-      hasAudioSinceLastResponse = true;
+      mediaFramesSinceLastResponse += 1;
 
       wsSend(openaiWs, {
         type: "input_audio_buffer.append",
