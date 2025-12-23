@@ -5,6 +5,7 @@ import { runFoundzieAgent } from "@/lib/agent/runtime";
 import { ensureUserForRoom } from "../../users/store";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 type RoomParams = { roomId?: string };
 
@@ -22,14 +23,18 @@ function normalizeRoomId(params?: RoomParams | null): string {
 function formatThreadForAgent(items: ChatMessage[], max = 16): string {
   const tail = items.slice(Math.max(0, items.length - max));
   return tail
-    .map((m) => `${m.sender === "user" ? "User" : "Foundzie"}: ${m.text ?? ""}`.trim())
+    .map((m) =>
+      `${m.sender === "user" ? "User" : "Foundzie"}: ${m.text ?? ""}`.trim()
+    )
     .filter(Boolean)
     .join("\n");
 }
 
 /* GET /api/chat/[roomId] */
 export async function GET(_req: NextRequest, context: any) {
-  const params = (await Promise.resolve(context?.params)) as RoomParams | undefined;
+  const params = (await Promise.resolve(context?.params)) as
+    | RoomParams
+    | undefined;
   const roomId = normalizeRoomId(params ?? undefined);
   const items = await listMessages(roomId);
   return NextResponse.json({ items });
@@ -37,20 +42,25 @@ export async function GET(_req: NextRequest, context: any) {
 
 /* POST /api/chat/[roomId] */
 export async function POST(req: NextRequest, context: any) {
-  const params = (await Promise.resolve(context?.params)) as RoomParams | undefined;
+  const params = (await Promise.resolve(context?.params)) as
+    | RoomParams
+    | undefined;
   const paramsRoomId = normalizeRoomId(params ?? undefined);
 
   try {
     const body = (await req.json().catch(() => ({}))) as any;
 
-    const bodyRoomId = typeof body.roomId === "string" ? body.roomId.trim() : "";
+    const bodyRoomId =
+      typeof body.roomId === "string" ? body.roomId.trim() : "";
     const roomId = bodyRoomId || paramsRoomId;
 
     const rawText = typeof body.text === "string" ? body.text.trim() : "";
     const rawSender = typeof body.sender === "string" ? body.sender : "user";
 
     const attachmentName =
-      typeof body.attachmentName === "string" ? body.attachmentName.trim() : null;
+      typeof body.attachmentName === "string"
+        ? body.attachmentName.trim()
+        : null;
 
     const attachmentKind: "image" | "file" | null =
       body.attachmentKind === "image" || body.attachmentKind === "file"
@@ -64,7 +74,8 @@ export async function POST(req: NextRequest, context: any) {
       );
     }
 
-    const sender: "user" | "concierge" = rawSender === "concierge" ? "concierge" : "user";
+    const sender: "user" | "concierge" =
+      rawSender === "concierge" ? "concierge" : "user";
 
     // 1) Save user/concierge message
     const userMessage = await addMessage(roomId, {
@@ -88,7 +99,8 @@ export async function POST(req: NextRequest, context: any) {
       const thread = formatThreadForAgent(history, 16);
 
       const agentInputBase =
-        rawText || (attachmentName ? `User sent attachment: ${attachmentName}` : "");
+        rawText ||
+        (attachmentName ? `User sent attachment: ${attachmentName}` : "");
 
       const agentInput =
         `You are Foundzie, a lightning-fast personal concierge.\n` +
@@ -108,7 +120,9 @@ export async function POST(req: NextRequest, context: any) {
 
         const replyText =
           agentResult.replyText ||
-          `Got it: ${rawText || attachmentName}. A concierge (or Foundzie) will follow up shortly.`;
+          `Got it: ${
+            rawText || attachmentName
+          }. A concierge (or Foundzie) will follow up shortly.`;
 
         reply = await addMessage(roomId, {
           sender: "concierge",

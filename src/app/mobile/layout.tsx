@@ -1,10 +1,11 @@
-// src/app/mobile/layout.tsx
 "use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { useEffect } from "react";
 import OnboardingGate from "./OnboardingGate";
+import GetAppButton from "@/app/components/GetAppButton";
 
 type MobileLayoutProps = {
   children: ReactNode;
@@ -22,14 +23,38 @@ const navItems = [
   { href: "/admin", label: "Admin" },
 ];
 
+const LS_ENGAGEMENT = "foundzie:engagement:count";
+
+function bumpEngagement() {
+  try {
+    const raw = window.localStorage.getItem(LS_ENGAGEMENT);
+    const n = Number(raw || "0");
+    const next = Number.isFinite(n) ? n + 1 : 1;
+    window.localStorage.setItem(LS_ENGAGEMENT, String(next));
+  } catch {
+    // ignore
+  }
+}
+
 export default function MobileLayout({ children }: MobileLayoutProps) {
   const pathname = usePathname();
+
+  // engagement bump on route changes (used for Install CTA timing)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    bumpEngagement();
+  }, [pathname]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-white">
       {/* main content with onboarding gate */}
       <div className="flex-1 overflow-y-auto">
-        <OnboardingGate>{children}</OnboardingGate>
+        <OnboardingGate>
+          {/* Smart Install CTA (M12d) */}
+          <GetAppButton variant="banner" />
+
+          {children}
+        </OnboardingGate>
       </div>
 
       {/* bottom nav */}
@@ -40,8 +65,7 @@ export default function MobileLayout({ children }: MobileLayoutProps) {
               pathname === item.href ||
               (item.href === "/mobile" && pathname === "/mobile");
 
-            const isPrimary =
-              item.label === "Home" || item.label === "Explore";
+            const isPrimary = item.label === "Home" || item.label === "Explore";
 
             return (
               <Link

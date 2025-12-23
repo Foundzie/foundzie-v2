@@ -7,19 +7,14 @@
  * Instead of HTTP calls for SOS/Calls/Notifications, we call the
  * in-memory stores directly so changes appear instantly in Admin UI.
  *
- * NEW in M8c:
- * - get_places_for_user: lets the agent fetch curated places
- *   using your unified /api/places endpoint.
+ * Compatibility quick fixes:
+ * 1) Tool implementation args MUST match the schema in spec.ts (coreTools).
+ * 2) Server-side fetch must use an ABSOLUTE URL (relative /api/... is not reliable here).
  */
 
 import "server-only";
 
-import {
-  addEvent,
-  updateEvent,
-  type SosStatus,
-} from "@/app/api/sos/store";
-
+import { addEvent, updateEvent, type SosStatus } from "@/app/api/sos/store";
 import { addCallLog } from "@/app/api/calls/store";
 
 import {
@@ -28,6 +23,32 @@ import {
   type NotificationType,
   type MediaKind,
 } from "@/app/data/notifications";
+
+/* ------------------------------------------------------------------ */
+/*  Helper: stable base URL for server-side fetch                       */
+/* ------------------------------------------------------------------ */
+
+function getBaseUrl(): string {
+  // Prefer explicit app URL if you have it
+  const explicit =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    process.env.APP_URL ||
+    process.env.SITE_URL;
+
+  if (explicit && explicit.trim()) {
+    return explicit.trim().replace(/\/+$/, "");
+  }
+
+  // Vercel provides hostname without scheme
+  const vercel = process.env.VERCEL_URL;
+  if (vercel && vercel.trim()) {
+    return `https://${vercel.trim().replace(/\/+$/, "")}`;
+  }
+
+  // Local dev fallback
+  return "http://localhost:3000";
+}
 
 /* ------------------------------------------------------------------ */
 /* 1. SOS tools                                                        */
@@ -87,9 +108,7 @@ export async function log_outbound_call(args: {
       : "";
 
   const note =
-    typeof args.note === "string" && args.note.trim()
-      ? args.note.trim()
-      : "";
+    typeof args.note === "string" && args.note.trim() ? args.note.trim() : "";
 
   if (!phone) {
     throw new Error(
@@ -150,52 +169,120 @@ export async function broadcast_notification(args: {
 }
 
 /* ------------------------------------------------------------------ */
-/* 4. Places recommendation tool (M8c)                                */
+/* 4. Places recommendation tool (M8c)                                 */
 /* ------------------------------------------------------------------ */
 
 /**
  * get_places_for_user
  * -------------------
- * Used by the agent to fetch curated places from /api/places.
+ * IMPORTANT: This function signature MUST match the schema in spec.ts (coreTools).
  *
- * We keep it simple to avoid coupling to the user store:
- * - mode: "normal" | "child"    (controls child-safe filter)
- * - interest: optional free-text (used as q=<interest>)
+ * Schema fields we support:
+ * - userId?: string
+ * - roomId?: string
+ * - limit?: number (1..10)
+ * - manualInterest?: string
+ * - manualMode?: "normal" | "child"
  *
- * The admin/agent prompt will usually say:
- *   "For this guest (child-safe, loves pizza), get places…"
- * and the model will choose the right mode + interest values.
+ * Behavior:
+ * - If manualMode provided → use it
+ * - Else if user found → use user's interactionMode
+ * - Else → normal
+ *
+ * - Query interest:
+ *   manualInterest > user.interest > empty
+ *
+ * - Uses ABSOLUTE URL for server fetch.
  */
 export async function get_places_for_user(args: {
-  mode?: "normal" | "child";
-  interest?: string;
-  locationHint?: string; // reserved for future (e.g. city/neighborhood text)
+  userId?: string;
+  roomId?: string;
+  limit?: number;
+  manualInterest?: string;
+  manualMode?: "normal" | "child";
 }) {
-  const mode = args.mode === "child" ? "child" : "normal";
-  const q = (args.interest ?? "").trim();
+  const userId =
+    typeof args.userId === "string" && args.userId.trim()
+      ? args.userId.trim()
+      : null;
 
+  const roomId =
+    typeof args.roomId === "string" && args.roomId.trim()
+      ? args.roomId.trim()
+      : null;
+
+  // clamp limit 1..10 (default 5)
+  const rawLimit = Number.isFinite(args.limit as any) ? Number(args.limit) : 5;
+  const limit = Math.max(1, Math.min(10, rawLimit || 5));
+
+  // Find user (optional) to infer interest + mode
+  let user: any | undefined;
+
+  try {
+    const usersStore = await import("@/app/api/users/store");
+    const { getUser, findUserByRoomId } = usersStore as any;
+
+    if (userId && typeof getUser === "function") {
+      user = await getUser(String(userId));
+    }
+
+    if (!user && roomId && typeof findUserByRoomId === "function") {
+      user = await findUserByRoomId(String(roomId));
+    }
+  } catch (err) {
+    console.error("[agent tool] get_places_for_user: user lookup failed:", err);
+  }
+
+  // Decide mode
+  const manualMode =
+    args.manualMode === "child" ? "child" : args.manualMode === "normal" ? "normal" : null;
+
+  const inferredMode =
+    user?.interactionMode === "child" ? "child" : "normal";
+
+  const mode = manualMode ?? inferredMode;
+
+  // Decide query/interest
+  const manualInterest =
+    typeof args.manualInterest === "string" ? args.manualInterest.trim() : "";
+
+  const userInterest =
+    typeof user?.interest === "string" ? String(user.interest).trim() : "";
+
+  const q = manualInterest || userInterest || "";
+
+  // Build request to unified /api/places
   const searchParams = new URLSearchParams();
   searchParams.set("mode", mode);
+  searchParams.set("limit", String(limit));
   if (q) searchParams.set("q", q);
 
-  // NOTE: relative URL works inside Next.js app router on the server.
-  const res = await fetch(`/api/places?${searchParams.toString()}`, {
+  const baseUrl = getBaseUrl();
+  const url = `${baseUrl}/api/places?${searchParams.toString()}`;
+
+  const res = await fetch(url, {
     method: "GET",
     cache: "no-store",
+    // Keep it simple; no headers required for your current /api/places route
   });
 
   if (!res.ok) {
-    const text = await res.text();
+    const text = await res.text().catch(() => "");
     console.error("[agent tool] get_places_for_user error:", res.status, text);
     throw new Error("Failed to fetch places for user");
   }
 
-  const json = await res.json();
+  const json = await res.json().catch(() => ({} as any));
+
+  const places = (json?.places ?? json ?? []) as any[];
 
   const result = {
+    usedUserId: userId,
+    usedRoomId: roomId,
     usedMode: mode,
     usedQuery: q || null,
-    places: json?.places ?? json ?? [],
+    usedLimit: limit,
+    places,
   };
 
   console.log("[agent tool] get_places_for_user →", result);
