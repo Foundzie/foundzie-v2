@@ -1,7 +1,7 @@
-// src/components/MaintenanceBanner.tsx
 "use client";
 
 import { useEffect, useState } from "react";
+import { TriangleAlert } from "lucide-react";
 
 type MaintenanceState = {
   enabled: boolean;
@@ -20,9 +20,7 @@ export function MaintenanceBannerMobile({
 
     async function load() {
       try {
-        const res = await fetch("/api/admin/maintenance", {
-          cache: "no-store",
-        });
+        const res = await fetch("/api/admin/maintenance", { cache: "no-store" });
         if (!res.ok) return;
         const data = await res.json();
         if (!cancelled && data?.state) {
@@ -32,7 +30,7 @@ export function MaintenanceBannerMobile({
           });
         }
       } catch {
-        // silently ignore on mobile; banner is purely informational
+        // ignore on mobile; banner is informational
       }
     }
 
@@ -46,15 +44,26 @@ export function MaintenanceBannerMobile({
 
   return (
     <div
-      className={`mb-3 rounded-xl border border-amber-400 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-sm ${className}`}
+      className={[
+        "fz-card",
+        "px-3 py-2",
+        "flex items-start gap-2",
+        "border-amber-200 bg-amber-50",
+        className,
+      ].join(" ")}
     >
-      <p className="font-semibold text-[11px] mb-0.5">
-        Maintenance in progress
-      </p>
-      <p className="text-[11px] leading-snug">
-        {state.message ||
-          "Foundzie is in maintenance right now. Some features may be limited."}
-      </p>
+      <div className="mt-[2px]">
+        <TriangleAlert size={16} className="text-amber-600" />
+      </div>
+      <div className="min-w-0">
+        <p className="font-semibold text-[12px] text-amber-900">
+          Maintenance in progress
+        </p>
+        <p className="text-[12px] leading-snug text-amber-900/80">
+          {state.message ||
+            "Foundzie is in maintenance right now. Some features may be limited."}
+        </p>
+      </div>
     </div>
   );
 }

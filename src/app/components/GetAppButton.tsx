@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { Download, X, HelpCircle, Share2, PlusSquare } from "lucide-react";
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
@@ -8,16 +9,7 @@ type BeforeInstallPromptEvent = Event & {
 };
 
 type Props = {
-  /**
-   * button = just a normal button (your current behavior)
-   * banner = a smart sticky banner CTA (recommended for M12d)
-   */
   variant?: "button" | "banner";
-
-  /**
-   * If true, banner will auto-show based on engagement + cooldown.
-   * (Ignored for variant="button")
-   */
   auto?: boolean;
 };
 
@@ -25,13 +17,10 @@ const LS_DISMISSED_AT = "foundzie:install:dismissedAt";
 const LS_ENGAGEMENT = "foundzie:engagement:count";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const DISMISS_COOLDOWN_DAYS = 7; // banner won't reappear for 7 days after dismiss
-const MIN_ENGAGEMENT = 2; // require at least 2 "visits" before showing banner
+const DISMISS_COOLDOWN_DAYS = 7;
+const MIN_ENGAGEMENT = 2;
 
-export default function GetAppButton({
-  variant = "button",
-  auto = true,
-}: Props) {
+export default function GetAppButton({ variant = "button", auto = true }: Props) {
   const [deferredPrompt, setDeferredPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
 
@@ -97,7 +86,6 @@ export default function GetAppButton({
     }
 
     function onBeforeInstallPrompt(e: Event) {
-      // Chrome/Edge Android/Desktop
       e.preventDefault();
       setDeferredPrompt(e as BeforeInstallPromptEvent);
       setStatus("ready");
@@ -112,9 +100,6 @@ export default function GetAppButton({
     window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
     window.addEventListener("appinstalled", onAppInstalled);
 
-    // If iOS: there is no beforeinstallprompt. We'll show help modal when user taps,
-    // and banner can still appear (auto) if engagement threshold met.
-    // If nothing fires, mark not-supported after a short time.
     const t = setTimeout(() => {
       setStatus((s) => (s === "idle" ? "not-supported" : s));
     }, 1200);
@@ -126,7 +111,6 @@ export default function GetAppButton({
     };
   }, [isStandalone]);
 
-  // Smart banner logic (M12d)
   useEffect(() => {
     if (variant !== "banner") return;
     if (!auto) return;
@@ -136,21 +120,18 @@ export default function GetAppButton({
       return;
     }
 
-    // Wait a tick for beforeinstallprompt/not-supported to resolve
     const t = setTimeout(() => {
       const engagement = getEngagementCount();
       const dismissed = isDismissedRecently();
 
-      // show if:
-      // - not installed
-      // - not dismissed recently
-      // - user has engaged enough
-      // - and either we have a prompt OR we're on iOS (help flow) OR not-supported (still show help CTA)
       const canShow =
         !dismissed &&
         engagement >= MIN_ENGAGEMENT &&
         !isStandalone &&
-        (Boolean(deferredPrompt) || isIos || status === "not-supported" || status === "ready");
+        (Boolean(deferredPrompt) ||
+          isIos ||
+          status === "not-supported" ||
+          status === "ready");
 
       setBannerVisible(canShow);
     }, 600);
@@ -161,13 +142,11 @@ export default function GetAppButton({
   async function handleInstall() {
     if (status === "installed") return;
 
-    // iOS (Safari) has no prompt. Show instructions.
     if (isIos) {
       setShowHelp(true);
       return;
     }
 
-    // If we captured the prompt event, trigger it.
     if (deferredPrompt) {
       try {
         setStatus("prompting");
@@ -186,7 +165,6 @@ export default function GetAppButton({
       return;
     }
 
-    // Fallback help if not available
     setShowHelp(true);
   }
 
@@ -198,23 +176,21 @@ export default function GetAppButton({
       : "Get the app";
 
   // ----------------------------
-  // Banner UI (recommended)
+  // Premium light banner
   // ----------------------------
   if (variant === "banner") {
-    if (!bannerVisible) {
-      return null;
-    }
+    if (!bannerVisible) return null;
 
     return (
       <>
-        <div className="mx-auto max-w-md px-3 pt-3">
-          <div className="rounded-2xl border border-slate-800 bg-slate-950/80 backdrop-blur-md px-3 py-3 shadow-lg">
+        <div className="mx-auto max-w-md pt-2">
+          <div className="fz-card px-3 py-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-semibold text-white">
+                <p className="text-[12px] font-semibold text-slate-900">
                   Install Foundzie
                 </p>
-                <p className="mt-0.5 text-[11px] text-slate-300">
+                <p className="mt-0.5 text-[11px] text-slate-600">
                   Add it to your Home Screen for faster access.
                 </p>
               </div>
@@ -222,10 +198,13 @@ export default function GetAppButton({
               <button
                 type="button"
                 onClick={dismissBanner}
-                className="shrink-0 text-[11px] px-2 py-1 rounded-lg border border-slate-700 text-slate-300 hover:text-white hover:border-slate-500"
+                className="fz-btn px-2 py-1 text-[11px] text-slate-700 bg-white hover:bg-slate-50"
                 aria-label="Dismiss install banner"
               >
-                Not now
+                <span className="inline-flex items-center gap-1">
+                  <X size={14} />
+                  Not now
+                </span>
               </button>
             </div>
 
@@ -234,18 +213,24 @@ export default function GetAppButton({
                 type="button"
                 onClick={handleInstall}
                 disabled={status === "installed" || status === "prompting"}
-                className="flex-1 inline-flex items-center justify-center rounded-full bg-pink-500 px-4 py-2 text-xs font-semibold text-white shadow-sm shadow-pink-500/40 disabled:opacity-60"
+                className="fz-btn fz-btn-primary flex-1 inline-flex items-center justify-center px-4 py-2 text-[12px] font-semibold disabled:opacity-60"
                 aria-label="Install Foundzie"
               >
-                {buttonLabel}
+                <span className="inline-flex items-center gap-2">
+                  <Download size={16} />
+                  {buttonLabel}
+                </span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setShowHelp(true)}
-                className="inline-flex items-center justify-center rounded-full border border-slate-700 bg-slate-900/60 px-4 py-2 text-xs font-semibold text-slate-200 hover:border-slate-500"
+                className="fz-btn inline-flex items-center justify-center px-4 py-2 text-[12px] font-semibold text-slate-800 bg-white hover:bg-slate-50"
               >
-                How?
+                <span className="inline-flex items-center gap-2">
+                  <HelpCircle size={16} />
+                  How?
+                </span>
               </button>
             </div>
           </div>
@@ -253,58 +238,67 @@ export default function GetAppButton({
 
         {showHelp && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4"
+            className="modal-overlay"
             role="dialog"
             aria-modal="true"
+            aria-label="Install Foundzie help"
+            onClick={() => setShowHelp(false)}
           >
-            <div className="w-full max-w-md rounded-2xl bg-white p-4 shadow-xl border border-gray-100">
+            <div
+              className="modal-panel p-4"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-sm font-semibold text-gray-900">
+                  <p className="text-sm font-semibold text-slate-900">
                     Install Foundzie
                   </p>
-                  <p className="text-[12px] text-gray-600 mt-1">
+                  <p className="text-[12px] text-slate-600 mt-1">
                     If you don’t see an install prompt, use the steps below.
                   </p>
                 </div>
                 <button
                   onClick={() => setShowHelp(false)}
-                  className="text-xs px-2 py-1 rounded-lg border border-gray-200 hover:border-gray-300"
+                  className="fz-btn px-2 py-1 text-[12px] text-slate-700 bg-white hover:bg-slate-50"
                 >
                   Close
                 </button>
               </div>
 
-              <div className="mt-4 space-y-3 text-[12px] text-gray-700">
-                <div className="rounded-xl bg-gray-50 border border-gray-100 p-3">
-                  <p className="font-semibold text-gray-900">iPhone / iPad</p>
-                  <p className="mt-1">
+              <div className="mt-4 space-y-3 text-[12px] text-slate-700">
+                <div className="fz-card p-3">
+                  <p className="font-semibold text-slate-900 inline-flex items-center gap-2">
+                    <Share2 size={16} />
+                    iPhone / iPad
+                  </p>
+                  <p className="mt-1 text-slate-600">
                     Open in <b>Safari</b> → tap <b>Share</b> →{" "}
                     <b>Add to Home Screen</b>.
                   </p>
                 </div>
 
-                <div className="rounded-xl bg-gray-50 border border-gray-100 p-3">
-                  <p className="font-semibold text-gray-900">Android (Chrome)</p>
-                  <p className="mt-1">
+                <div className="fz-card p-3">
+                  <p className="font-semibold text-slate-900 inline-flex items-center gap-2">
+                    <PlusSquare size={16} />
+                    Android (Chrome)
+                  </p>
+                  <p className="mt-1 text-slate-600">
                     Tap <b>⋮</b> menu → <b>Install app</b> or{" "}
                     <b>Add to Home screen</b>.
                   </p>
                 </div>
 
-                <div className="rounded-xl bg-gray-50 border border-gray-100 p-3">
-                  <p className="font-semibold text-gray-900">
-                    Desktop (Chrome / Edge)
-                  </p>
-                  <p className="mt-1">
+                <div className="fz-card p-3">
+                  <p className="font-semibold text-slate-900">Desktop</p>
+                  <p className="mt-1 text-slate-600">
                     Look for the <b>install</b> icon in the address bar, or open
                     the browser menu → <b>Install Foundzie</b>.
                   </p>
                 </div>
 
-                <p className="text-[11px] text-gray-500">
+                <p className="text-[11px] text-slate-500">
                   Tip: If you’re on iOS inside an in-app browser, open this page
-                  in Safari first for the best install experience.
+                  in Safari for the best install experience.
                 </p>
               </div>
             </div>
@@ -315,7 +309,7 @@ export default function GetAppButton({
   }
 
   // ----------------------------
-  // Original button UI (kept)
+  // Button variant (light)
   // ----------------------------
   return (
     <>
@@ -323,66 +317,69 @@ export default function GetAppButton({
         type="button"
         onClick={handleInstall}
         disabled={status === "installed" || status === "prompting"}
-        className="inline-flex items-center justify-center rounded-full border border-gray-200 bg-white px-4 py-2 text-xs font-semibold text-gray-800 shadow-sm hover:border-gray-300 hover:text-gray-900 transition-colors disabled:opacity-60"
+        className="fz-btn inline-flex items-center justify-center bg-white px-4 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
         aria-label="Install Foundzie"
       >
-        {buttonLabel}
+        <span className="inline-flex items-center gap-2">
+          <Download size={16} />
+          {buttonLabel}
+        </span>
       </button>
 
       {showHelp && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="modal-overlay"
           role="dialog"
           aria-modal="true"
+          aria-label="Install Foundzie help"
+          onClick={() => setShowHelp(false)}
         >
-          <div className="w-full max-w-md rounded-2xl bg-white p-4 shadow-xl border border-gray-100">
+          <div className="modal-panel p-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-semibold text-gray-900">
+                <p className="text-sm font-semibold text-slate-900">
                   Install Foundzie
                 </p>
-                <p className="text-[12px] text-gray-600 mt-1">
+                <p className="text-[12px] text-slate-600 mt-1">
                   If you don’t see an install prompt, use the steps below.
                 </p>
               </div>
               <button
                 onClick={() => setShowHelp(false)}
-                className="text-xs px-2 py-1 rounded-lg border border-gray-200 hover:border-gray-300"
+                className="fz-btn px-2 py-1 text-[12px] text-slate-700 bg-white hover:bg-slate-50"
               >
                 Close
               </button>
             </div>
 
-            <div className="mt-4 space-y-3 text-[12px] text-gray-700">
-              <div className="rounded-xl bg-gray-50 border border-gray-100 p-3">
-                <p className="font-semibold text-gray-900">iPhone / iPad</p>
-                <p className="mt-1">
+            <div className="mt-4 space-y-3 text-[12px] text-slate-700">
+              <div className="fz-card p-3">
+                <p className="font-semibold text-slate-900">iPhone / iPad</p>
+                <p className="mt-1 text-slate-600">
                   Open in <b>Safari</b> → tap <b>Share</b> →{" "}
                   <b>Add to Home Screen</b>.
                 </p>
               </div>
 
-              <div className="rounded-xl bg-gray-50 border border-gray-100 p-3">
-                <p className="font-semibold text-gray-900">Android (Chrome)</p>
-                <p className="mt-1">
+              <div className="fz-card p-3">
+                <p className="font-semibold text-slate-900">Android (Chrome)</p>
+                <p className="mt-1 text-slate-600">
                   Tap <b>⋮</b> menu → <b>Install app</b> or{" "}
                   <b>Add to Home screen</b>.
                 </p>
               </div>
 
-              <div className="rounded-xl bg-gray-50 border border-gray-100 p-3">
-                <p className="font-semibold text-gray-900">
-                  Desktop (Chrome / Edge)
-                </p>
-                <p className="mt-1">
+              <div className="fz-card p-3">
+                <p className="font-semibold text-slate-900">Desktop</p>
+                <p className="mt-1 text-slate-600">
                   Look for the <b>install</b> icon in the address bar, or open
                   the browser menu → <b>Install Foundzie</b>.
                 </p>
               </div>
 
-              <p className="text-[11px] text-gray-500">
-                Note: Install prompts work best when the site has a manifest +
-                service worker (we added both in this milestone).
+              <p className="text-[11px] text-slate-500">
+                Install prompts work best when the site has a manifest + service
+                worker (you already added both).
               </p>
             </div>
           </div>

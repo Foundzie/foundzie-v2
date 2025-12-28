@@ -1,12 +1,12 @@
-// src/app/components/MobileSaveButton.tsx
 "use client";
 
 import { useEffect, useState } from "react";
+import { Bookmark, BookmarkCheck } from "lucide-react";
 
 export default function MobileSaveButton({ placeId }: { placeId: string }) {
   const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  // on mount, check if this place is already saved
   useEffect(() => {
     async function checkSaved() {
       try {
@@ -22,8 +22,10 @@ export default function MobileSaveButton({ placeId }: { placeId: string }) {
   }, [placeId]);
 
   const toggle = async () => {
+    if (busy) return;
     const next = !saved;
-    setSaved(next); // update UI first
+    setSaved(next);
+    setBusy(true);
 
     try {
       await fetch("/api/saved", {
@@ -36,17 +38,27 @@ export default function MobileSaveButton({ placeId }: { placeId: string }) {
       });
     } catch (err) {
       console.error("Failed to update saved on server", err);
-      // optional: revert
       setSaved(!next);
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
     <button
       onClick={toggle}
-      className={saved ? "text-sm text-yellow-400" : "text-sm text-slate-400"}
+      disabled={busy}
+      className={[
+        "fz-btn inline-flex items-center gap-2 px-3 py-2",
+        "bg-white hover:bg-slate-50",
+        "text-[12px] font-semibold",
+        saved ? "text-[var(--primary)]" : "text-slate-700",
+        busy ? "opacity-60" : "",
+      ].join(" ")}
+      aria-label={saved ? "Saved" : "Save"}
     >
-      {saved ? "★ Saved" : "☆ Save"}
+      {saved ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}
+      {saved ? "Saved" : "Save"}
     </button>
   );
 }
