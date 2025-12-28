@@ -11,7 +11,6 @@ function createVisitorId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return `visitor-${crypto.randomUUID()}`;
   }
-  // Fallback for environments without randomUUID
   return `visitor-${Date.now().toString(16)}-${Math.random()
     .toString(16)
     .slice(2)}`;
@@ -123,13 +122,9 @@ export default function MobileChatPage() {
         const apiName =
           typeof user.name === "string" ? (user.name as string) : "";
         const apiInterest =
-          typeof user.interest === "string"
-            ? (user.interest as string)
-            : "";
+          typeof user.interest === "string" ? (user.interest as string) : "";
 
-        const isAnonymous = apiName
-          .toLowerCase()
-          .startsWith("anonymous visitor");
+        const isAnonymous = apiName.toLowerCase().startsWith("anonymous visitor");
 
         setNameDraft(isAnonymous ? "" : apiName);
         setInterestDraft(apiInterest);
@@ -185,9 +180,7 @@ export default function MobileChatPage() {
       const data = await res.json().catch(() => ({} as any));
 
       if (!res.ok || !data.item) {
-        throw new Error(
-          (data && data.message) || "Could not save your details."
-        );
+        throw new Error((data && data.message) || "Could not save your details.");
       }
 
       setHasSharedProfile(true);
@@ -236,9 +229,7 @@ export default function MobileChatPage() {
         throw new Error(data.message || "Failed to save trip plan");
       }
 
-      setSavedTripIds((prev) =>
-        prev.includes(message.id) ? prev : [...prev, message.id]
-      );
+      setSavedTripIds((prev) => (prev.includes(message.id) ? prev : [...prev, message.id]));
     } catch (err) {
       console.error("Save trip plan error", err);
       setError("Could not save trip plan. Please try again.");
@@ -266,10 +257,9 @@ export default function MobileChatPage() {
       text: rawText || "",
       createdAt: new Date().toISOString(),
       attachmentName,
-      attachmentKind: attachmentName ? "image" : null, // mock
+      attachmentKind: attachmentName ? "image" : null,
     };
 
-    // optimistic add
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
 
@@ -278,8 +268,7 @@ export default function MobileChatPage() {
     const lower = rawText.toLowerCase();
 
     if (lower.startsWith("plan:")) {
-      const userRequest =
-        rawText.slice(5).trim() || "Plan something fun for me.";
+      const userRequest = rawText.slice(5).trim() || "Plan something fun for me.";
 
       transformedText = `
 TRIP_PLANNER_REQUEST:
@@ -413,12 +402,12 @@ ${userRequest}
 
   // ---------------- UI ----------------
   return (
-    <main className="min-h-screen bg-slate-950 text-white flex flex-col">
-      <header className="px-4 pt-4 pb-2 border-b border-slate-800">
+    <main className="min-h-screen bg-white text-slate-900 flex flex-col">
+      <header className="px-4 pt-4 pb-3 border-b border-slate-200 bg-white">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h1 className="text-lg font-semibold">Chat with Foundzie</h1>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-slate-600">
               Ask for help, ideas, or concierge requests.
             </p>
             {roomId && (
@@ -431,7 +420,7 @@ ${userRequest}
           <button
             type="button"
             onClick={() => setShowVoiceSheet(true)}
-            className="self-center px-3 py-1.5 rounded-full bg-purple-600 text-[11px] font-medium hover:bg-purple-500"
+            className="self-center px-3 py-1.5 rounded-full bg-purple-600 text-[11px] font-medium text-white hover:bg-purple-500"
           >
             Talk to Foundzie
           </button>
@@ -439,12 +428,9 @@ ${userRequest}
       </header>
 
       {roomId && (
-        <section className="px-4 pt-3 pb-1 border-b border-slate-800 bg-slate-900/40">
-          <form
-            onSubmit={handleProfileSave}
-            className="flex flex-col gap-2 text-[11px]"
-          >
-            <p className="text-slate-300">
+        <section className="px-4 pt-3 pb-2 border-b border-slate-200 bg-slate-50">
+          <form onSubmit={handleProfileSave} className="flex flex-col gap-2 text-[11px]">
+            <p className="text-slate-700">
               {hasSharedProfile
                 ? "You can update your details anytime to help your concierge personalise suggestions."
                 : "Tell Foundzie who you are so your concierge can personalise recommendations."}
@@ -455,36 +441,32 @@ ${userRequest}
                 value={nameDraft}
                 onChange={(e) => setNameDraft(e.target.value)}
                 placeholder="Your name (e.g. Kashif)"
-                className="flex-1 bg-slate-900 border border-slate-700 rounded-full px-3 py-1.5 text-[11px] outline-none focus:border-pink-500"
+                className="flex-1 bg-white border border-slate-200 rounded-full px-3 py-2 text-[11px] outline-none focus:border-pink-500"
               />
               <input
                 value={interestDraft}
                 onChange={(e) => setInterestDraft(e.target.value)}
                 placeholder="What you like (e.g. food & music in 60515)"
-                className="flex-1 bg-slate-900 border border-slate-700 rounded-full px-3 py-1.5 text-[11px] outline-none focus:border-pink-500"
+                className="flex-1 bg-white border border-slate-200 rounded-full px-3 py-2 text-[11px] outline-none focus:border-pink-500"
               />
               <button
                 type="submit"
                 disabled={profileSaving || !roomId}
-                className="px-3 py-1.5 text-[11px] rounded-full bg-emerald-600 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-3 py-2 text-[11px] rounded-full bg-emerald-600 text-white font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {profileSaving ? "Saving..." : "Save"}
               </button>
             </div>
 
-            {profileError && (
-              <p className="text-[11px] text-red-400">{profileError}</p>
-            )}
+            {profileError && <p className="text-[11px] text-red-600">{profileError}</p>}
             {profileSavedMessage && (
-              <p className="text-[11px] text-emerald-400">
-                {profileSavedMessage}
-              </p>
+              <p className="text-[11px] text-emerald-600">{profileSavedMessage}</p>
             )}
           </form>
         </section>
       )}
 
-      <section className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+      <section className="flex-1 overflow-y-auto px-4 py-3 space-y-2 bg-white">
         {(!roomId || loading) && (
           <p className="text-xs text-slate-500">Loading conversation...</p>
         )}
@@ -499,23 +481,16 @@ ${userRequest}
           messages.map((msg, index) => {
             const isUser = msg.sender === "user";
 
-            let displayText =
-              msg.text || (msg.attachmentName ? "(attachment)" : "");
+            let displayText = msg.text || (msg.attachmentName ? "(attachment)" : "");
 
             if (
               typeof displayText === "string" &&
               displayText.startsWith("TRIP_PLANNER_REQUEST:")
             ) {
               const lines = displayText.split("\n");
-              const firstBlank = lines.findIndex(
-                (line) => line.trim().length === 0
-              );
+              const firstBlank = lines.findIndex((line) => line.trim().length === 0);
 
-              if (
-                firstBlank !== -1 &&
-                lines[firstBlank + 1] &&
-                lines[firstBlank + 1].trim().length > 0
-              ) {
+              if (firstBlank !== -1 && lines[firstBlank + 1] && lines[firstBlank + 1].trim().length > 0) {
                 displayText = lines[firstBlank + 1].trim();
               } else {
                 displayText = "Trip planning request sent to concierge.";
@@ -537,32 +512,30 @@ ${userRequest}
               >
                 <div
                   className={[
-                    "max-w-[80%] rounded-2xl px-3 py-2 text-xs",
+                    "max-w-[85%] rounded-2xl px-3 py-2 text-xs border",
                     isUser
-                      ? "bg-pink-600 text-white"
-                      : "bg-slate-800 text-slate-100",
+                      ? "bg-blue-600 text-white border-blue-600"
+                      : "bg-slate-50 text-slate-900 border-slate-200",
                   ].join(" ")}
                 >
                   {!isUser && (
-                    <p className="text-[10px] uppercase tracking-wide text-slate-300 mb-1">
+                    <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">
                       Concierge
                     </p>
                   )}
 
                   {msg.attachmentName && (
-                    <p className="text-[10px] mb-1 italic opacity-90">
+                    <p className="text-[10px] mb-1 italic text-slate-600">
                       {msg.attachmentName}
                     </p>
                   )}
 
-                  <p className="whitespace-pre-wrap break-words">
-                    {displayText}
-                  </p>
+                  <p className="whitespace-pre-wrap break-words">{displayText}</p>
 
                   {isTripPlan && (
-                    <div className="mt-1 flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center px-2 py-[2px] rounded-full bg-slate-900 text-[9px] uppercase tracking-wide text-slate-300">
-                        TRIP PLAN
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center px-2 py-[2px] rounded-full bg-slate-100 text-[9px] uppercase tracking-wide text-slate-600 border border-slate-200">
+                        Trip plan
                       </span>
                       <button
                         type="button"
@@ -570,16 +543,12 @@ ${userRequest}
                         onClick={() => handleSaveTripPlan(msg)}
                         className="text-[10px] px-2 py-[2px] rounded-full bg-emerald-600 text-white font-medium disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        {isSaved
-                          ? "Saved"
-                          : isSavingThis
-                          ? "Saving..."
-                          : "Save plan"}
+                        {isSaved ? "Saved" : isSavingThis ? "Saving..." : "Save plan"}
                       </button>
                     </div>
                   )}
 
-                  <p className="mt-1 text-[10px] text-slate-400 text-right">
+                  <p className={`mt-1 text-[10px] text-right ${isUser ? "text-white/80" : "text-slate-500"}`}>
                     {new Date(msg.createdAt).toLocaleTimeString([], {
                       hour: "2-digit",
                       minute: "2-digit",
@@ -592,33 +561,29 @@ ${userRequest}
       </section>
 
       {error && (
-        <section className="border-t border-slate-800 px-4 pt-1 pb-1">
-          <p className="text-[11px] text-red-400">{error}</p>
+        <section className="border-t border-slate-200 px-4 py-2 bg-white">
+          <p className="text-[11px] text-red-600">{error}</p>
         </section>
       )}
 
-      <section className="border-t border-slate-800 px-4 pb-3 space-y-1">
+      <section className="border-t border-slate-200 px-4 pb-3 pt-2 space-y-1 bg-white">
         {attachmentName && (
-          <div className="flex items-center gap-2 text-[11px] text-slate-300 mb-1">
-            <span className="px-2 py-[2px] rounded-full bg-slate-700">
+          <div className="flex items-center gap-2 text-[11px] text-slate-700 mb-1">
+            <span className="px-2 py-[2px] rounded-full bg-slate-100 border border-slate-200">
               {attachmentName}
             </span>
-            <button
-              type="button"
-              className="underline"
-              onClick={() => setAttachmentName(null)}
-            >
+            <button type="button" className="underline" onClick={() => setAttachmentName(null)}>
               remove
             </button>
           </div>
         )}
 
         {roomId && (
-          <div className="flex flex-wrap items-center gap-2 mb-1 text-[11px] text-slate-300">
+          <div className="flex flex-wrap items-center gap-2 mb-1 text-[11px] text-slate-700">
             <span className="text-slate-500">Try:</span>
             <button
               type="button"
-              className="px-2 py-[2px] rounded-full bg-slate-800 border border-slate-700 hover:bg-slate-700"
+              className="px-2 py-[2px] rounded-full bg-slate-50 border border-slate-200 hover:bg-slate-100"
               onClick={() =>
                 setInput(
                   "plan: Plan a fun evening near 60515 for two adults who like burgers and arcade games."
@@ -629,22 +594,18 @@ ${userRequest}
             </button>
             <button
               type="button"
-              className="px-2 py-[2px] rounded-full bg-slate-800 border border-slate-700 hover:bg-slate-700"
+              className="px-2 py-[2px] rounded-full bg-slate-50 border border-slate-200 hover:bg-slate-100"
               onClick={() =>
-                setInput(
-                  "plan: Plan a relaxed family afternoon nearby with kid-friendly places."
-                )
+                setInput("plan: Plan a relaxed family afternoon nearby with kid-friendly places.")
               }
             >
               Family afternoon nearby
             </button>
             <button
               type="button"
-              className="px-2 py-[2px] rounded-full bg-slate-800 border border-slate-700 hover:bg-slate-700"
+              className="px-2 py-[2px] rounded-full bg-slate-50 border border-slate-200 hover:bg-slate-100"
               onClick={() =>
-                setInput(
-                  "plan: Plan a cozy date night in or near 60515 with dinner and one fun activity."
-                )
+                setInput("plan: Plan a cozy date night in or near 60515 with dinner and one fun activity.")
               }
             >
               Date night in 60515
@@ -660,14 +621,12 @@ ${userRequest}
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (file) {
-                  setAttachmentName(file.name);
-                }
+                if (file) setAttachmentName(file.name);
               }}
             />
             <label
               htmlFor="mobile-chat-file"
-              className="px-2 py-1 text-[11px] rounded-full border border-slate-700 cursor-pointer"
+              className="px-2 py-1 text-[11px] rounded-full border border-slate-200 bg-white cursor-pointer hover:bg-slate-50"
             >
               Attach
             </label>
@@ -677,13 +636,13 @@ ${userRequest}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Type a message... (try: plan: Plan a fun evening near 60515)"
-            className="flex-1 bg-slate-900 border border-slate-700 rounded-full px-3 py-2 text-xs outline-none focus:border-pink-500"
+            className="flex-1 bg-white border border-slate-200 rounded-full px-3 py-2 text-xs outline-none focus:border-pink-500"
           />
 
           <button
             type="submit"
             disabled={sending || (!input.trim() && !attachmentName) || !roomId}
-            className="px-3 py-2 text-xs rounded-full bg-pink-600 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-2 text-xs rounded-full bg-pink-500 text-white font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {sending ? "Sending..." : "Send"}
           </button>
@@ -693,25 +652,25 @@ ${userRequest}
       {/* Voice sheet */}
       {showVoiceSheet && (
         <div
-          className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-30"
+          className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-30"
           onClick={() => setShowVoiceSheet(false)}
         >
           <div
-            className="bg-slate-900 w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-4 space-y-3"
+            className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-4 space-y-3 border border-slate-200"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2">
-              <h2 className="text-base font-semibold">Talk to Foundzie</h2>
+              <h2 className="text-base font-semibold text-slate-900">Talk to Foundzie</h2>
               <button
                 type="button"
                 onClick={() => setShowVoiceSheet(false)}
-                className="text-xs text-slate-400 hover:text-slate-200"
+                className="text-xs text-slate-500 hover:text-slate-700"
               >
                 Close
               </button>
             </div>
 
-            <p className="text-xs text-slate-300">
+            <p className="text-xs text-slate-600">
               Choose live voice (WebRTC) or request a phone call via concierge.
             </p>
 
@@ -724,7 +683,7 @@ ${userRequest}
             </button>
 
             {voiceRequestError && (
-              <p className="text-[11px] text-amber-300">{voiceRequestError}</p>
+              <p className="text-[11px] text-amber-600">{voiceRequestError}</p>
             )}
 
             <button
@@ -739,7 +698,7 @@ ${userRequest}
             <button
               type="button"
               onClick={() => setShowVoiceSheet(false)}
-              className="w-full px-4 py-2 rounded-full bg-slate-800 text-xs font-medium text-slate-100 hover:bg-slate-700"
+              className="w-full px-4 py-2 rounded-full bg-slate-100 text-xs font-medium text-slate-900 hover:bg-slate-200 border border-slate-200"
             >
               Keep chatting
             </button>

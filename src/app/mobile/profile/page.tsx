@@ -2,7 +2,6 @@
 "use client";
 
 import { useEffect, useState, FormEvent } from "react";
-import BottomNav from "../../components/BottomNav";
 import { User, MapPin, Phone, Mail, Share2, Sparkles } from "lucide-react";
 
 const VISITOR_ID_STORAGE_KEY = "foundzie_visitor_id";
@@ -71,18 +70,13 @@ export default function ProfilePage() {
     "idle" | "copied" | "shared" | "error"
   >("idle");
 
-  /* -------------------------------------------------- */
-  /* Initial hydration: roomId, mode, profile, referral */
-  /* -------------------------------------------------- */
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     try {
-      // room id from chat / visitor
       const storedRoom = window.localStorage.getItem(VISITOR_ID_STORAGE_KEY);
       if (storedRoom) setRoomId(storedRoom);
 
-      // interaction mode (support both old + new keys)
       let foundMode: string | null = null;
       for (const key of MODE_KEYS) {
         const v = window.localStorage.getItem(key);
@@ -94,27 +88,18 @@ export default function ProfilePage() {
       if (foundMode === "child" || foundMode === "normal") {
         setInteractionMode(foundMode);
       } else {
-        MODE_KEYS.forEach((k) =>
-          window.localStorage.setItem(k, "normal")
-        );
+        MODE_KEYS.forEach((k) => window.localStorage.setItem(k, "normal"));
         setInteractionMode("normal");
       }
 
-      // local profile cache
       const local = window.localStorage.getItem(PROFILE_LOCAL_KEY);
       if (local) {
         try {
           const parsed = JSON.parse(local) as Partial<ProfileFormState>;
-          setProfile((prev) => ({
-            ...prev,
-            ...parsed,
-          }));
-        } catch {
-          // ignore
-        }
+          setProfile((prev) => ({ ...prev, ...parsed }));
+        } catch {}
       }
 
-      // onboarding snapshot (name + city + interests)
       const onboardRaw = window.localStorage.getItem(ONBOARD_KEY);
       if (onboardRaw) {
         try {
@@ -125,22 +110,14 @@ export default function ProfilePage() {
             city: o.city || prev.city,
             interests: o.interests || prev.interests,
           }));
-        } catch {
-          // ignore
-        }
+        } catch {}
       }
 
-      // referral code
       const storedRef = window.localStorage.getItem(REF_CODE_KEY);
       if (storedRef) setRefCode(storedRef);
-    } catch {
-      // non-fatal
-    }
+    } catch {}
   }, []);
 
-  /* -------------------------------------------------- */
-  /* Fetch server-side user for this roomId             */
-  /* -------------------------------------------------- */
   useEffect(() => {
     if (!roomId) {
       setLoadingProfile(false);
@@ -152,9 +129,7 @@ export default function ProfilePage() {
     async function loadUser(currentRoomId: string) {
       try {
         const encoded = encodeURIComponent(currentRoomId);
-        const res = await fetch(`/api/users/room/${encoded}`, {
-          cache: "no-store",
-        });
+        const res = await fetch(`/api/users/room/${encoded}`, { cache: "no-store" });
         const json = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
           item?: AdminUserLike;
@@ -166,8 +141,7 @@ export default function ProfilePage() {
         }
 
         const u = json.item;
-        const cityTag =
-          u.tags?.find((t) => t.startsWith("city:"))?.slice(5) ?? "";
+        const cityTag = u.tags?.find((t) => t.startsWith("city:"))?.slice(5) ?? "";
 
         setProfile((prev) => ({
           name: u.name || prev.name || "Anonymous visitor",
@@ -192,7 +166,6 @@ export default function ProfilePage() {
       }
     }
 
-    // roomId is guaranteed non-null here
     loadUser(roomId as string);
 
     return () => {
@@ -200,11 +173,8 @@ export default function ProfilePage() {
     };
   }, [roomId]);
 
-  /* -------------------------------------------------- */
-  /* Sync interaction mode to backend                   */
-  /* -------------------------------------------------- */
   async function syncModeToBackend(mode: InteractionMode) {
-    if (!roomId) return; // best-effort; chat creates this
+    if (!roomId) return;
 
     try {
       setSavingMode(true);
@@ -238,9 +208,6 @@ export default function ProfilePage() {
     void syncModeToBackend(value);
   }
 
-  /* -------------------------------------------------- */
-  /* Save profile (local + admin via room endpoint)     */
-  /* -------------------------------------------------- */
   async function handleProfileSubmit(e: FormEvent) {
     e.preventDefault();
     setSavingProfile(true);
@@ -249,10 +216,7 @@ export default function ProfilePage() {
 
     try {
       if (typeof window !== "undefined") {
-        window.localStorage.setItem(
-          PROFILE_LOCAL_KEY,
-          JSON.stringify(profile)
-        );
+        window.localStorage.setItem(PROFILE_LOCAL_KEY, JSON.stringify(profile));
       }
 
       if (roomId) {
@@ -290,9 +254,6 @@ export default function ProfilePage() {
     }
   }
 
-  /* -------------------------------------------------- */
-  /* Share / referral logic (M12c)                      */
-  /* -------------------------------------------------- */
   function ensureReferralCode() {
     let code = refCode;
     if (!code) {
@@ -310,9 +271,7 @@ export default function ProfilePage() {
 
     setShareStatus("idle");
     const code = ensureReferralCode();
-    const shareUrl = `${window.location.origin}/mobile?ref=${encodeURIComponent(
-      code
-    )}`;
+    const shareUrl = `${window.location.origin}/mobile?ref=${encodeURIComponent(code)}`;
 
     try {
       const shareText =
@@ -358,19 +317,18 @@ export default function ProfilePage() {
   const initial = profile.name?.trim()?.charAt(0)?.toUpperCase() || "F";
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white pb-20">
+    <main className="min-h-screen bg-white text-slate-900 pb-6">
       {/* Header */}
-      <header className="px-4 pt-6 pb-4 bg-gradient-to-b from-slate-900 via-slate-950 to-slate-950 border-b border-slate-900">
-        <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400 mb-1">
+      <header className="px-4 pt-6 pb-4 bg-white border-b border-slate-200">
+        <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 mb-1">
           Profile
         </p>
         <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
-          <User className="w-4 h-4 text-pink-400" />
+          <User className="w-4 h-4 text-pink-500" />
           Your Foundzie identity
         </h1>
-        <p className="text-xs text-slate-300 mt-1">
-          Edit your details, choose how Foundzie behaves, and invite friends to
-          try the concierge.
+        <p className="text-xs text-slate-600 mt-1">
+          Edit your details, choose how Foundzie behaves, and invite friends to try the concierge.
         </p>
       </header>
 
@@ -379,15 +337,15 @@ export default function ProfilePage() {
         {/* Profile card + form */}
         <form
           onSubmit={handleProfileSubmit}
-          className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4 space-y-4"
+          className="rounded-2xl border border-slate-200 bg-white p-4 space-y-4 shadow-[0_10px_30px_rgba(15,23,42,0.06)]"
         >
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-full bg-gradient-to-br from-pink-500 to-violet-500 flex items-center justify-center text-sm font-semibold shadow-sm shadow-pink-500/50">
+            <div className="w-11 h-11 rounded-full bg-gradient-to-br from-pink-500 to-violet-500 flex items-center justify-center text-sm font-semibold text-white shadow-sm">
               {initial}
             </div>
             <div className="flex-1">
-              <p className="text-xs text-slate-400 mb-0.5">Signed in as</p>
-              <p className="text-sm font-medium text-slate-50">
+              <p className="text-xs text-slate-500 mb-0.5">Signed in as</p>
+              <p className="text-sm font-medium text-slate-900">
                 {profile.name || "Anonymous visitor"}
               </p>
               {profile.memberSince && (
@@ -399,8 +357,8 @@ export default function ProfilePage() {
             <span
               className={`text-[10px] px-2 py-0.5 rounded-full border ${
                 profile.status === "active"
-                  ? "border-emerald-400/50 bg-emerald-500/10 text-emerald-200"
-                  : "border-slate-600 bg-slate-800 text-slate-200"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : "border-slate-200 bg-slate-50 text-slate-700"
               }`}
             >
               {profile.status.toUpperCase()}
@@ -408,79 +366,64 @@ export default function ProfilePage() {
           </div>
 
           <div className="grid grid-cols-1 gap-3 mt-3">
-            {/* Name */}
-            <label className="text-xs text-slate-300 space-y-1">
+            <label className="text-xs text-slate-700 space-y-1">
               <span>Full name</span>
               <input
                 value={profile.name}
-                onChange={(e) =>
-                  setProfile((p) => ({ ...p, name: e.target.value }))
-                }
+                onChange={(e) => setProfile((p) => ({ ...p, name: e.target.value }))}
                 placeholder="e.g. Kashif Yusuf"
-                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-400"
+                className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
               />
             </label>
 
-            {/* Email */}
-            <label className="text-xs text-slate-300 space-y-1">
+            <label className="text-xs text-slate-700 space-y-1">
               <span>Email</span>
               <div className="flex items-center gap-2">
-                <Mail className="w-3 h-3 text-slate-500" />
+                <Mail className="w-3 h-3 text-slate-400" />
                 <input
                   value={profile.email}
-                  onChange={(e) =>
-                    setProfile((p) => ({ ...p, email: e.target.value }))
-                  }
+                  onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
                   type="email"
                   placeholder="you@example.com"
-                  className="flex-1 bg-slate-900/80 border border-slate-700 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-400"
+                  className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
                 />
               </div>
             </label>
 
-            {/* Phone */}
-            <label className="text-xs text-slate-300 space-y-1">
+            <label className="text-xs text-slate-700 space-y-1">
               <span>Phone (optional)</span>
               <div className="flex items-center gap-2">
-                <Phone className="w-3 h-3 text-slate-500" />
+                <Phone className="w-3 h-3 text-slate-400" />
                 <input
                   value={profile.phone}
-                  onChange={(e) =>
-                    setProfile((p) => ({ ...p, phone: e.target.value }))
-                  }
+                  onChange={(e) => setProfile((p) => ({ ...p, phone: e.target.value }))}
                   placeholder="+1 555 123 4567"
-                  className="flex-1 bg-slate-900/80 border border-slate-700 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-400"
+                  className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
                 />
               </div>
             </label>
 
-            {/* City */}
-            <label className="text-xs text-slate-300 space-y-1">
+            <label className="text-xs text-slate-700 space-y-1">
               <span>Home city</span>
               <div className="flex items-center gap-2">
-                <MapPin className="w-3 h-3 text-slate-500" />
+                <MapPin className="w-3 h-3 text-slate-400" />
                 <input
                   value={profile.city}
-                  onChange={(e) =>
-                    setProfile((p) => ({ ...p, city: e.target.value }))
-                  }
+                  onChange={(e) => setProfile((p) => ({ ...p, city: e.target.value }))}
                   placeholder="e.g. Downers Grove, Chicago, Istanbul"
-                  className="flex-1 bg-slate-900/80 border border-slate-700 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-400"
+                  className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
                 />
               </div>
             </label>
 
-            {/* Interests */}
-            <label className="text-xs text-slate-300 space-y-1">
+            <label className="text-xs text-slate-700 space-y-1">
               <span>What are you into?</span>
               <textarea
                 value={profile.interests}
-                onChange={(e) =>
-                  setProfile((p) => ({ ...p, interests: e.target.value }))
-                }
+                onChange={(e) => setProfile((p) => ({ ...p, interests: e.target.value }))}
                 placeholder="e.g. brunch, family activities, live music, rooftop views"
                 rows={3}
-                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-400 resize-none"
+                className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500 resize-none"
               />
             </label>
           </div>
@@ -488,80 +431,81 @@ export default function ProfilePage() {
           <div className="flex items-center justify-between pt-2">
             <div className="space-y-1">
               {savingProfile && (
-                <p className="text-[11px] text-slate-400">
-                  Saving your details…
-                </p>
+                <p className="text-[11px] text-slate-500">Saving your details…</p>
               )}
               {profileSaved && !savingProfile && (
-                <p className="text-[11px] text-emerald-300">
+                <p className="text-[11px] text-emerald-600">
                   Saved. Your concierge can now see this profile.
                 </p>
               )}
               {profileError && (
-                <p className="text-[11px] text-amber-300">{profileError}</p>
+                <p className="text-[11px] text-amber-600">{profileError}</p>
               )}
             </div>
+
             <button
               type="submit"
               disabled={savingProfile}
-              className="inline-flex items-center gap-1 rounded-full bg-pink-500 px-4 py-2 text-xs font-medium text-white shadow-sm shadow-pink-500/40 disabled:opacity-60"
+              className="inline-flex items-center gap-1 rounded-full bg-pink-500 px-4 py-2 text-xs font-medium text-white shadow-sm disabled:opacity-60"
             >
               <Sparkles className="w-3 h-3" />
               {savingProfile ? "Saving…" : "Save profile"}
             </button>
           </div>
+
+          {loadingProfile && (
+            <p className="text-[11px] text-slate-500">Loading profile…</p>
+          )}
         </form>
 
         {/* Share / invite card */}
-        <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4 space-y-3">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
           <div className="flex items-center justify-between gap-2">
             <div>
               <p className="text-sm font-medium">Share Foundzie</p>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-600">
                 Send friends a link to try the Foundzie concierge preview.
               </p>
             </div>
-            <Share2 className="w-4 h-4 text-pink-400" />
+            <Share2 className="w-4 h-4 text-pink-500" />
           </div>
 
           <button
             type="button"
             onClick={handleShare}
-            className="mt-2 inline-flex items-center justify-center gap-2 rounded-full bg-pink-500 px-4 py-2 text-xs font-medium text-white shadow-sm shadow-pink-500/40"
+            className="mt-2 inline-flex items-center justify-center gap-2 rounded-full bg-pink-500 px-4 py-2 text-xs font-medium text-white"
           >
             Share Foundzie with a friend
           </button>
 
           {shareStatus === "copied" && (
-            <p className="text-[11px] text-emerald-300 mt-1">
+            <p className="text-[11px] text-emerald-600 mt-1">
               Link copied to clipboard.
             </p>
           )}
           {shareStatus === "shared" && (
-            <p className="text-[11px] text-emerald-300 mt-1">
+            <p className="text-[11px] text-emerald-600 mt-1">
               Share sheet opened. Thanks for spreading the word!
             </p>
           )}
           {shareStatus === "error" && (
-            <p className="text-[11px] text-amber-300 mt-1">
-              Couldn&apos;t share automatically. You can copy the link from your
-              browser address bar.
+            <p className="text-[11px] text-amber-600 mt-1">
+              Couldn&apos;t share automatically. You can copy the link from your browser address bar.
             </p>
           )}
 
-          <div className="mt-3 pt-3 border-t border-slate-800">
-            <p className="text-[11px] text-slate-400 mb-1">
-              Referral code (preview)
-            </p>
+          <div className="mt-3 pt-3 border-t border-slate-200">
+            <p className="text-[11px] text-slate-600 mb-1">Referral code (preview)</p>
+
             {refCode ? (
               <div className="flex items-center justify-between gap-3">
-                <p className="text-lg font-mono tracking-[0.18em] text-slate-50">
+                <p className="text-lg font-mono tracking-[0.18em] text-slate-900">
                   {refCode}
                 </p>
                 <button
                   type="button"
                   onClick={handleGenerateRefCode}
-                  className="text-[11px] px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900/80"
+                  className="text-[11px] px-3 py-1.5 rounded-full border border-slate-200 bg-slate-50 hover:bg-slate-100"
                 >
                   Regenerate
                 </button>
@@ -570,29 +514,28 @@ export default function ProfilePage() {
               <button
                 type="button"
                 onClick={handleGenerateRefCode}
-                className="inline-flex items-center justify-center rounded-full border border-slate-700 bg-slate-900/80 px-4 py-2 text-xs text-slate-100"
+                className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-slate-50 hover:bg-slate-100 px-4 py-2 text-xs text-slate-900"
               >
                 Generate my referral code
               </button>
             )}
+
             <p className="text-[10px] text-slate-500 pt-1">
-              In a later milestone we&apos;ll connect this into proper rewards
-              and tracking inside the admin panel.
+              In a later milestone we&apos;ll connect this into proper rewards and tracking inside the admin panel.
             </p>
           </div>
         </div>
 
         {/* Interaction mode card */}
-        <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4 space-y-3 mb-2">
-          <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
+          <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
             Interaction mode
           </p>
-          <p className="text-[11px] text-slate-400">
-            Choose how Foundzie talks and responds on this device. We also let
-            your concierge know your preferred mode.
+          <p className="text-[11px] text-slate-600">
+            Choose how Foundzie talks and responds on this device. We also let your concierge know your preferred mode.
           </p>
 
-          <div className="bg-slate-900/80 border border-slate-700 rounded-lg divide-y divide-slate-800">
+          <div className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-200">
             <label className="flex items-center justify-between px-3 py-2 cursor-pointer">
               <div className="flex items-center gap-2">
                 <input
@@ -601,11 +544,11 @@ export default function ProfilePage() {
                   value="normal"
                   checked={interactionMode === "normal"}
                   onChange={handleModeChange}
-                  className="h-3 w-3 text-pink-500"
+                  className="h-3 w-3"
                 />
-                <span className="text-sm text-slate-100">Normal mode</span>
+                <span className="text-sm text-slate-900">Normal mode</span>
               </div>
-              <span className="text-[10px] text-slate-400">
+              <span className="text-[10px] text-slate-500">
                 Full concierge suggestions
               </span>
             </label>
@@ -618,30 +561,24 @@ export default function ProfilePage() {
                   value="child"
                   checked={interactionMode === "child"}
                   onChange={handleModeChange}
-                  className="h-3 w-3 text-pink-500"
+                  className="h-3 w-3"
                 />
-                <span className="text-sm text-slate-100">
-                  Child-safe mode
-                </span>
+                <span className="text-sm text-slate-900">Child-safe mode</span>
               </div>
-              <span className="text-[10px] text-slate-400">
+              <span className="text-[10px] text-slate-500">
                 Gentler tone & kid-friendly content
               </span>
             </label>
           </div>
 
           {savingMode && (
-            <p className="text-[11px] text-slate-400">
+            <p className="text-[11px] text-slate-500">
               Updating your concierge preferences…
             </p>
           )}
-          {modeError && (
-            <p className="text-[11px] text-red-400">{modeError}</p>
-          )}
+          {modeError && <p className="text-[11px] text-red-600">{modeError}</p>}
         </div>
       </section>
-
-      <BottomNav />
     </main>
   );
 }

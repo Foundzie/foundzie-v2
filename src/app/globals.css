@@ -1,146 +1,68 @@
 @import "tailwindcss";
 
-/* -------------------------------------------------------
-   Foundzie – Premium Light Mode System (App-like)
-   - No dark mode (locked)
-   - Soft surfaces + subtle elevation
-   - Safe-area support
-   - No sideways overflow
--------------------------------------------------------- */
+/* -----------------------------
+   Foundzie Light Theme (App-like)
+   Instagram/Facebook-inspired
+------------------------------ */
 
 :root {
-  /* Brand + UI tokens */
-  --bg: #f6f7fb;          /* app background */
-  --surface: #ffffff;     /* cards, headers */
-  --text: #0f172a;        /* slate-900-ish */
-  --muted: #64748b;       /* slate-500-ish */
-  --border: rgba(15, 23, 42, 0.10);
-
-  /* Brand accent (Instagram/Facebook-ish without copying) */
-  --primary: #2563eb;     /* blue */
-  --primary-2: #7c3aed;   /* purple accent */
-  --accent: #ec4899;      /* pink accent */
-
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-  --shadow-md: 0 10px 30px rgba(15, 23, 42, 0.10);
-
-  /* iOS safe areas */
-  --safe-top: env(safe-area-inset-top);
-  --safe-right: env(safe-area-inset-right);
-  --safe-bottom: env(safe-area-inset-bottom);
-  --safe-left: env(safe-area-inset-left);
+  --bg: 255 255 255;           /* app background */
+  --surface: 248 250 252;      /* subtle surface */
+  --card: 255 255 255;         /* card surface */
+  --text: 15 23 42;            /* slate-900 */
+  --muted: 71 85 105;          /* slate-600 */
+  --border: 226 232 240;       /* slate-200 */
+  --brand: 37 99 235;          /* blue-600 */
+  --brand-2: 147 51 234;       /* purple-600 */
+  --danger: 220 38 38;         /* red-600 */
+  --success: 16 185 129;       /* emerald-500 */
 }
 
-@theme inline {
-  /* Tailwind theme tokens used in your RootLayout body class */
-  --color-background: var(--bg);
-  --color-foreground: var(--text);
-
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-/* Lock light mode (ignore device dark mode) */
+/* Disable dark mode switching completely */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #f6f7fb;
-    --surface: #ffffff;
-    --text: #0f172a;
-    --muted: #64748b;
-    --border: rgba(15, 23, 42, 0.10);
+    --bg: 255 255 255;
+    --surface: 248 250 252;
+    --card: 255 255 255;
+    --text: 15 23 42;
+    --muted: 71 85 105;
+    --border: 226 232 240;
+    --brand: 37 99 235;
+    --brand-2: 147 51 234;
+    --danger: 220 38 38;
+    --success: 16 185 129;
   }
 }
 
+/* Make the whole site behave like an app viewport (no body scrollbars) */
 html,
 body {
   height: 100%;
-  width: 100%;
-  margin: 0;
-  padding: 0;
-
-  background: var(--bg);
-  color: var(--text);
-
-  font-family: var(--font-geist-sans), system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
-
-  /* Prevent “app wider than phone” */
-  overflow-x: hidden;
-
-  /* Better mobile feel */
-  -webkit-text-size-adjust: 100%;
+  background: rgb(var(--bg));
+  color: rgb(var(--text));
+  font-family: var(--font-geist-sans), system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden; /* key: prevent page scrollbars */
 }
 
-* {
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* App shell helpers */
-.app-screen {
-  height: 100dvh; /* modern */
-  height: 100vh;  /* fallback */
-  width: 100%;
-  overflow-x: hidden;
-  background: var(--bg);
-}
-
-.safe-area {
-  padding-top: var(--safe-top);
-  padding-right: var(--safe-right);
-  padding-bottom: var(--safe-bottom);
-  padding-left: var(--safe-left);
-}
-
-.native-scroll {
+/* iOS smoother scroll inside the app container */
+.app-scroll {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
 }
 
-/* Premium “card” + “button” primitives (use anywhere) */
-.fz-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: var(--shadow-sm);
+/* Hide scrollbars (still scrollable) */
+.app-scroll::-webkit-scrollbar {
+  width: 0px;
+  height: 0px;
+}
+.app-scroll {
+  scrollbar-width: none;
 }
 
-.fz-elevated {
-  box-shadow: var(--shadow-md);
+/* Safe-area helpers */
+.safe-b {
+  padding-bottom: env(safe-area-inset-bottom);
 }
-
-.fz-btn {
-  border-radius: 9999px;
-  box-shadow: var(--shadow-sm);
-  border: 1px solid rgba(15, 23, 42, 0.10);
-}
-
-.fz-btn-primary {
-  background: linear-gradient(135deg, var(--primary), var(--primary-2));
-  color: white;
-  border: 0;
-  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.25);
-}
-
-/* Modal primitives to keep popups inside viewport */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: flex-end; /* bottom sheet style */
-  justify-content: center;
-  padding: 12px;
-  background: rgba(15, 23, 42, 0.35);
-}
-
-.modal-panel {
-  width: 100%;
-  max-width: 520px;
-  max-height: calc(100dvh - 24px);
-  overflow: auto;
-  border-radius: 18px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-md);
+.safe-t {
+  padding-top: env(safe-area-inset-top);
 }

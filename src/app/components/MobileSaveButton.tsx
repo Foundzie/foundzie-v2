@@ -5,7 +5,6 @@ import { Bookmark, BookmarkCheck } from "lucide-react";
 
 export default function MobileSaveButton({ placeId }: { placeId: string }) {
   const [saved, setSaved] = useState(false);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     async function checkSaved() {
@@ -22,38 +21,29 @@ export default function MobileSaveButton({ placeId }: { placeId: string }) {
   }, [placeId]);
 
   const toggle = async () => {
-    if (busy) return;
     const next = !saved;
     setSaved(next);
-    setBusy(true);
 
     try {
       await fetch("/api/saved", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: placeId,
-          action: next ? "add" : "remove",
-        }),
+        body: JSON.stringify({ id: placeId, action: next ? "add" : "remove" }),
       });
     } catch (err) {
       console.error("Failed to update saved on server", err);
       setSaved(!next);
-    } finally {
-      setBusy(false);
     }
   };
 
   return (
     <button
       onClick={toggle}
-      disabled={busy}
       className={[
-        "fz-btn inline-flex items-center gap-2 px-3 py-2",
-        "bg-white hover:bg-slate-50",
-        "text-[12px] font-semibold",
-        saved ? "text-[var(--primary)]" : "text-slate-700",
-        busy ? "opacity-60" : "",
+        "inline-flex items-center gap-2 rounded-full px-3 py-2 text-[12px] font-semibold",
+        "border border-slate-200 bg-white",
+        "shadow-[0_10px_22px_rgba(15,23,42,0.10)] active:scale-[0.99] transition",
+        saved ? "text-blue-600" : "text-slate-700",
       ].join(" ")}
       aria-label={saved ? "Saved" : "Save"}
     >

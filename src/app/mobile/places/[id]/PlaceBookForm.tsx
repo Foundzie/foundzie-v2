@@ -39,12 +39,7 @@ export default function PlaceBookForm({ placeId, placeName }: PlaceBookFormProps
           phone: phoneTrimmed,
           interest: `Book ${placeName}`,
           source: "mobile-place-book",
-          // tags as a real array so admin can target these easily
-          tags: [
-            "booking-intent",
-            `place-id-${placeId}`,
-            `place-name-${placeName}`,
-          ],
+          tags: ["booking-intent", `place-id-${placeId}`, `place-name-${placeName}`],
         }),
       });
 
@@ -58,7 +53,7 @@ export default function PlaceBookForm({ placeId, placeName }: PlaceBookFormProps
 
       const userId: string | undefined = collectJson.item.id;
 
-      // 2) Start outbound call (Twilio will auto-skip if env vars missing)
+      // 2) Start outbound call
       const note = `Booking request from mobile-place for "${placeName}"`;
 
       const callRes = await fetch("/api/calls/outbound", {
@@ -80,11 +75,9 @@ export default function PlaceBookForm({ placeId, placeName }: PlaceBookFormProps
         );
       }
 
-      setDoneMsg(
-        `Got it, ${name}. Your concierge will call you shortly at ${phoneTrimmed}.`
-      );
+      setDoneMsg(`Got it, ${name}. Your concierge will call you shortly at ${phoneTrimmed}.`);
       setFirstName("");
-      // Keep the phone visible so they know which number we’re calling
+      // Keep phone visible
     } catch (err: any) {
       console.error("place booking failed", err);
       setError(
@@ -97,15 +90,15 @@ export default function PlaceBookForm({ placeId, placeName }: PlaceBookFormProps
   }
 
   return (
-    <section className="mt-4 border border-slate-800 rounded-xl p-4 bg-slate-900/60 space-y-2">
-      <h2 className="text-sm font-semibold">Book via concierge</h2>
-      <p className="text-xs text-slate-400">
+    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-2">
+      <h2 className="text-[14px] font-semibold">Book via concierge</h2>
+      <p className="text-[12px] text-slate-600">
         Share your details and Foundzie will call you to help book{" "}
-        <span className="font-medium">{placeName}</span>.
+        <span className="font-semibold">{placeName}</span>.
       </p>
 
       <form onSubmit={handleSubmit} className="mt-2 space-y-2">
-        <div className="flex gap-2">
+        <div className="grid grid-cols-1 gap-2">
           <input
             value={firstName}
             onChange={(e) => {
@@ -114,7 +107,7 @@ export default function PlaceBookForm({ placeId, placeName }: PlaceBookFormProps
               if (doneMsg) setDoneMsg(null);
             }}
             placeholder="Your name"
-            className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-blue-400"
           />
           <input
             value={phone}
@@ -124,31 +117,23 @@ export default function PlaceBookForm({ placeId, placeName }: PlaceBookFormProps
               if (doneMsg) setDoneMsg(null);
             }}
             placeholder="+1 (312) 555-0000"
-            className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] outline-none focus:border-blue-400"
           />
         </div>
 
         <button
           type="submit"
           disabled={saving}
-          className="w-full mt-1 rounded-full bg-pink-600 text-xs font-medium py-2 disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full rounded-2xl bg-blue-600 py-3 text-[13px] font-semibold text-white shadow-sm active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {saving ? "Starting your concierge call…" : "Book via concierge call"}
         </button>
       </form>
 
-      {doneMsg && (
-        <p className="text-[11px] text-emerald-400 mt-1">
-          {doneMsg}
-        </p>
-      )}
-      {error && (
-        <p className="text-[11px] text-red-400 mt-1">
-          {error}
-        </p>
-      )}
+      {doneMsg && <p className="text-[12px] text-emerald-700">{doneMsg}</p>}
+      {error && <p className="text-[12px] text-red-600">{error}</p>}
 
-      <p className="text-[10px] text-slate-500 mt-1">
+      <p className="text-[11px] text-slate-500">
         Calls may start over the internet first and then use a normal phone call.
       </p>
     </section>

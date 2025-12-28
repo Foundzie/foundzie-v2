@@ -1,4 +1,3 @@
-// src/app/mobile/explore/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -60,16 +59,13 @@ export default function MobileExplorePage() {
           const json = (await res.json()) as PlacesResponse;
 
           if (!json.success) throw new Error("API returned success=false");
-
           if (cancelled) return;
 
           setPlaces(pickPlaces(json));
           setSource(json.source);
         } catch (err) {
           console.error("Failed to load places", err);
-          if (!cancelled) {
-            setError("Could not load places. Showing local sample data.");
-          }
+          if (!cancelled) setError("Could not load places. Showing local sample data.");
         } finally {
           if (!cancelled) setLoading(false);
         }
@@ -83,9 +79,7 @@ export default function MobileExplorePage() {
             const url = `/api/places?lat=${lat}&lng=${lng}&mode=${modeParam}`;
             fetchPlaces(url);
           },
-          () => {
-            fetchPlaces(`/api/places?mode=${modeParam}`);
-          },
+          () => fetchPlaces(`/api/places?mode=${modeParam}`),
           { timeout: 5000 }
         );
       } else {
@@ -102,107 +96,118 @@ export default function MobileExplorePage() {
   const filtered = places.filter((p) => {
     if (!query) return true;
     const q = query.toLowerCase();
-    return (
-      p.name.toLowerCase().includes(q) ||
-      (p.category || "").toLowerCase().includes(q)
-    );
+    return p.name.toLowerCase().includes(q) || (p.category || "").toLowerCase().includes(q);
   });
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white pb-20">
-      <header className="px-4 pt-4 pb-3 border-b border-slate-900 bg-gradient-to-b from-slate-900 to-slate-950">
-        <h1 className="text-lg font-semibold tracking-tight">Explore</h1>
-        <p className="text-sm text-slate-300">
-          Browse places and ideas around you.
-        </p>
+    <main className="min-h-screen bg-white text-slate-900 pb-24">
+      {/* Header */}
+      <header className="sticky top-0 z-10 bg-white/90 backdrop-blur-md border-b border-slate-200">
+        <div className="mx-auto max-w-md px-4 pt-4 pb-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-[18px] font-semibold tracking-tight">Explore</h1>
+              <p className="text-[12px] text-slate-600 mt-0.5">
+                Browse places and ideas around you.
+              </p>
+            </div>
+          </div>
 
-        {source && (
-          <p className="mt-1 text-[11px] text-slate-500">
-            Data source:{" "}
-            <span className="font-medium">
-              {source === "google"
-                ? "Google Places"
-                : source === "osm"
-                ? "OpenStreetMap"
-                : "Local sample"}
-            </span>
-          </p>
-        )}
+          {source && (
+            <p className="mt-2 text-[11px] text-slate-500">
+              Data source:{" "}
+              <span className="font-medium">
+                {source === "google"
+                  ? "Google Places"
+                  : source === "osm"
+                  ? "OpenStreetMap"
+                  : "Local sample"}
+              </span>
+            </p>
+          )}
 
-        {interactionMode === "child" && (
-          <p className="text-[11px] text-emerald-300 mt-0.5">
-            Child-safe suggestions enabled on this device.
-          </p>
-        )}
+          {interactionMode === "child" && (
+            <p className="mt-1 text-[11px] text-emerald-700">
+              Child-safe suggestions enabled on this device.
+            </p>
+          )}
 
-        <div className="mt-3">
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search places, coffee, brunch..."
-            className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2 text-sm outline-none focus:border-slate-300"
-          />
+          <div className="mt-3">
+            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search places, coffee, brunch..."
+                className="w-full bg-transparent px-4 py-3 text-[13px] outline-none placeholder:text-slate-400"
+              />
+            </div>
+          </div>
         </div>
       </header>
 
-      {loading ? (
-        <p className="text-center py-8 text-slate-400 text-sm">Loading...</p>
-      ) : (
-        <div className="px-4 mt-4 space-y-3">
-          {error && (
-            <p className="text-xs text-amber-300 mb-2 text-center">{error}</p>
-          )}
+      {/* Content */}
+      <div className="mx-auto max-w-md px-4 pt-4">
+        {loading ? (
+          <p className="text-center py-10 text-slate-500 text-[13px]">Loading…</p>
+        ) : (
+          <>
+            {error && (
+              <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                {error}
+              </div>
+            )}
 
-          {filtered.length === 0 ? (
-            <p className="text-center text-slate-400 py-6 text-sm">
-              No matches found.
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {filtered.map((p) => (
-                <Link
-                  key={String(p.id)}
-                  href={`/mobile/places/${encodeURIComponent(String(p.id))}`}
-                  className="block rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 shadow-sm shadow-slate-950/40"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">{p.name}</p>
-                      <p className="text-[11px] text-slate-400">
-                        {p.category}
-                        {p.distanceMiles != null && (
-                          <span className="ml-1 text-[11px] text-slate-500">
-                            • {p.distanceMiles.toFixed(1)} mi
-                          </span>
-                        )}
-                      </p>
-                      {typeof p.rating === "number" && (
-                        <p className="text-[11px] text-slate-400">
-                          ★ {p.rating.toFixed(1)}{" "}
-                          {typeof p.reviews === "number" && p.reviews > 0 && (
-                            <span className="text-slate-500">
-                              • {p.reviews} reviews
-                            </span>
+            {filtered.length === 0 ? (
+              <p className="text-center text-slate-500 py-10 text-[13px]">
+                No matches found.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {filtered.map((p) => (
+                  <Link
+                    key={String(p.id)}
+                    href={`/mobile/places/${encodeURIComponent(String(p.id))}`}
+                    className="block"
+                  >
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm active:scale-[0.99] transition">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[14px] font-semibold truncate">{p.name}</p>
+                          <p className="mt-0.5 text-[12px] text-slate-600">
+                            {p.category}
+                            {p.distanceMiles != null && (
+                              <span className="text-slate-400"> • {p.distanceMiles.toFixed(1)} mi</span>
+                            )}
+                          </p>
+
+                          {typeof p.rating === "number" && (
+                            <p className="mt-1 text-[12px] text-slate-600">
+                              ★ {p.rating.toFixed(1)}
+                              {typeof p.reviews === "number" && p.reviews > 0 && (
+                                <span className="text-slate-400"> • {p.reviews} reviews</span>
+                              )}
+                            </p>
                           )}
-                        </p>
-                      )}
-                    </div>
-                    <span className="text-[11px] text-pink-400 underline">
-                      View
-                    </span>
-                  </div>
 
-                  {p.address && (
-                    <p className="mt-1 text-[10px] text-slate-500 line-clamp-1">
-                      {p.address}
-                    </p>
-                  )}
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+                          {p.address && (
+                            <p className="mt-1 text-[11px] text-slate-500 line-clamp-1">
+                              {p.address}
+                            </p>
+                          )}
+                        </div>
+
+                        <span className="shrink-0 text-[12px] font-semibold text-blue-600">
+                          View
+                        </span>
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </main>
   );
 }

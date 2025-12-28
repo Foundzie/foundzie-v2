@@ -1,4 +1,3 @@
-// src/app/layout.tsx
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
@@ -14,12 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const viewport: Viewport = {
-  width: "device-width",
-  initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
-  viewportFit: "cover",
-  themeColor: "#F6F7FB", // ✅ light background for status bar
+  themeColor: "#ffffff",
 };
 
 export const metadata: Metadata = {
@@ -37,18 +31,14 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     title: "Foundzie",
-    statusBarStyle: "default", // ✅ better for light mode
+    statusBarStyle: "default", // light
   },
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
-      >
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {children}
       </body>
     </html>

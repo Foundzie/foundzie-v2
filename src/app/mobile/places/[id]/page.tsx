@@ -1,4 +1,3 @@
-// src/app/mobile/places/[id]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -36,7 +35,9 @@ function pickPlaces(json: PlacesResponse): NormalizedPlace[] {
   return [];
 }
 
-async function getPositionOnce(timeoutMs = 4500): Promise<{ lat: number; lng: number } | null> {
+async function getPositionOnce(
+  timeoutMs = 4500
+): Promise<{ lat: number; lng: number } | null> {
   if (!navigator.geolocation) return null;
 
   return new Promise((resolve) => {
@@ -77,7 +78,7 @@ export default function MobilePlaceDetailPage() {
       setLoading(true);
       setError(null);
 
-      // ✅ instant local render (no spinner hell)
+      // instant local render
       if (localFallback) {
         setPlace({
           id: localFallback.id,
@@ -96,9 +97,7 @@ export default function MobilePlaceDetailPage() {
 
       try {
         const pos = await getPositionOnce(4500);
-        const url = pos
-          ? `/api/places?lat=${pos.lat}&lng=${pos.lng}`
-          : `/api/places`;
+        const url = pos ? `/api/places?lat=${pos.lat}&lng=${pos.lng}` : `/api/places`;
 
         const res = await fetch(url, { cache: "no-store" });
         const json = (await res.json().catch(() => ({}))) as PlacesResponse;
@@ -143,9 +142,7 @@ export default function MobilePlaceDetailPage() {
   }, [idParam, localFallback]);
 
   const description =
-    place?.source === "local" && localFallback?.description
-      ? localFallback.description
-      : undefined;
+    place?.source === "local" && localFallback?.description ? localFallback.description : undefined;
 
   let mapsUrl: string | null = null;
   if (place?.lat != null && place?.lng != null) {
@@ -158,43 +155,44 @@ export default function MobilePlaceDetailPage() {
 
   if (loading && !place) {
     return (
-      <main className="min-h-screen bg-slate-950 text-white p-4">
-        <header className="flex justify-between items-center mb-4">
-          <Link href="/mobile" className="text-pink-400 underline text-sm">
+      <main className="min-h-screen bg-white text-slate-900">
+        <div className="mx-auto max-w-md px-4 py-4">
+          <Link href="/mobile" className="text-[13px] font-semibold text-blue-600">
             ← Back
           </Link>
-        </header>
-        <p className="text-slate-400 text-sm">Loading place details…</p>
+          <p className="mt-6 text-slate-600 text-[13px]">Loading place details…</p>
+        </div>
       </main>
     );
   }
 
   if (!place) {
     return (
-      <main className="min-h-screen bg-slate-950 text-white p-4">
-        <header className="flex justify-between items-center mb-4">
-          <Link href="/mobile" className="text-pink-400 underline text-sm">
+      <main className="min-h-screen bg-white text-slate-900">
+        <div className="mx-auto max-w-md px-4 py-4">
+          <Link href="/mobile" className="text-[13px] font-semibold text-blue-600">
             ← Back
           </Link>
-        </header>
-        <p className="text-slate-400 text-sm">{error || "Place not found."}</p>
+          <p className="mt-6 text-slate-600 text-[13px]">{error || "Place not found."}</p>
+        </div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white p-4 space-y-6 pb-10">
-      <header className="flex justify-between items-center mb-4">
-        <Link href="/mobile" className="text-pink-400 underline text-sm">
-          ← Back
-        </Link>
-        <MobileSaveButton placeId={String(place.id)} />
-      </header>
+    <main className="min-h-screen bg-white text-slate-900 pb-24">
+      <div className="mx-auto max-w-md px-4 py-4 space-y-4">
+        <header className="flex items-center justify-between">
+          <Link href="/mobile" className="text-[13px] font-semibold text-blue-600">
+            ← Back
+          </Link>
+          <MobileSaveButton placeId={String(place.id)} />
+        </header>
 
-      <section className="space-y-2">
-        <div>
-          <h1 className="text-xl font-bold mb-1">{place.name}</h1>
-          <p className="text-slate-400 text-sm mb-1">
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h1 className="text-[18px] font-semibold leading-tight">{place.name}</h1>
+
+          <p className="mt-1 text-[13px] text-slate-600">
             {place.category}
             {source && (
               <span className="ml-1 text-[11px] text-slate-500">
@@ -209,38 +207,36 @@ export default function MobilePlaceDetailPage() {
           </p>
 
           {(place.distanceMiles != null || place.openUntil || place.rating != null) && (
-            <p className="text-slate-300 text-xs mb-1 space-x-1">
+            <p className="mt-2 text-[12px] text-slate-700">
               {place.distanceMiles != null && (
                 <span>{Number(place.distanceMiles).toFixed(1)} mi</span>
               )}
-              {place.rating != null && <span>• ⭐ {Number(place.rating).toFixed(1)}</span>}
-              {place.reviews != null && <span>({place.reviews} reviews)</span>}
-              {place.openUntil && <span>• open until {place.openUntil}</span>}
+              {place.rating != null && (
+                <span className="ml-2">• ★ {Number(place.rating).toFixed(1)}</span>
+              )}
+              {place.reviews != null && <span className="ml-1">({place.reviews} reviews)</span>}
+              {place.openUntil && <span className="ml-2">• open until {place.openUntil}</span>}
             </p>
           )}
 
-          {place.address && (
-            <p className="text-slate-400 text-xs mb-1">{place.address}</p>
+          {place.address && <p className="mt-2 text-[12px] text-slate-600">{place.address}</p>}
+
+          {description && <p className="mt-3 text-[13px] text-slate-800">{description}</p>}
+
+          {mapsUrl && (
+            <a
+              href={mapsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-4 inline-flex w-full items-center justify-center rounded-2xl bg-blue-600 px-4 py-3 text-[13px] font-semibold text-white shadow-sm active:scale-[0.99]"
+            >
+              Open in Google Maps
+            </a>
           )}
+        </section>
 
-          {description && (
-            <p className="text-slate-200 text-sm mt-2">{description}</p>
-          )}
-        </div>
-
-        {mapsUrl && (
-          <a
-            href={mapsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center rounded-full bg-pink-600 px-4 py-2 text-xs font-medium text-white mt-2"
-          >
-            Open in Google Maps
-          </a>
-        )}
-      </section>
-
-      <PlaceBookForm placeId={String(place.id)} placeName={place.name} />
+        <PlaceBookForm placeId={String(place.id)} placeName={place.name} />
+      </div>
     </main>
   );
 }

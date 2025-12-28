@@ -2,62 +2,58 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Compass, Bell, User, Siren } from "lucide-react";
+import {
+  Home,
+  Search,
+  MessageCircle,
+  MapPin,
+  Bell,
+  User,
+  ShieldAlert,
+} from "lucide-react";
 
 const items = [
-  { href: "/mobile", label: "Home", icon: Home },
-  { href: "/mobile/explore", label: "Explore", icon: Compass },
-  { href: "/mobile/notifications", label: "Alerts", icon: Bell },
-  { href: "/mobile/profile", label: "Profile", icon: User },
-  { href: "/mobile/sos", label: "SOS", icon: Siren },
+  { href: "/mobile", label: "Home", Icon: Home },
+  { href: "/mobile/explore", label: "Explore", Icon: Search },
+  { href: "/mobile/chat", label: "Chat", Icon: MessageCircle },
+  { href: "/mobile/nearby", label: "Nearby", Icon: MapPin },
+  { href: "/mobile/notifications", label: "Alerts", Icon: Bell },
+  { href: "/mobile/profile", label: "Profile", Icon: User },
+  { href: "/mobile/sos", label: "SOS", Icon: ShieldAlert },
 ];
 
 export default function BottomNav() {
   const pathname = usePathname();
 
   return (
-    <nav
-      className={[
-        "fixed left-1/2 -translate-x-1/2 bottom-3 z-50",
-        "w-[calc(100%-24px)] max-w-md",
-        "rounded-2xl bg-white/90 backdrop-blur-md",
-        "border border-[rgba(15,23,42,0.10)]",
-        "shadow-[0_14px_40px_rgba(15,23,42,0.14)]",
-      ].join(" ")}
-      style={{
-        paddingBottom: "calc(10px + var(--safe-bottom))",
-      }}
-      aria-label="Bottom navigation"
-    >
-      <div className="grid grid-cols-5 gap-1 px-2 pt-2">
-        {items.map((item) => {
+    <nav className="safe-b border-t border-slate-200 bg-white/90 backdrop-blur-xl">
+      <div className="mx-auto max-w-md px-2 py-2 grid grid-cols-7 gap-1">
+        {items.map(({ href, label, Icon }) => {
           const active =
-            pathname === item.href ||
-            (item.href === "/mobile" && pathname === "/mobile");
-
-          const Icon = item.icon;
+            pathname === href ||
+            (href === "/mobile" && (pathname === "/mobile" || pathname === "/mobile/"));
 
           return (
             <Link
-              key={item.href}
-              href={item.href}
+              key={href}
+              href={href}
+              aria-label={label}
               className={[
-                "flex flex-col items-center justify-center",
-                "py-2 rounded-xl transition-all",
-                active ? "bg-[rgba(37,99,235,0.10)]" : "hover:bg-black/5",
+                "flex flex-col items-center justify-center rounded-2xl py-2 transition",
+                active ? "bg-slate-100" : "hover:bg-slate-50",
               ].join(" ")}
             >
               <Icon
-                size={18}
-                className={active ? "text-[var(--primary)]" : "text-slate-500"}
+                size={20}
+                className={active ? "text-blue-600" : "text-slate-500"}
               />
               <span
                 className={[
                   "mt-1 text-[10px] leading-none",
-                  active ? "text-[var(--primary)] font-semibold" : "text-slate-500",
+                  active ? "text-blue-600 font-semibold" : "text-slate-500",
                 ].join(" ")}
               >
-                {item.label}
+                {label}
               </span>
             </Link>
           );
