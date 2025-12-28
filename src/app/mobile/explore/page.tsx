@@ -22,8 +22,15 @@ type PlacesResponse = {
   success: boolean;
   source: "google" | "local" | "fallback-local" | "osm";
   count: number;
-  data: Place[];
+  places?: Place[];
+  data?: Place[];
 };
+
+function pickPlaces(json: PlacesResponse): Place[] {
+  if (Array.isArray(json.places)) return json.places;
+  if (Array.isArray(json.data)) return json.data;
+  return [];
+}
 
 export default function MobileExplorePage() {
   const [query, setQuery] = useState("");
@@ -49,13 +56,14 @@ export default function MobileExplorePage() {
 
       async function fetchPlaces(url: string) {
         try {
-          const res = await fetch(url);
+          const res = await fetch(url, { cache: "no-store" });
           const json = (await res.json()) as PlacesResponse;
-          if (!json.success) {
-            throw new Error("API returned success=false");
-          }
+
+          if (!json.success) throw new Error("API returned success=false");
+
           if (cancelled) return;
-          setPlaces(json.data || []);
+
+          setPlaces(pickPlaces(json));
           setSource(json.source);
         } catch (err) {
           console.error("Failed to load places", err);
@@ -63,9 +71,7 @@ export default function MobileExplorePage() {
             setError("Could not load places. Showing local sample data.");
           }
         } finally {
-          if (!cancelled) {
-            setLoading(false);
-          }
+          if (!cancelled) setLoading(false);
         }
       }
 
@@ -80,9 +86,7 @@ export default function MobileExplorePage() {
           () => {
             fetchPlaces(`/api/places?mode=${modeParam}`);
           },
-          {
-            timeout: 5000,
-          }
+          { timeout: 5000 }
         );
       } else {
         fetchPlaces(`/api/places?mode=${modeParam}`);
@@ -90,7 +94,6 @@ export default function MobileExplorePage() {
     }
 
     loadPlaces();
-
     return () => {
       cancelled = true;
     };
@@ -158,8 +161,8 @@ export default function MobileExplorePage() {
             <div className="space-y-3">
               {filtered.map((p) => (
                 <Link
-                  key={p.id}
-                  href={`/mobile/places/${p.id}`}
+                  key={String(p.id)}
+                  href={`/mobile/places/${encodeURIComponent(String(p.id))}`}
                   className="block rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 shadow-sm shadow-slate-950/40"
                 >
                   <div className="flex items-center justify-between gap-3">
@@ -188,6 +191,7 @@ export default function MobileExplorePage() {
                       View
                     </span>
                   </div>
+
                   {p.address && (
                     <p className="mt-1 text-[10px] text-slate-500 line-clamp-1">
                       {p.address}

@@ -3,7 +3,7 @@ import Link from "next/link";
 
 type PlaceCardProps = {
   place: {
-    id: string;
+    id: string | number;
     name: string;
     category: string;
     distanceMiles?: number;
@@ -11,9 +11,9 @@ type PlaceCardProps = {
     reviews?: number;
     openUntil?: string;
     trending?: boolean;
-    description?: string; // 👈 make it optional
+    description?: string;
   };
-  href?: string; // in case this card is clickable
+  href?: string;
 };
 
 export default function PlaceCard({ place, href }: PlaceCardProps) {
@@ -30,7 +30,6 @@ export default function PlaceCard({ place, href }: PlaceCardProps) {
 
       <p className="text-xs text-slate-400 mt-0.5">{place.category}</p>
 
-      {/* 👇 this line was failing because description didn't exist */}
       {place.description ? (
         <p className="text-xs text-slate-300 mt-1 line-clamp-1">
           {place.description}
@@ -38,9 +37,7 @@ export default function PlaceCard({ place, href }: PlaceCardProps) {
       ) : null}
 
       <p className="text-[11px] text-slate-400 mt-1">
-        {typeof place.distanceMiles === "number"
-          ? `${place.distanceMiles} mi`
-          : ""}
+        {typeof place.distanceMiles === "number" ? `${place.distanceMiles} mi` : ""}
         {typeof place.rating === "number" ? ` • ${place.rating.toFixed(1)} ★` : ""}
         {typeof place.reviews === "number" ? ` • ${place.reviews} reviews` : ""}
         {place.openUntil ? ` • open until ${place.openUntil}` : ""}
@@ -48,7 +45,6 @@ export default function PlaceCard({ place, href }: PlaceCardProps) {
     </div>
   );
 
-  // if a link was passed, wrap it, otherwise just render the card
   return href ? (
     <Link href={href} className="block">
       {content}

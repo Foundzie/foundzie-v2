@@ -1,6 +1,7 @@
+// src/app/mobile/places/[id]/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import MobileSaveButton from "@/app/components/MobileSaveButton";
@@ -25,22 +26,49 @@ type PlacesResponse = {
   success: boolean;
   source: "google" | "osm" | "local";
   count: number;
-  data: NormalizedPlace[];
+  places?: NormalizedPlace[];
+  data?: NormalizedPlace[];
 };
+
+function pickPlaces(json: PlacesResponse): NormalizedPlace[] {
+  if (Array.isArray(json.places)) return json.places;
+  if (Array.isArray(json.data)) return json.data;
+  return [];
+}
+
+async function getPositionOnce(timeoutMs = 4500): Promise<{ lat: number; lng: number } | null> {
+  if (!navigator.geolocation) return null;
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        clearTimeout(timer);
+        resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+      { timeout: timeoutMs }
+    );
+  });
+}
 
 export default function MobilePlaceDetailPage() {
   const params = useParams();
-  const idParam = String(params?.id ?? "");
+  const rawParam = String(params?.id ?? "").trim();
+  const idParam = decodeURIComponent(rawParam);
 
   const [place, setPlace] = useState<NormalizedPlace | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
 
-  // helper: find matching local place (to get description, etc.)
-  const localFallback = allPlaces.find(
-    (p) => String(p.id) === idParam
-  );
+  const localFallback = useMemo(() => {
+    return allPlaces.find((p) => String(p.id) === idParam) ?? null;
+  }, [idParam]);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,98 +77,76 @@ export default function MobilePlaceDetailPage() {
       setLoading(true);
       setError(null);
 
-      // if we *only* have a pure local place id, we can short-circuit
-      if (!navigator.geolocation) {
-        await fetchFromApi("/api/places");
-        return;
+      // ✅ instant local render (no spinner hell)
+      if (localFallback) {
+        setPlace({
+          id: localFallback.id,
+          name: localFallback.name,
+          category: localFallback.category,
+          distanceMiles: localFallback.distanceMiles,
+          rating: localFallback.rating,
+          reviews: localFallback.reviews,
+          openUntil: localFallback.openUntil,
+          address: null,
+          source: "local",
+        });
+        setSource("local");
+        setLoading(false);
       }
 
-      navigator.geolocation.getCurrentPosition(
-        async (pos) => {
-          const lat = pos.coords.latitude;
-          const lng = pos.coords.longitude;
-          await fetchFromApi(`/api/places?lat=${lat}&lng=${lng}`);
-        },
-        async () => {
-          // permission denied or failed
-          await fetchFromApi("/api/places");
-        },
-        { timeout: 5000 }
-      );
-    }
-
-    async function fetchFromApi(url: string) {
       try {
-        const res = await fetch(url);
-        const json = (await res.json()) as PlacesResponse;
+        const pos = await getPositionOnce(4500);
+        const url = pos
+          ? `/api/places?lat=${pos.lat}&lng=${pos.lng}`
+          : `/api/places`;
 
-        if (!json.success) throw new Error("API returned success = false");
+        const res = await fetch(url, { cache: "no-store" });
+        const json = (await res.json().catch(() => ({}))) as PlacesResponse;
 
         if (cancelled) return;
 
+        if (!json?.success) {
+          if (!localFallback) setError("Could not load this place. Please try again.");
+          return;
+        }
+
         setSource(json.source);
 
-        const match =
-          json.data.find((p) => String(p.id) === idParam) ?? null;
+        const list = pickPlaces(json);
+        const match = list.find((p) => String(p.id) === idParam) ?? null;
 
         if (match) {
           setPlace(match);
-        } else if (localFallback) {
-          // if not in API results but we have a local mock, use that
-          setPlace({
-            id: localFallback.id,
-            name: localFallback.name,
-            category: localFallback.category,
-            distanceMiles: localFallback.distanceMiles,
-            rating: localFallback.rating,
-            reviews: localFallback.reviews,
-            openUntil: localFallback.openUntil,
-            address: null,
-            source: "local",
-          });
-        } else {
+          setError(null);
+          setLoading(false);
+          return;
+        }
+
+        if (!localFallback) {
           setError("Place not found.");
+          setPlace(null);
+          setLoading(false);
         }
       } catch (err) {
         console.error("Failed to load place detail", err);
-        if (!cancelled) {
-          // fall back purely to local mock if we have one
-          if (localFallback) {
-            setPlace({
-              id: localFallback.id,
-              name: localFallback.name,
-              category: localFallback.category,
-              distanceMiles: localFallback.distanceMiles,
-              rating: localFallback.rating,
-              reviews: localFallback.reviews,
-              openUntil: localFallback.openUntil,
-              address: null,
-              source: "local",
-            });
-          } else {
-            setError("Could not load this place. Please try again.");
-          }
+        if (!cancelled && !localFallback) {
+          setError("Could not load this place. Please try again.");
+          setLoading(false);
         }
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     }
 
     load();
-
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idParam]);
+  }, [idParam, localFallback]);
 
-  // merge in description if this is a local mock place
-  let description: string | undefined;
-  if (place?.source === "local" && localFallback?.description) {
-    description = localFallback.description;
-  }
+  const description =
+    place?.source === "local" && localFallback?.description
+      ? localFallback.description
+      : undefined;
 
-  // build a Google Maps URL if we can
   let mapsUrl: string | null = null;
   if (place?.lat != null && place?.lng != null) {
     mapsUrl = `https://www.google.com/maps/search/?api=1&query=${place.lat},${place.lng}`;
@@ -150,7 +156,7 @@ export default function MobilePlaceDetailPage() {
     )}`;
   }
 
-  if (loading) {
+  if (loading && !place) {
     return (
       <main className="min-h-screen bg-slate-950 text-white p-4">
         <header className="flex justify-between items-center mb-4">
@@ -171,9 +177,7 @@ export default function MobilePlaceDetailPage() {
             ← Back
           </Link>
         </header>
-        <p className="text-slate-400 text-sm">
-          {error || "Place not found."}
-        </p>
+        <p className="text-slate-400 text-sm">{error || "Place not found."}</p>
       </main>
     );
   }
@@ -204,22 +208,14 @@ export default function MobilePlaceDetailPage() {
             )}
           </p>
 
-          {(place.distanceMiles != null ||
-            place.openUntil ||
-            place.rating != null) && (
+          {(place.distanceMiles != null || place.openUntil || place.rating != null) && (
             <p className="text-slate-300 text-xs mb-1 space-x-1">
               {place.distanceMiles != null && (
-                <span>{place.distanceMiles.toFixed(1)} mi</span>
+                <span>{Number(place.distanceMiles).toFixed(1)} mi</span>
               )}
-              {place.rating != null && (
-                <span>• ⭐ {place.rating.toFixed(1)}</span>
-              )}
-              {place.reviews != null && (
-                <span>({place.reviews} reviews)</span>
-              )}
-              {place.openUntil && (
-                <span>• open until {place.openUntil}</span>
-              )}
+              {place.rating != null && <span>• ⭐ {Number(place.rating).toFixed(1)}</span>}
+              {place.reviews != null && <span>({place.reviews} reviews)</span>}
+              {place.openUntil && <span>• open until {place.openUntil}</span>}
             </p>
           )}
 
@@ -244,7 +240,6 @@ export default function MobilePlaceDetailPage() {
         )}
       </section>
 
-      {/* Concierge booking micro-form (unchanged) */}
       <PlaceBookForm placeId={String(place.id)} placeName={place.name} />
     </main>
   );

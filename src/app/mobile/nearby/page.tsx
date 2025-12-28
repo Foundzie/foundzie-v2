@@ -1,3 +1,4 @@
+// src/app/mobile/nearby/page.tsx
 "use client";
 
 import { useEffect, useState, FormEvent } from "react";
@@ -16,7 +17,8 @@ type PlacesResponse = {
   success: boolean;
   source: "google" | "local" | "fallback-local" | "osm";
   count: number;
-  data: Place[];
+  places?: Place[];
+  data?: Place[];
 };
 
 type NewUserResponse = {
@@ -37,26 +39,29 @@ type CallResponse = {
   twilioStatus?: string | null;
 };
 
+function pickPlaces(json: PlacesResponse): Place[] {
+  if (Array.isArray(json.places)) return json.places;
+  if (Array.isArray(json.data)) return json.data;
+  return [];
+}
+
 export default function NearbyPage() {
   const [places, setPlaces] = useState<Place[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<string>("");
 
-  // 🔐 Interaction mode from device (same key as Profile)
   const [interactionMode] = useState<InteractionMode>(() => {
     if (typeof window === "undefined") return "normal";
     const stored = window.localStorage.getItem("foundzie:interaction-mode");
     return stored === "child" ? "child" : "normal";
   });
 
-  // --- simple interest capture state ---
   const [interest, setInterest] = useState("");
   const [savingInterest, setSavingInterest] = useState(false);
   const [interestSaved, setInterestSaved] = useState(false);
   const [interestError, setInterestError] = useState<string | null>(null);
 
-  // --- concierge call mini-form state ---
   const [activePlaceId, setActivePlaceId] = useState<string | null>(null);
   const [guestName, setGuestName] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
@@ -75,11 +80,12 @@ export default function NearbyPage() {
 
       async function fetchPlaces(url: string) {
         try {
-          const res = await fetch(url);
+          const res = await fetch(url, { cache: "no-store" });
           const json = (await res.json()) as PlacesResponse;
           if (!json.success) throw new Error("API returned success=false");
           if (cancelled) return;
-          setPlaces((json.data ?? []) as Place[]);
+
+          setPlaces(pickPlaces(json));
           setSource(json.source);
         } catch (err) {
           console.error("Failed to load places", err);
@@ -119,7 +125,6 @@ export default function NearbyPage() {
     (a, b) => (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999)
   );
 
-  // --- send interest -> /api/users/collect ---
   async function handleSaveInterest(e: FormEvent) {
     e.preventDefault();
     const trimmed = interest.trim();
@@ -149,7 +154,6 @@ export default function NearbyPage() {
     }
   }
 
-  // --- “Book via concierge” -> create user + trigger call ---
   async function handleBookCall(e: FormEvent, place: Place) {
     e.preventDefault();
     const name = guestName.trim();
@@ -248,7 +252,6 @@ export default function NearbyPage() {
         )}
       </header>
 
-      {/* interest capture bar */}
       <section className="px-4 py-3 border-b border-slate-800 space-y-2">
         <p className="text-xs text-slate-400">
           Tell Foundzie what you&apos;re into and we&apos;ll use it to improve
@@ -306,11 +309,11 @@ export default function NearbyPage() {
             const isActive = activePlaceId === String(p.id);
             return (
               <div
-                key={p.id}
+                key={String(p.id)}
                 className="border-b border-slate-800 py-3 space-y-2"
               >
                 <Link
-                  href={`/mobile/places/${p.id}`}
+                  href={`/mobile/places/${encodeURIComponent(String(p.id))}`}
                   className="flex items-center justify-between"
                 >
                   <div>
@@ -325,7 +328,6 @@ export default function NearbyPage() {
                   </div>
                 </Link>
 
-                {/* Book via concierge CTA */}
                 <button
                   type="button"
                   onClick={() => {
