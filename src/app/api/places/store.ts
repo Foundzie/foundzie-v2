@@ -31,6 +31,33 @@ type GetPlacesResult = {
 };
 
 /* -------------------------------------------------------------------------- */
+/*  Hard timeouts so UI never hangs                                            */
+/* -------------------------------------------------------------------------- */
+
+const GOOGLE_TIMEOUT_MS = 6500;
+const OSM_TIMEOUT_MS = 6500;
+
+/**
+ * Minimal fetch timeout wrapper.
+ * If it times out, it throws AbortError, which we catch and treat as "no results".
+ */
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  timeoutMs: number
+) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(input, { ...(init || {}), signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Simple in-memory daily counter for Google calls (protect free tier)        */
 /* -------------------------------------------------------------------------- */
 
@@ -66,12 +93,7 @@ function registerGoogleCall() {
 /*  Helpers                                                                   */
 /* -------------------------------------------------------------------------- */
 
-function haversineMiles(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number {
+function haversineMiles(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 3958.8; // miles
   const toRad = (deg: number) => (deg * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
@@ -88,28 +110,16 @@ function haversineMiles(
 
 function isChildSafe(category: string, name: string): boolean {
   const text = (category + " " + name).toLowerCase();
-  const banned = [
-    "bar",
-    "night club",
-    "nightclub",
-    "strip",
-    "casino",
-    "liquor",
-    "adult",
-  ];
+  const banned = ["bar", "night club", "nightclub", "strip", "casino", "liquor", "adult"];
   return !banned.some((b) => text.includes(b));
 }
 
 function filterForMode(list: NormalizedPlace[], mode: InteractionMode) {
-  return mode === "child"
-    ? list.filter((p) => isChildSafe(p.category, p.name))
-    : list;
+  return mode === "child" ? list.filter((p) => isChildSafe(p.category, p.name)) : list;
 }
 
 /* -------------------------------------------------------------------------- */
 /*  Google Places API (New)                                                   */
-/*  - Nearby: places:searchNearby                                             */
-/*  - Text:   places:searchText (for q searches)                              */
 /* -------------------------------------------------------------------------- */
 
 const GOOGLE_RADIUS_METERS = 3000;
@@ -117,13 +127,7 @@ const GOOGLE_RADIUS_METERS = 3000;
 const GOOGLE_FIELD_MASK =
   "places.id,places.displayName,places.primaryType,places.location,places.formattedAddress,places.rating,places.userRatingCount";
 
-function mapGooglePlace(
-  p: any,
-  idx: number,
-  hasLocation: boolean,
-  lat?: number,
-  lng?: number
-): NormalizedPlace {
+function mapGooglePlace(p: any, idx: number, hasLocation: boolean, lat?: number, lng?: number): NormalizedPlace {
   const placeLat = Number(p.location?.latitude);
   const placeLng = Number(p.location?.longitude);
 
@@ -135,15 +139,11 @@ function mapGooglePlace(
     Number.isFinite(placeLat) &&
     Number.isFinite(placeLng)
   ) {
-    distanceMiles = Number(
-      haversineMiles(lat, lng, placeLat, placeLng).toFixed(2)
-    );
+    distanceMiles = Number(haversineMiles(lat, lng, placeLat, placeLng).toFixed(2));
   }
 
   const category =
-    typeof p.primaryType === "string" && p.primaryType
-      ? p.primaryType.replace(/_/g, " ")
-      : "place";
+    typeof p.primaryType === "string" && p.primaryType ? p.primaryType.replace(/_/g, " ") : "place";
 
   return {
     id: p.id ?? `google-${idx}`,
@@ -171,7 +171,6 @@ async function fetchGoogleNearby(params: GetPlacesParams): Promise<NormalizedPla
   registerGoogleCall();
 
   const url = "https://places.googleapis.com/v1/places:searchNearby";
-
   const body = {
     maxResultCount: 18,
     locationRestriction: {
@@ -182,28 +181,37 @@ async function fetchGoogleNearby(params: GetPlacesParams): Promise<NormalizedPla
     },
   };
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Goog-Api-Key": apiKey,
-      "X-Goog-FieldMask": GOOGLE_FIELD_MASK,
-    },
-    body: JSON.stringify(body),
-  });
+  try {
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": GOOGLE_FIELD_MASK,
+        },
+        body: JSON.stringify(body),
+      },
+      GOOGLE_TIMEOUT_MS
+    );
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    console.error("[places] Google Nearby error", res.status, res.statusText, text);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.error("[places] Google Nearby error", res.status, res.statusText, text);
+      return [];
+    }
+
+    const json: any = await res.json().catch(() => ({}));
+    const raw: any[] = Array.isArray(json.places) ? json.places : [];
+
+    const mapped = raw.map((p, idx) => mapGooglePlace(p, idx, true, lat, lng));
+    return filterForMode(mapped, mode);
+  } catch (err: any) {
+    // Timeout or network issues: treat as "no results" so we can fall back quickly
+    console.error("[places] Google Nearby failed:", err?.name || err, err);
     return [];
   }
-
-  const json: any = await res.json().catch(() => ({}));
-  const raw: any[] = Array.isArray(json.places) ? json.places : [];
-
-  const hasLocation = true;
-  const mapped = raw.map((p, idx) => mapGooglePlace(p, idx, hasLocation, lat, lng));
-  return filterForMode(mapped, mode);
 }
 
 async function fetchGoogleText(params: GetPlacesParams): Promise<NormalizedPlace[]> {
@@ -218,15 +226,9 @@ async function fetchGoogleText(params: GetPlacesParams): Promise<NormalizedPlace
   registerGoogleCall();
 
   const url = "https://places.googleapis.com/v1/places:searchText";
-
   const hasLocation = typeof lat === "number" && typeof lng === "number";
 
-  const body: any = {
-    textQuery,
-    maxResultCount: 18,
-  };
-
-  // Bias results near user if we have coords (nice UX)
+  const body: any = { textQuery, maxResultCount: 18 };
   if (hasLocation) {
     body.locationBias = {
       circle: {
@@ -236,42 +238,47 @@ async function fetchGoogleText(params: GetPlacesParams): Promise<NormalizedPlace
     };
   }
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Goog-Api-Key": apiKey,
-      "X-Goog-FieldMask": GOOGLE_FIELD_MASK,
-    },
-    body: JSON.stringify(body),
-  });
+  try {
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": GOOGLE_FIELD_MASK,
+        },
+        body: JSON.stringify(body),
+      },
+      GOOGLE_TIMEOUT_MS
+    );
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    console.error("[places] Google Text error", res.status, res.statusText, text);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.error("[places] Google Text error", res.status, res.statusText, text);
+      return [];
+    }
+
+    const json: any = await res.json().catch(() => ({}));
+    const raw: any[] = Array.isArray(json.places) ? json.places : [];
+
+    const mapped = raw.map((p, idx) => mapGooglePlace(p, idx, hasLocation, lat, lng));
+    return filterForMode(mapped, mode);
+  } catch (err: any) {
+    console.error("[places] Google Text failed:", err?.name || err, err);
     return [];
   }
-
-  const json: any = await res.json().catch(() => ({}));
-  const raw: any[] = Array.isArray(json.places) ? json.places : [];
-
-  const mapped = raw.map((p, idx) => mapGooglePlace(p, idx, hasLocation, lat, lng));
-  return filterForMode(mapped, mode);
 }
 
 /* -------------------------------------------------------------------------- */
-/*  OpenStreetMap / Nominatim fallback                                        */
+/*  OpenStreetMap / Nominatim fallback (with timeout)                         */
 /* -------------------------------------------------------------------------- */
 
 async function fetchFromOpenStreetMap(params: GetPlacesParams): Promise<NormalizedPlace[]> {
   const { lat, lng, q, mode } = params;
 
   const query =
-    q && q.trim().length > 0
-      ? q.trim()
-      : lat && lng
-      ? "things to do"
-      : "fun places";
+    q && q.trim().length > 0 ? q.trim() : lat && lng ? "things to do" : "fun places";
 
   const url = new URL("https://nominatim.openstreetmap.org/search");
   url.searchParams.set("format", "jsonv2");
@@ -284,42 +291,40 @@ async function fetchFromOpenStreetMap(params: GetPlacesParams): Promise<Normaliz
     url.searchParams.set("bounded", "1");
   }
 
-  const res = await fetch(url.toString(), {
-    headers: {
-      // TODO: change this to a real domain/email in production
-      "User-Agent": "FoundzieDev/1.0 (foundzie@example.com)",
-    },
-  });
+  try {
+    const res = await fetchWithTimeout(
+      url.toString(),
+      {
+        headers: {
+          // TODO: for production, set a real domain/email here
+          "User-Agent": "FoundzieDev/1.0 (foundzie@example.com)",
+          "Accept-Language": "en",
+        },
+      },
+      OSM_TIMEOUT_MS
+    );
 
-  if (!res.ok) {
-    console.error("[places] OSM error status:", res.status);
-    return [];
-  }
+    if (!res.ok) {
+      console.error("[places] OSM error status:", res.status);
+      return [];
+    }
 
-  const data = (await res.json().catch(() => [])) as any[];
-  if (!Array.isArray(data)) return [];
+    const data = (await res.json().catch(() => [])) as any[];
+    if (!Array.isArray(data)) return [];
 
-  const results = data
-    .map((p: any, idx: number) => {
+    const results: NormalizedPlace[] = data.map((p: any, idx: number) => {
       const placeLat = Number(p.lat);
       const placeLng = Number(p.lon);
 
       let distanceMiles: number | null = null;
-      if (
-        lat !== undefined &&
-        lng !== undefined &&
-        Number.isFinite(placeLat) &&
-        Number.isFinite(placeLng)
-      ) {
-        distanceMiles = Number(
-          haversineMiles(lat, lng, placeLat, placeLng).toFixed(2)
-        );
+      if (lat !== undefined && lng !== undefined && Number.isFinite(placeLat) && Number.isFinite(placeLng)) {
+        distanceMiles = Number(haversineMiles(lat, lng, placeLat, placeLng).toFixed(2));
       }
 
       const categoryRaw = `${p.class ?? ""} ${p.type ?? ""}`.trim();
       const category = categoryRaw || "place";
 
-      const item: NormalizedPlace = {
+      return {
         id: p.place_id ? String(p.place_id) : `osm-${idx}`,
         name: p.display_name?.split(",")[0] ?? "Unknown place",
         category,
@@ -332,11 +337,14 @@ async function fetchFromOpenStreetMap(params: GetPlacesParams): Promise<Normaliz
         lat: Number.isFinite(placeLat) ? placeLat : undefined,
         lng: Number.isFinite(placeLng) ? placeLng : undefined,
       };
-
-      return item;
     });
 
-  return filterForMode(results, mode);
+    return filterForMode(results, mode);
+  } catch (err: any) {
+    // Timeout or network issues: return [] quickly so we fall back to local
+    console.error("[places] OSM failed (timeout/network):", err?.name || err, err);
+    return [];
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -368,33 +376,21 @@ export async function getPlaces(params: GetPlacesParams): Promise<GetPlacesResul
   const hasQuery = typeof q === "string" && q.trim().length > 0;
   const hasLocation = typeof lat === "number" && typeof lng === "number";
 
-  // 1) Prefer Google Text if user supplied q (best match for explicit searches)
+  // 1) Prefer Google Text if user supplied q
   if (hasQuery) {
-    try {
-      const googleText = await fetchGoogleText(params);
-      if (googleText.length > 0) return { source: "google", places: googleText };
-    } catch (err) {
-      console.error("[places] Google Text failed:", err);
-    }
+    const googleText = await fetchGoogleText(params);
+    if (googleText.length > 0) return { source: "google", places: googleText };
   }
 
   // 2) Otherwise, if we have location, try Google Nearby
   if (hasLocation) {
-    try {
-      const googleNearby = await fetchGoogleNearby(params);
-      if (googleNearby.length > 0) return { source: "google", places: googleNearby };
-    } catch (err) {
-      console.error("[places] Google Nearby failed:", err);
-    }
+    const googleNearby = await fetchGoogleNearby(params);
+    if (googleNearby.length > 0) return { source: "google", places: googleNearby };
   }
 
-  // 3) OSM fallback
-  try {
-    const osm = await fetchFromOpenStreetMap(params);
-    if (osm.length > 0) return { source: "osm", places: osm };
-  } catch (err) {
-    console.error("[places] OSM failed:", err);
-  }
+  // 3) OSM fallback (now bounded by timeout)
+  const osm = await fetchFromOpenStreetMap(params);
+  if (osm.length > 0) return { source: "osm", places: osm };
 
   // 4) Local fallback
   return { source: "local", places: getLocalPlaces(params.mode) };
