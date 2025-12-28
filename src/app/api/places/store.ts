@@ -127,7 +127,24 @@ const GOOGLE_RADIUS_METERS = 3000;
 const GOOGLE_FIELD_MASK =
   "places.id,places.displayName,places.primaryType,places.location,places.formattedAddress,places.rating,places.userRatingCount";
 
-function mapGooglePlace(p: any, idx: number, hasLocation: boolean, lat?: number, lng?: number): NormalizedPlace {
+/**
+ * Google "New" Places API often returns ids like: "places/ChIJ...."
+ * Those BREAK Next.js dynamic routes if you use them in the URL.
+ * So we sanitize them to URL-safe ids by stripping "places/".
+ */
+function sanitizeGoogleId(raw: unknown, fallback: string) {
+  const s = typeof raw === "string" ? raw.trim() : "";
+  if (!s) return fallback;
+  return s.startsWith("places/") ? s.slice("places/".length) : s;
+}
+
+function mapGooglePlace(
+  p: any,
+  idx: number,
+  hasLocation: boolean,
+  lat?: number,
+  lng?: number
+): NormalizedPlace {
   const placeLat = Number(p.location?.latitude);
   const placeLng = Number(p.location?.longitude);
 
@@ -145,8 +162,10 @@ function mapGooglePlace(p: any, idx: number, hasLocation: boolean, lat?: number,
   const category =
     typeof p.primaryType === "string" && p.primaryType ? p.primaryType.replace(/_/g, " ") : "place";
 
+  const safeId = sanitizeGoogleId(p.id, `google-${idx}`);
+
   return {
-    id: p.id ?? `google-${idx}`,
+    id: safeId,
     name: p.displayName?.text ?? "Unknown place",
     category,
     distanceMiles,
@@ -208,7 +227,6 @@ async function fetchGoogleNearby(params: GetPlacesParams): Promise<NormalizedPla
     const mapped = raw.map((p, idx) => mapGooglePlace(p, idx, true, lat, lng));
     return filterForMode(mapped, mode);
   } catch (err: any) {
-    // Timeout or network issues: treat as "no results" so we can fall back quickly
     console.error("[places] Google Nearby failed:", err?.name || err, err);
     return [];
   }
@@ -277,8 +295,7 @@ async function fetchGoogleText(params: GetPlacesParams): Promise<NormalizedPlace
 async function fetchFromOpenStreetMap(params: GetPlacesParams): Promise<NormalizedPlace[]> {
   const { lat, lng, q, mode } = params;
 
-  const query =
-    q && q.trim().length > 0 ? q.trim() : lat && lng ? "things to do" : "fun places";
+  const query = q && q.trim().length > 0 ? q.trim() : lat && lng ? "things to do" : "fun places";
 
   const url = new URL("https://nominatim.openstreetmap.org/search");
   url.searchParams.set("format", "jsonv2");
@@ -296,7 +313,6 @@ async function fetchFromOpenStreetMap(params: GetPlacesParams): Promise<Normaliz
       url.toString(),
       {
         headers: {
-          // TODO: for production, set a real domain/email here
           "User-Agent": "FoundzieDev/1.0 (foundzie@example.com)",
           "Accept-Language": "en",
         },
@@ -341,7 +357,6 @@ async function fetchFromOpenStreetMap(params: GetPlacesParams): Promise<Normaliz
 
     return filterForMode(results, mode);
   } catch (err: any) {
-    // Timeout or network issues: return [] quickly so we fall back to local
     console.error("[places] OSM failed (timeout/network):", err?.name || err, err);
     return [];
   }
@@ -388,7 +403,7 @@ export async function getPlaces(params: GetPlacesParams): Promise<GetPlacesResul
     if (googleNearby.length > 0) return { source: "google", places: googleNearby };
   }
 
-  // 3) OSM fallback (now bounded by timeout)
+  // 3) OSM fallback
   const osm = await fetchFromOpenStreetMap(params);
   if (osm.length > 0) return { source: "osm", places: osm };
 
