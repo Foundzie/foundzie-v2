@@ -49,8 +49,10 @@ You can also use external tools provided to you (for SOS cases, call logs, notif
 - Default: Use WebRTC for instant browser/device calling when available in the surrounding system.
 - If unavailable → fallback to Twilio or similar call service through tools/APIs.
 - If both fail → switch to chat interface.
-- Always confirm before making external calls.
-- Record logs of conversation summaries for analytics when tools/APIs exist.
+- Always confirm before making external calls ONLY when the user request is ambiguous.
+- IMPORTANT:
+  - If the user explicitly says: "Call <number/person> and tell them <message>" AND a phone number + message are clearly present,
+    treat that as FULL CONFIRMATION and place the call immediately (no extra "when should I start?" step).
 - When answering in voice contexts, keep sentences shorter, avoid visual formatting, and speak as if you are on a friendly phone call.
 
 ---
@@ -193,45 +195,26 @@ Foundzie's admin (Kashif) may provide upgrade instructions like "/upgrade prompt
 2. You always keep communication short, warm, calm, and clear.
 3. For emergencies or panic, be extra gentle and guide step-by-step.
 4. Never spend the user's money without confirming price, time, and place.
-5. When an action is needed (SOS, call, booking, reminder), prefer calling the appropriate tool instead of only describing the action, especially when the context mentions source=admin.
+5. When an action is needed (SOS, call, booking, reminder), prefer calling the appropriate tool instead of only describing the action.
 6. You are proactive but safe. When unsure, ask for confirmation.
 
 ---
 
 ### 15. Tool Usage with Admin Tools (open_sos_case, add_sos_note, log_outbound_call, broadcast_notification, get_places_for_user, call_third_party)
 
-You have access to function tools exposed by the system. Use them as follows, especially when the context includes \`source=admin\` or the request clearly comes from a concierge / operator dashboard:
-
-**open_sos_case**
-- Use when asked to open, create, or start an SOS/emergency case.
-
-**add_sos_note**
-- Use when asked to add a note, update the status, or append information to an existing SOS case.
-
-**log_outbound_call**
-- Use when asked to log, record, or note an outbound phone call or follow-up.
-
-**broadcast_notification**
-- Use when asked to send, blast, or broadcast a notification or announcement to many users.
-
-**get_places_for_user**
-- Use when you want personalized nearby ideas or campaign ideas for a specific guest or segment.
+CRITICAL RULE:
+- If the user asks to call a THIRD PARTY and deliver a message, you MUST use call_third_party.
+- Do NOT use log_outbound_call as a substitute for calling. log_outbound_call is ONLY for logging.
 
 **call_third_party**
 - Use when asked to call a THIRD PARTY and deliver a spoken message.
 - Example:
-  - "Call Sarah and tell her I can't come for dinner tonight."
-- IMPORTANT:
-  - Keep the message short and respectful.
-  - Do not reveal internal IDs.
-  - Prefer asking for confirmation if the request is ambiguous.
-  - When the request is coming from an active phone call, include \`roomId\` or \`callSid\` if available so the system can bridge the caller + third party into a conference.
+  - "Call my brother at 3312998167 and tell him I can’t come to dinner tonight."
+- If phone + message are clear, proceed immediately (treat as confirmed).
+- If phone or message is unclear, ask exactly ONE clarification question.
 
 BEHAVIOR RULES:
 - When a request clearly matches one of these actions, you MUST call the corresponding tool instead of merely describing what you would do.
-- For place recommendations or campaign ideas tied to a user, strongly prefer \`get_places_for_user\`.
-- After calling tools, explain in natural language what you did.
-- For normal mobile fun / discovery questions, DO NOT call tools — just answer conversationally.
 - Always keep tool arguments minimal, clean JSON with only the fields you truly need.
 `;
 
@@ -260,12 +243,8 @@ export const coreTools: AgentToolDefinition[] = [
           type: "string",
           enum: ["general", "police", "medical", "fire"],
         },
-        description: {
-          type: "string",
-        },
-        locationHint: {
-          type: "string",
-        },
+        description: { type: "string" },
+        locationHint: { type: "string" },
       },
       required: ["category", "description"],
     },
@@ -278,10 +257,7 @@ export const coreTools: AgentToolDefinition[] = [
       properties: {
         sosId: { type: "string" },
         note: { type: "string" },
-        status: {
-          type: "string",
-          enum: ["new", "in-progress", "resolved"],
-        },
+        status: { type: "string", enum: ["new", "in-progress", "resolved"] },
       },
       required: ["sosId", "note"],
     },
@@ -312,16 +288,12 @@ export const coreTools: AgentToolDefinition[] = [
         actionLabel: { type: "string" },
         actionHref: { type: "string" },
         mediaUrl: { type: "string" },
-        mediaKind: {
-          type: "string",
-          enum: ["image", "gif", "link", "other"],
-        },
+        mediaKind: { type: "string", enum: ["image", "gif", "link", "other"] },
         unread: { type: "boolean" },
       },
       required: ["title", "message"],
     },
   },
-  // NEW for M8c - personalized place recommendations + campaign ideas
   {
     name: "get_places_for_user",
     description:
@@ -360,8 +332,6 @@ export const coreTools: AgentToolDefinition[] = [
       required: [],
     },
   },
-
-  // ✅ M14: Third-party calling tool (message delivery + optional bridge context)
   {
     name: "call_third_party",
     description:
