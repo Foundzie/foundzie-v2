@@ -1,8 +1,5 @@
 import OpenAI from "openai";
-import {
-  FOUNDZIE_SYSTEM_PROMPT,
-  coreTools,
-} from "@/lib/agent/spec";
+import { FOUNDZIE_SYSTEM_PROMPT, coreTools } from "@/lib/agent/spec";
 import { toolHandlers as toolImplementations } from "@/lib/agent/tools";
 
 export type AgentSource = "mobile" | "admin" | "system";
@@ -12,6 +9,14 @@ export interface AgentRequestPayload {
   roomId?: string;
   userId?: string | null;
   source?: AgentSource;
+
+  /**
+   * Tool mode:
+   * - "off": no tool calls allowed
+   * - "debug": tool calls enabled
+   *
+   * NOTE: We default admin -> debug so "call_third_party" can run.
+   */
   toolsMode?: "off" | "debug";
 }
 
@@ -37,16 +42,12 @@ const hasOpenAiKey =
 
 console.log("[agent runtime] has OPENAI_API_KEY?", hasOpenAiKey);
 
-const openai = hasOpenAiKey
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY! })
-  : null;
+const openai = hasOpenAiKey ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY! }) : null;
 
 // -----------------------------------------------------
 // M8b: Build personalization context from Users store
 // -----------------------------------------------------
-async function buildUserContextSuffix(
-  req: AgentRequestPayload
-): Promise<string> {
+async function buildUserContextSuffix(req: AgentRequestPayload): Promise<string> {
   try {
     // dynamic import to avoid circular issues
     const usersStore = await import("@/app/api/users/store");
@@ -66,11 +67,8 @@ async function buildUserContextSuffix(
 
     const bits: string[] = [];
 
-    if (user.interactionMode === "child") {
-      bits.push("interactionMode=child");
-    } else if (user.interactionMode === "normal") {
-      bits.push("interactionMode=normal");
-    }
+    if (user.interactionMode === "child") bits.push("interactionMode=child");
+    else if (user.interactionMode === "normal") bits.push("interactionMode=normal");
 
     if (typeof user.interest === "string" && user.interest.trim()) {
       bits.push(`interest="${user.interest.trim()}"`);
@@ -102,10 +100,7 @@ async function buildUserContextSuffix(
 // -----------------------------------------------------
 // Stub agent (if key missing or errors)
 // -----------------------------------------------------
-async function runStubAgent(
-  req: AgentRequestPayload,
-  reason?: string
-): Promise<AgentResult> {
+async function runStubAgent(req: AgentRequestPayload, reason?: string): Promise<AgentResult> {
   const trimmed = req.input.trim() || "a blank message";
 
   const replyText =
@@ -132,21 +127,17 @@ async function runStubAgent(
 function extractMessageText(message: any): string {
   if (!message) return "";
 
-  // classic: content is a plain string
   if (typeof message.content === "string") {
     return message.content.trim();
   }
 
-  // newer shapes: content is an array of parts
   if (Array.isArray(message.content)) {
     const parts = message.content as any[];
     const text = parts
       .map((p) => {
         if (!p) return "";
         if (typeof p === "string") return p;
-        // v1 style: { type: "text", text: "..." }
         if (typeof p.text === "string") return p.text;
-        // some new SDK shapes: { type: "...", text: { value: "..." } }
         if (p.text && typeof p.text.value === "string") return p.text.value;
         return "";
       })
@@ -162,9 +153,7 @@ function extractMessageText(message: any): string {
 // Real OpenAI-powered agent
 // -----------------------------------------------------
 async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
-  if (!openai) {
-    return runStubAgent(req, "no_openai_client");
-  }
+  if (!openai) return runStubAgent(req, "no_openai_client");
 
   const userText = req.input.trim() || "User sent a blank message.";
 
@@ -173,16 +162,18 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
   if (req.roomId) contextBits.push(`roomId=${req.roomId}`);
   if (req.userId) contextBits.push(`userId=${req.userId}`);
 
-  const contextSuffix =
-    contextBits.length > 0 ? `\n\n(Context: ${contextBits.join(", ")})` : "";
+  const contextSuffix = contextBits.length > 0 ? `\n\n(Context: ${contextBits.join(", ")})` : "";
 
-  // personalization (interactionMode, interest, tags, etc.)
   const profileSuffix = await buildUserContextSuffix(req);
 
   const finalUserContent = userText + contextSuffix + profileSuffix;
 
-  const toolsMode = req.toolsMode ?? "off";
+  // ✅ IMPORTANT UPDATE:
+  // Default admin -> debug so tools can run and "call_third_party" works.
+  const toolsMode = req.toolsMode ?? (req.source === "admin" ? "debug" : "off");
   const useTools = toolsMode === "debug";
+
+  console.log("[agent runtime] toolsMode:", toolsMode, "useTools:", useTools, "source:", req.source);
 
   const openAiTools: any[] = coreTools.map((t) => ({
     type: "function",
@@ -217,8 +208,9 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
   const usedTools: string[] = [];
   const toolResults: Array<{ name: string; result: unknown }> = [];
 
-  if (useTools && message.tool_calls && message.tool_calls.length > 0) {
+  if (useTools && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
     const toolCalls = message.tool_calls as any[];
+    console.log("[agent runtime] tool_calls:", JSON.stringify(toolCalls));
 
     for (const rawCall of toolCalls) {
       const call: any = rawCall;
@@ -229,47 +221,34 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
       }
 
       const toolName: string = call.function.name;
-      const impl =
-        (toolImplementations as Record<string, any>)[toolName];
+      const impl = (toolImplementations as Record<string, any>)[toolName];
 
       if (!impl) {
-        console.warn(
-          "[agent runtime] Model requested unknown tool:",
-          toolName
-        );
+        console.warn("[agent runtime] Model requested unknown tool:", toolName);
         continue;
       }
 
       let parsedArgs: any = {};
       try {
         const argStr = call.function.arguments;
-        parsedArgs =
-          typeof argStr === "string" && argStr.trim()
-            ? JSON.parse(argStr)
-            : {};
+        parsedArgs = typeof argStr === "string" && argStr.trim() ? JSON.parse(argStr) : {};
       } catch (err) {
-        console.error(
-          "[agent runtime] Failed to parse tool args:",
-          call.function.arguments,
-          err
-        );
+        console.error("[agent runtime] Failed to parse tool args:", call.function.arguments, err);
       }
 
       try {
+        console.log("[agent runtime] running tool:", toolName, "args:", parsedArgs);
         const result = await impl(parsedArgs);
         usedTools.push(toolName);
         toolResults.push({ name: toolName, result });
+        console.log("[agent runtime] tool result:", toolName, result);
       } catch (err) {
-        console.error(
-          "[agent runtime] Tool execution failed:",
-          toolName,
-          err
-        );
+        console.error("[agent runtime] Tool execution failed:", toolName, err);
       }
     }
   }
 
-  // 3) Second attempt if still no text (sometimes content can be empty)
+  // 3) Second attempt if still no text
   if (!replyText) {
     try {
       const completion2 = await openai.chat.completions.create({
@@ -291,52 +270,34 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
       const message2: any = choice2?.message ?? {};
       const secondText = extractMessageText(message2);
 
-      if (secondText) {
-        replyText = secondText;
-      }
+      if (secondText) replyText = secondText;
     } catch (err) {
-      console.error(
-        "[agent runtime] Second attempt for empty reply failed:",
-        err
-      );
+      console.error("[agent runtime] Second attempt for empty reply failed:", err);
     }
   }
 
-  // 4) If still no text at all, synthesize a safe generic reply
+  // 4) If still no text at all
   if (!replyText) {
-    if (toolResults.length > 0) {
-      replyText =
-        "I've processed your request and updated the concierge system.";
-    } else {
-      replyText =
-        "Foundzie: I received your message and I'm here, but my reply was empty. Please try asking again in a slightly different way.";
-    }
+    replyText =
+      toolResults.length > 0
+        ? "I've processed your request and updated the concierge system."
+        : "Foundzie: I received your message but my reply was empty. Please try again.";
   }
 
-  // 5) Friendly summary of any tool actions
+  // 5) Friendly summary of some tool actions (optional)
   if (toolResults.length > 0) {
     const actions: string[] = [];
 
-    if (usedTools.includes("open_sos_case")) {
-      actions.push("opened a new SOS case");
-    }
-    if (usedTools.includes("add_sos_note")) {
-      actions.push("added a note to the SOS case");
-    }
-    if (usedTools.includes("log_outbound_call")) {
-      actions.push("logged an outbound call with your note");
-    }
-    if (usedTools.includes("broadcast_notification")) {
-      actions.push("sent a broadcast notification to users");
-    }
+    if (usedTools.includes("open_sos_case")) actions.push("opened a new SOS case");
+    if (usedTools.includes("add_sos_note")) actions.push("added a note to the SOS case");
+    if (usedTools.includes("log_outbound_call")) actions.push("logged an outbound call with your note");
+    if (usedTools.includes("broadcast_notification")) actions.push("sent a broadcast notification to users");
 
     if (actions.length > 0) {
       let summary: string;
-      if (actions.length === 1) {
-        summary = `I've ${actions[0]}.`;
-      } else if (actions.length === 2) {
-        summary = `I've ${actions[0]} and ${actions[1]}.`;
-      } else {
+      if (actions.length === 1) summary = `I've ${actions[0]}.`;
+      else if (actions.length === 2) summary = `I've ${actions[0]} and ${actions[1]}.`;
+      else {
         const last = actions[actions.length - 1];
         const rest = actions.slice(0, -1).join(", ");
         summary = `I've ${rest}, and ${last}.`;
@@ -364,9 +325,7 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
 /**
  * Main entry point used by /api/chat/[roomId] and /api/agent.
  */
-export async function runFoundzieAgent(
-  req: AgentRequestPayload
-): Promise<AgentResult> {
+export async function runFoundzieAgent(req: AgentRequestPayload): Promise<AgentResult> {
   try {
     if (!hasOpenAiKey || !openai) {
       return runStubAgent(req, "missing_or_empty_OPENAI_API_KEY");
@@ -375,9 +334,6 @@ export async function runFoundzieAgent(
     return await runOpenAiAgent(req);
   } catch (err) {
     console.error("[agent runtime] OpenAI error, falling back to stub:", err);
-    return runStubAgent(
-      req,
-      err instanceof Error ? err.message : String(err)
-    );
+    return runStubAgent(req, err instanceof Error ? err.message : String(err));
   }
 }
