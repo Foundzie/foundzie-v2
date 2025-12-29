@@ -1,22 +1,10 @@
 // src/lib/agent/tools.ts
-
-/**
- * Foundzie V3 - Agent Tool Handlers
- * ----------------------------------
- * This file connects the OpenAI Agent → Foundzie backend state.
- * Instead of HTTP calls for SOS/Calls/Notifications, we call the
- * in-memory stores directly so changes appear instantly in Admin UI.
- *
- * Compatibility quick fixes:
- * 1) Tool implementation args MUST match the schema in spec.ts (coreTools).
- * 2) Server-side fetch must use an ABSOLUTE URL (relative /api/... is not reliable here).
- */
-
 import "server-only";
 
 import { addEvent, updateEvent, type SosStatus } from "@/app/api/sos/store";
 import { addCallLog } from "@/app/api/calls/store";
-import { startTwilioCall } from "@/lib/twilio";
+import { startTwilioCall, redirectTwilioCall } from "@/lib/twilio";
+import { kvGetJSON } from "@/lib/kv/redis";
 
 import {
   mockNotifications,
@@ -26,35 +14,33 @@ import {
 } from "@/app/data/notifications";
 
 /* ------------------------------------------------------------------ */
-/*  Helper: stable base URL for server-side fetch                       */
+/* Helper: stable base URL for server-side fetch                        */
 /* ------------------------------------------------------------------ */
-
 function getBaseUrl(): string {
-  // Prefer explicit app URL if you have it
   const explicit =
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.NEXT_PUBLIC_SITE_URL ||
     process.env.APP_URL ||
     process.env.SITE_URL;
 
-  if (explicit && explicit.trim()) {
-    return explicit.trim().replace(/\/+$/, "");
-  }
+  if (explicit && explicit.trim()) return explicit.trim().replace(/\/+$/, "");
 
-  // Vercel provides hostname without scheme
   const vercel = process.env.VERCEL_URL;
-  if (vercel && vercel.trim()) {
-    return `https://${vercel.trim().replace(/\/+$/, "")}`;
-  }
+  if (vercel && vercel.trim()) return `https://${vercel.trim().replace(/\/+$/, "")}`;
 
-  // Local dev fallback
   return "http://localhost:3000";
 }
 
 /* ------------------------------------------------------------------ */
-/* 1. SOS tools                                                        */
+/* KV key for active call mapping (set by /api/twilio/voice)            */
 /* ------------------------------------------------------------------ */
+function activeCallKey(roomId: string) {
+  return `foundzie:twilio:active-call:${roomId}:v1`;
+}
 
+/* ------------------------------------------------------------------ */
+/* 1) SOS tools                                                        */
+/* ------------------------------------------------------------------ */
 export async function open_sos_case(args: {
   category: "general" | "police" | "medical" | "fire";
   description: string;
@@ -81,27 +67,22 @@ export async function add_sos_note(args: {
     status: args.status,
   });
 
-  if (!updated) {
-    throw new Error(`SOS event not found for id=${args.sosId}`);
-  }
+  if (!updated) throw new Error(`SOS event not found for id=${args.sosId}`);
 
   console.log("[agent tool] add_sos_note →", updated);
   return updated;
 }
 
 /* ------------------------------------------------------------------ */
-/* 2. Call log tool                                                    */
+/* 2) Call log tool                                                    */
 /* ------------------------------------------------------------------ */
-
 export async function log_outbound_call(args: {
   userId?: string;
   phone?: string;
   note: string;
 }) {
   const userId =
-    typeof args.userId === "string" && args.userId.trim()
-      ? args.userId.trim()
-      : null;
+    typeof args.userId === "string" && args.userId.trim() ? args.userId.trim() : null;
 
   const phone =
     typeof args.phone === "string" && args.phone.trim() ? args.phone.trim() : "";
@@ -110,9 +91,7 @@ export async function log_outbound_call(args: {
     typeof args.note === "string" && args.note.trim() ? args.note.trim() : "";
 
   if (!phone) {
-    throw new Error(
-      "Missing phone number. Provide a phone or a userId linked to a phone."
-    );
+    throw new Error("Missing phone number. Provide a phone or a userId linked to a phone.");
   }
 
   const id = `agent-call-${Date.now()}`;
@@ -131,42 +110,112 @@ export async function log_outbound_call(args: {
 }
 
 /* ------------------------------------------------------------------ */
-/* 2b. M14: Third-party message calling (non-breaking)                  */
+/* 2b) M14: REAL conference bridge tool                                 */
 /* ------------------------------------------------------------------ */
-
 /**
  * call_third_party
- * ----------------
- * Calls a third party and speaks a message (using Twilio).
- * This does NOT require a conference yet; it is the safest step for M14.
+ * - Moves the ACTIVE caller leg into a conference (redirect callSid → /conference/join)
+ * - Dials third party, speaks message, then joins them into the same conference (via /conference/bridge)
  *
- * IMPORTANT:
- * - Requires /api/twilio/voice to support mode=message&say=... (we already added that earlier).
- * - Logs into calls store so Admin > Calls shows it.
+ * If we cannot find an active callSid, we safely fall back to a simple message call.
  */
 export async function call_third_party(args: {
   phone: string;
   message: string;
+  roomId?: string;
+  callSid?: string;
 }) {
-  const phone =
-    typeof args.phone === "string" ? args.phone.trim() : "";
-  const message =
-    typeof args.message === "string" ? args.message.trim() : "";
+  const phone = typeof args.phone === "string" ? args.phone.trim() : "";
+  const message = typeof args.message === "string" ? args.message.trim() : "";
+
+  const roomId = typeof args.roomId === "string" ? args.roomId.trim() : "";
+  const callSidDirect = typeof args.callSid === "string" ? args.callSid.trim() : "";
 
   if (!phone) throw new Error("call_third_party: missing phone");
   if (!message) throw new Error("call_third_party: missing message");
 
   const baseUrl = getBaseUrl();
 
-  // Use message-only TwiML mode (Say + Hangup)
-  const voiceUrl =
-    `${baseUrl}/api/twilio/voice?mode=message&say=` +
-    encodeURIComponent(message);
+  // 1) Determine active caller CallSid (so we can bridge)
+  let callerCallSid = callSidDirect;
 
-  // Trigger the call
-  const result = await startTwilioCall(phone, { voiceUrl, note: message });
+  if (!callerCallSid && roomId) {
+    try {
+      const mapping = await kvGetJSON<any>(activeCallKey(roomId));
+      if (mapping?.callSid && typeof mapping.callSid === "string") {
+        callerCallSid = mapping.callSid.trim();
+      }
+    } catch (e) {
+      console.warn("[agent tool] call_third_party: failed to load active callSid", e);
+    }
+  }
 
-  // Log into Admin Calls (safe, non-breaking)
+  // 2) Conference name
+  // Use roomId when available so it stays stable for the current call session
+  const confName =
+    (roomId ? `foundzie-${roomId}` : callerCallSid ? `foundzie-${callerCallSid}` : `foundzie-${Date.now()}`)
+      .replace(/[^a-zA-Z0-9:_-]/g, "-")
+      .slice(0, 128);
+
+  const joinUrl = `${baseUrl}/api/twilio/conference/join?conf=${encodeURIComponent(confName)}`;
+  const bridgeUrl =
+    `${baseUrl}/api/twilio/conference/bridge?conf=${encodeURIComponent(confName)}` +
+    `&text=${encodeURIComponent(message)}`;
+
+  // 3) If we CAN bridge: move caller into conference, then call third party into same conference
+  let bridgeMode: "conference" | "message-only" = "message-only";
+  let redirectedCaller = false;
+
+  if (callerCallSid) {
+    const redirectRes = await redirectTwilioCall(callerCallSid, joinUrl);
+    redirectedCaller = !!redirectRes;
+  }
+
+  if (redirectedCaller) {
+    bridgeMode = "conference";
+
+    // Dial third party: speak message then join conference
+    const outbound = await startTwilioCall(phone, {
+      voiceUrl: bridgeUrl,
+      note: message,
+    });
+
+    // Log into Admin Calls so you can see it
+    try {
+      const id = `agent-bridge-${Date.now()}`;
+      await addCallLog({
+        id,
+        userId: null,
+        userName: null,
+        phone,
+        note: `Bridge call (conf=${confName}): ${message}`.slice(0, 240),
+        direction: "outbound",
+      });
+    } catch {}
+
+    const payload = {
+      ok: Boolean(outbound),
+      mode: bridgeMode,
+      phone,
+      message,
+      confName,
+      callerCallSid,
+      thirdPartySid: outbound?.sid ?? null,
+    };
+
+    console.log("[agent tool] call_third_party →", payload);
+    return payload;
+  }
+
+  // 4) Fallback: no active callSid found → just call and speak message (no conference)
+  const fallbackVoiceUrl =
+    `${baseUrl}/api/twilio/message?text=` + encodeURIComponent(message);
+
+  const fallback = await startTwilioCall(phone, {
+    voiceUrl: fallbackVoiceUrl,
+    note: message,
+  });
+
   try {
     const id = `agent-thirdparty-${Date.now()}`;
     await addCallLog({
@@ -174,26 +223,28 @@ export async function call_third_party(args: {
       userId: null,
       userName: null,
       phone,
-      note: `Third-party message: ${message}`.slice(0, 240),
+      note: `Third-party message (no-bridge): ${message}`.slice(0, 240),
       direction: "outbound",
     });
   } catch {}
 
   const payload = {
-    ok: Boolean(result),
+    ok: Boolean(fallback),
+    mode: "message-only",
     phone,
-    twilioSid: result?.sid ?? null,
-    deliveredMessage: message,
+    message,
+    confName: null,
+    callerCallSid: null,
+    thirdPartySid: fallback?.sid ?? null,
   };
 
-  console.log("[agent tool] call_third_party →", payload);
+  console.log("[agent tool] call_third_party fallback →", payload);
   return payload;
 }
 
 /* ------------------------------------------------------------------ */
-/* 3. Notification broadcast tool                                      */
+/* 3) Notification broadcast tool                                      */
 /* ------------------------------------------------------------------ */
-
 export async function broadcast_notification(args: {
   title: string;
   message: string;
@@ -220,39 +271,14 @@ export async function broadcast_notification(args: {
     mediaId: null,
   };
 
-  // This mutates the in-memory list used by /api/notifications
   mockNotifications.unshift(newItem);
-
   console.log("[agent tool] broadcast_notification →", newItem);
   return newItem;
 }
 
 /* ------------------------------------------------------------------ */
-/* 4. Places recommendation tool (M8c)                                 */
+/* 4) Places recommendation tool (M8c)                                 */
 /* ------------------------------------------------------------------ */
-
-/**
- * get_places_for_user
- * -------------------
- * IMPORTANT: This function signature MUST match the schema in spec.ts (coreTools).
- *
- * Schema fields we support:
- * - userId?: string
- * - roomId?: string
- * - limit?: number (1..10)
- * - manualInterest?: string
- * - manualMode?: "normal" | "child"
- *
- * Behavior:
- * - If manualMode provided → use it
- * - Else if user found → use user's interactionMode
- * - Else → normal
- *
- * - Query interest:
- *   manualInterest > user.interest > empty
- *
- * - Uses ABSOLUTE URL for server fetch.
- */
 export async function get_places_for_user(args: {
   userId?: string;
   roomId?: string;
@@ -261,30 +287,21 @@ export async function get_places_for_user(args: {
   manualMode?: "normal" | "child";
 }) {
   const userId =
-    typeof args.userId === "string" && args.userId.trim()
-      ? args.userId.trim()
-      : null;
+    typeof args.userId === "string" && args.userId.trim() ? args.userId.trim() : null;
 
   const roomId =
-    typeof args.roomId === "string" && args.roomId.trim()
-      ? args.roomId.trim()
-      : null;
+    typeof args.roomId === "string" && args.roomId.trim() ? args.roomId.trim() : null;
 
-  // clamp limit 1..10 (default 5)
   const rawLimit = Number.isFinite(args.limit as any) ? Number(args.limit) : 5;
   const limit = Math.max(1, Math.min(10, rawLimit || 5));
 
-  // Find user (optional) to infer interest + mode
   let user: any | undefined;
 
   try {
     const usersStore = await import("@/app/api/users/store");
     const { getUser, findUserByRoomId } = usersStore as any;
 
-    if (userId && typeof getUser === "function") {
-      user = await getUser(String(userId));
-    }
-
+    if (userId && typeof getUser === "function") user = await getUser(String(userId));
     if (!user && roomId && typeof findUserByRoomId === "function") {
       user = await findUserByRoomId(String(roomId));
     }
@@ -292,28 +309,16 @@ export async function get_places_for_user(args: {
     console.error("[agent tool] get_places_for_user: user lookup failed:", err);
   }
 
-  // Decide mode
   const manualMode =
-    args.manualMode === "child"
-      ? "child"
-      : args.manualMode === "normal"
-      ? "normal"
-      : null;
+    args.manualMode === "child" ? "child" : args.manualMode === "normal" ? "normal" : null;
 
   const inferredMode = user?.interactionMode === "child" ? "child" : "normal";
-
   const mode = manualMode ?? inferredMode;
 
-  // Decide query/interest
-  const manualInterest =
-    typeof args.manualInterest === "string" ? args.manualInterest.trim() : "";
-
-  const userInterest =
-    typeof user?.interest === "string" ? String(user.interest).trim() : "";
-
+  const manualInterest = typeof args.manualInterest === "string" ? args.manualInterest.trim() : "";
+  const userInterest = typeof user?.interest === "string" ? String(user.interest).trim() : "";
   const q = manualInterest || userInterest || "";
 
-  // Build request to unified /api/places
   const searchParams = new URLSearchParams();
   searchParams.set("mode", mode);
   searchParams.set("limit", String(limit));
@@ -322,10 +327,7 @@ export async function get_places_for_user(args: {
   const baseUrl = getBaseUrl();
   const url = `${baseUrl}/api/places?${searchParams.toString()}`;
 
-  const res = await fetch(url, {
-    method: "GET",
-    cache: "no-store",
-  });
+  const res = await fetch(url, { method: "GET", cache: "no-store" });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -350,17 +352,15 @@ export async function get_places_for_user(args: {
 }
 
 /* ------------------------------------------------------------------ */
-/* 5. Tool registry – used by runtime + /api/agent                     */
+/* Tool registry                                                       */
 /* ------------------------------------------------------------------ */
-
 export const toolHandlers = {
   open_sos_case,
   add_sos_note,
   log_outbound_call,
   broadcast_notification,
   get_places_for_user,
-  call_third_party, // ✅ M14 tool added
+  call_third_party,
 } as const;
 
-// alias expected by your existing runtime
 export const toolImplementations = toolHandlers;

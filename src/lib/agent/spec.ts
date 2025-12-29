@@ -225,6 +225,7 @@ You have access to function tools exposed by the system. Use them as follows, es
   - Keep the message short and respectful.
   - Do not reveal internal IDs.
   - Prefer asking for confirmation if the request is ambiguous.
+  - When the request is coming from an active phone call, include \`roomId\` or \`callSid\` if available so the system can bridge the caller + third party into a conference.
 
 BEHAVIOR RULES:
 - When a request clearly matches one of these actions, you MUST call the corresponding tool instead of merely describing what you would do.
@@ -360,16 +361,26 @@ export const coreTools: AgentToolDefinition[] = [
     },
   },
 
-  // ✅ M14: Third-party calling tool (message delivery)
+  // ✅ M14: Third-party calling tool (message delivery + optional bridge context)
   {
     name: "call_third_party",
     description:
-      "Call a third-party phone number and deliver a short spoken message (non-breaking; can run while user is already on another call).",
+      "Call a third-party phone number and deliver a short spoken message. Optionally include roomId/callSid to allow bridging into a conference.",
     parameters: {
       type: "object",
       properties: {
         phone: { type: "string" },
         message: { type: "string" },
+        roomId: {
+          type: "string",
+          description:
+            "Optional room id (e.g., phone:... or visitor-...). Helps locate the active caller leg for bridging.",
+        },
+        callSid: {
+          type: "string",
+          description:
+            "Optional Twilio CallSid for the active caller leg. If provided, can be used for direct bridging.",
+        },
       },
       required: ["phone", "message"],
     },
