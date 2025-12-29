@@ -4,6 +4,7 @@ import { runFoundzieAgent } from "@/lib/agent/runtime";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 import { addMessage, listMessages } from "@/app/api/chat/store";
 import { ensureUserForRoom } from "@/app/api/users/store";
+import { call_third_party } from "@/lib/agent/tools";
 
 export const dynamic = "force-dynamic";
 
@@ -128,26 +129,64 @@ function formatThreadForAgent(items: any[], max = 16) {
 }
 
 /**
- * Detects a "call X and tell them Y" style request from speech.
- * Returns:
- *  - null if no phone number detected
- *  - { phone, message } where message may be empty if user didn't say what to tell
+ * Very small intent parser:
+ * - Detects "call" or "message/text" + a phone number in the same utterance
+ * - Extracts message after "tell", "say", or "message"
  */
-function detectCallRequest(text: string): { phone: string; message: string } | null {
-  const t = (text || "").trim();
-  if (!t) return null;
+function parseForcedCallIntent(utterance: string): null | {
+  phone: string;
+  message: string;
+} {
+  const text = (utterance || "").trim();
+  if (!text) return null;
 
-  // Phone-ish sequence: +1 (331) 299-8168, 3312998168, etc.
-  const numMatch = t.match(/(\+?\d[\d\s().-]{7,}\d)/);
-  const phone = numMatch ? numMatch[1].replace(/[^\d+]/g, "") : "";
+  const lower = text.toLowerCase();
+  const wantsCall =
+    lower.includes("call ") ||
+    lower.startsWith("call") ||
+    lower.includes("phone ") ||
+    lower.includes("dial ");
+  const wantsMsg =
+    lower.includes("text ") ||
+    lower.includes("message ") ||
+    lower.includes("tell ");
 
-  if (!phone) return null;
+  if (!wantsCall && !wantsMsg) return null;
 
-  // Try to capture message after "tell him/her/them ..." or "and say/tell ..."
-  const msgMatch = t.match(
-    /(?:tell\s+(?:him|her|them)\s+(.+)|and\s+(?:say|tell)\s+(.+))/i
-  );
-  const message = (msgMatch?.[1] || msgMatch?.[2] || "").trim();
+  // phone number pattern: +1 (331) 299-8168 etc
+  const m = text.match(/(\+?\d[\d\s().-]{7,}\d)/);
+  if (!m) return null;
+
+  const rawPhone = m[1];
+  const phone = rawPhone.replace(/[^\d+]/g, "");
+  if (!phone || phone.replace(/\D/g, "").length < 8) return null;
+
+  // message extraction
+  let message = "";
+
+  const tellIdx = lower.indexOf("tell ");
+  const sayIdx = lower.indexOf("say ");
+  const msgIdx = lower.indexOf("message ");
+  const textIdx = lower.indexOf("text ");
+
+  const idxs = [tellIdx, sayIdx, msgIdx, textIdx].filter((n) => n >= 0);
+  const start = idxs.length ? Math.min(...idxs) : -1;
+
+  if (start >= 0) {
+    message = text.slice(start);
+    // trim leading keyword
+    message = message
+      .replace(/^tell\s+/i, "")
+      .replace(/^say\s+/i, "")
+      .replace(/^message\s+/i, "")
+      .replace(/^text\s+/i, "")
+      .trim();
+  }
+
+  // fallback message if none provided
+  if (!message) {
+    message = "Hi — this is Foundzie calling with a quick message from Kashif.";
+  }
 
   return { phone, message };
 }
@@ -198,60 +237,13 @@ export async function POST(req: NextRequest) {
       } as any);
     } catch {}
 
-    /**
-     * ✅ Forced-call interceptor (DO NOT rely on the model deciding tools)
-     * If user says something like: "call +13312998168 and tell him I'm on my way"
-     * we directly invoke call_third_party.
-     */
-    const callReq = detectCallRequest(speechText);
-
-    if (callReq?.phone) {
-      if (!callReq.message) {
-        // Ask ONE question to get message
-        return twiml(
-          buildConversationalTwiml("Sure — what should I tell them?")
-        );
-      }
-
-      try {
-        // Import directly to avoid circular imports + bypass model refusal
-        const { call_third_party } = await import("@/lib/agent/tools");
-
-        await call_third_party({
-          phone: callReq.phone,
-          message: callReq.message,
-          roomId, // helps bridge if active callSid mapping exists
-        });
-
-        // Log the user's speech into chat for traceability
-        try {
-          await addMessage(roomId, {
-            sender: "user",
-            text: `[Phone] ${speechText}`,
-            attachmentName: null,
-            attachmentKind: null,
-          });
-        } catch {}
-
-        // Confirm to caller
-        return twiml(
-          buildConversationalTwiml("Okay — calling now. Stay with me.")
-        );
-      } catch (e) {
-        console.error("[twilio/gather] forced call_third_party failed:", e);
-        return twiml(
-          buildConversationalTwiml(
-            "I couldn’t place that call right now. Want me to try again?"
-          )
-        );
-      }
-    }
-
-    // Turn limit (only for normal conversation flow)
+    // Turn limit
     const userTurnsSoFar = memory.turns.filter((t) => t.role === "user").length;
     if (userTurnsSoFar >= 10) {
       return twiml(
-        buildGoodbyeTwiml("We covered a lot—let’s continue inside the Foundzie app.")
+        buildGoodbyeTwiml(
+          "We covered a lot—let’s continue inside the Foundzie app."
+        )
       );
     }
 
@@ -271,6 +263,55 @@ export async function POST(req: NextRequest) {
         attachmentKind: null,
       });
     } catch {}
+
+    // ✅ FORCE CALL PATH (no model decision required)
+    const forced = parseForcedCallIntent(speechText);
+    if (forced) {
+      let sayBack = "Okay — I’m placing that call now.";
+
+      try {
+        const res = await call_third_party({
+          phone: forced.phone,
+          message: forced.message,
+          roomId,
+          callSid,
+        });
+
+        if (!res || res.ok !== true) {
+          sayBack =
+            "I tried, but I can’t place that call right now. Please check my Twilio setup and try again.";
+        } else {
+          sayBack = "Done — I started the call and delivered your message.";
+        }
+      } catch (err) {
+        console.error("[twilio/gather] call_third_party error:", err);
+        sayBack =
+          "I tried, but I can’t place that call right now. Please check my Twilio setup and try again.";
+      }
+
+      // Save assistant turn
+      memory.turns.push({
+        role: "assistant",
+        text: sayBack,
+        at: new Date().toISOString(),
+      });
+      memory.turns = trimTurns(memory.turns, 10);
+
+      try {
+        await kvSetJSON(memKey(callSid), memory);
+      } catch {}
+
+      try {
+        await addMessage(roomId, {
+          sender: "concierge",
+          text: `[Phone] ${sayBack}`,
+          attachmentName: null,
+          attachmentKind: null,
+        });
+      } catch {}
+
+      return twiml(buildConversationalTwiml(sayBack));
+    }
 
     // Build agent thread
     let thread = "";
@@ -333,7 +374,9 @@ export async function POST(req: NextRequest) {
     console.error("[twilio/gather] fatal:", e);
     // Never return 500 to Twilio. Always return TwiML.
     return twiml(
-      buildConversationalTwiml("Sorry — something glitched. Say that again for me.")
+      buildConversationalTwiml(
+        "Sorry — something glitched. Say that again for me."
+      )
     );
   }
 }
