@@ -55,10 +55,16 @@ function buildConversationalTwiml(sayMessage: string) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${safe}</Say>
-  <Gather input="speech" action="${escapeForXml(gatherUrl)}" method="POST" timeout="7" speechTimeout="auto">
-    <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">What can I do for you next?</Say>
+  <Gather input="speech" action="${escapeForXml(
+    gatherUrl
+  )}" method="POST" timeout="7" speechTimeout="auto">
+    <Say voice="${escapeForXml(
+      FALLBACK_TTS_VOICE
+    )}">What can I do for you next?</Say>
   </Gather>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">I didn’t hear anything. Let’s restart.</Say>
+  <Say voice="${escapeForXml(
+    FALLBACK_TTS_VOICE
+  )}">I didn’t hear anything. Let’s restart.</Say>
   <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
 </Response>`;
 }
@@ -70,10 +76,16 @@ function buildNoSpeechTwiml() {
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Gather input="speech" action="${escapeForXml(gatherUrl)}" method="POST" timeout="7" speechTimeout="auto">
-    <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Sorry, I didn’t catch that. Say it one more time.</Say>
+  <Gather input="speech" action="${escapeForXml(
+    gatherUrl
+  )}" method="POST" timeout="7" speechTimeout="auto">
+    <Say voice="${escapeForXml(
+      FALLBACK_TTS_VOICE
+    )}">Sorry, I didn’t catch that. Say it one more time.</Say>
   </Gather>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">No worries. Restarting.</Say>
+  <Say voice="${escapeForXml(
+    FALLBACK_TTS_VOICE
+  )}">No worries. Restarting.</Say>
   <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
 </Response>`;
 }
@@ -83,7 +95,9 @@ function buildGoodbyeTwiml(message: string) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${safe}</Say>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Thanks for calling Foundzie. Bye for now.</Say>
+  <Say voice="${escapeForXml(
+    FALLBACK_TTS_VOICE
+  )}">Thanks for calling Foundzie. Bye for now.</Say>
   <Hangup/>
 </Response>`;
 }
@@ -111,6 +125,31 @@ function formatThreadForAgent(items: any[], max = 16) {
     )
     .filter(Boolean)
     .join("\n");
+}
+
+/**
+ * Detects a "call X and tell them Y" style request from speech.
+ * Returns:
+ *  - null if no phone number detected
+ *  - { phone, message } where message may be empty if user didn't say what to tell
+ */
+function detectCallRequest(text: string): { phone: string; message: string } | null {
+  const t = (text || "").trim();
+  if (!t) return null;
+
+  // Phone-ish sequence: +1 (331) 299-8168, 3312998168, etc.
+  const numMatch = t.match(/(\+?\d[\d\s().-]{7,}\d)/);
+  const phone = numMatch ? numMatch[1].replace(/[^\d+]/g, "") : "";
+
+  if (!phone) return null;
+
+  // Try to capture message after "tell him/her/them ..." or "and say/tell ..."
+  const msgMatch = t.match(
+    /(?:tell\s+(?:him|her|them)\s+(.+)|and\s+(?:say|tell)\s+(.+))/i
+  );
+  const message = (msgMatch?.[1] || msgMatch?.[2] || "").trim();
+
+  return { phone, message };
 }
 
 export async function GET() {
@@ -159,7 +198,56 @@ export async function POST(req: NextRequest) {
       } as any);
     } catch {}
 
-    // Turn limit
+    /**
+     * ✅ Forced-call interceptor (DO NOT rely on the model deciding tools)
+     * If user says something like: "call +13312998168 and tell him I'm on my way"
+     * we directly invoke call_third_party.
+     */
+    const callReq = detectCallRequest(speechText);
+
+    if (callReq?.phone) {
+      if (!callReq.message) {
+        // Ask ONE question to get message
+        return twiml(
+          buildConversationalTwiml("Sure — what should I tell them?")
+        );
+      }
+
+      try {
+        // Import directly to avoid circular imports + bypass model refusal
+        const { call_third_party } = await import("@/lib/agent/tools");
+
+        await call_third_party({
+          phone: callReq.phone,
+          message: callReq.message,
+          roomId, // helps bridge if active callSid mapping exists
+        });
+
+        // Log the user's speech into chat for traceability
+        try {
+          await addMessage(roomId, {
+            sender: "user",
+            text: `[Phone] ${speechText}`,
+            attachmentName: null,
+            attachmentKind: null,
+          });
+        } catch {}
+
+        // Confirm to caller
+        return twiml(
+          buildConversationalTwiml("Okay — calling now. Stay with me.")
+        );
+      } catch (e) {
+        console.error("[twilio/gather] forced call_third_party failed:", e);
+        return twiml(
+          buildConversationalTwiml(
+            "I couldn’t place that call right now. Want me to try again?"
+          )
+        );
+      }
+    }
+
+    // Turn limit (only for normal conversation flow)
     const userTurnsSoFar = memory.turns.filter((t) => t.role === "user").length;
     if (userTurnsSoFar >= 10) {
       return twiml(
