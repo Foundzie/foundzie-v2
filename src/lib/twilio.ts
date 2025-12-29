@@ -2,39 +2,88 @@
 import "server-only";
 import twilio from "twilio";
 
+export type StartCallOpts = {
+  /**
+   * TwiML URL to use instead of default /api/twilio/voice
+   * (we support both "voiceUrl" and "twimlUrl" to avoid breaking changes)
+   */
+  voiceUrl?: string;
+  twimlUrl?: string;
+
+  /**
+   * Optional roomId; if provided and the chosen URL is the default /api/twilio/voice,
+   * we can append ?roomId=... (non-breaking convenience).
+   */
+  roomId?: string;
+
+  /** Optional note for logging/debug */
+  note?: string;
+};
+
 /**
  * Twilio outbound calling helper.
  * Returns null if Twilio is not configured.
  *
- * Backwards compatible:
- *   startTwilioCall(to, note)
- *
- * New capabilities:
- *   - pass a custom TwiML URL (e.g. /api/twilio/message?text=...)
- *   - pass roomId for traceability
+ * Backward-compatible supported call forms:
+ *  - startTwilioCall(to)
+ *  - startTwilioCall(to, note)
+ *  - startTwilioCall(to, opts)
+ *  - startTwilioCall(to, note, opts)   ✅ (what your outbound route uses)
  */
 export async function startTwilioCall(
   to: string,
-  note?: string,
-  opts?: {
-    twimlUrl?: string; // override voiceUrl
-    roomId?: string; // optional identity tag
-  }
+  noteOrOpts?: string | StartCallOpts,
+  maybeOpts?: StartCallOpts
 ) {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
 
-  // ✅ Support BOTH variable names so nothing breaks
-  const from =
-    process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_NUMBER;
+  // Support BOTH variable names so nothing breaks
+  const from = process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_NUMBER;
 
-  // ✅ Canonical default voice URL
   const DEFAULT_VOICE_URL = "https://foundzie-v2.vercel.app/api/twilio/voice";
 
-  // Use env if set, otherwise fall back to the stable project URL
-  const baseVoiceUrl =
-    (process.env.TWILIO_VOICE_URL && process.env.TWILIO_VOICE_URL.trim()) ||
-    DEFAULT_VOICE_URL;
+  // -----------------------------
+  // Normalize arguments safely
+  // -----------------------------
+  let note = "";
+  let opts: StartCallOpts = {};
+
+  if (typeof noteOrOpts === "string") {
+    note = noteOrOpts;
+    opts = (maybeOpts ?? {}) as StartCallOpts;
+  } else if (noteOrOpts && typeof noteOrOpts === "object") {
+    opts = noteOrOpts as StartCallOpts;
+    note = typeof opts.note === "string" ? opts.note : "";
+  } else {
+    opts = (maybeOpts ?? {}) as StartCallOpts;
+    note = typeof opts.note === "string" ? opts.note : "";
+  }
+
+  // Accept either key
+  const explicitUrl =
+    (typeof opts.voiceUrl === "string" && opts.voiceUrl.trim()) ||
+    (typeof opts.twimlUrl === "string" && opts.twimlUrl.trim()) ||
+    "";
+
+  // Env override (kept)
+  const envVoiceUrl =
+    (process.env.TWILIO_VOICE_URL && process.env.TWILIO_VOICE_URL.trim()) || "";
+
+  let finalUrl = explicitUrl || envVoiceUrl || DEFAULT_VOICE_URL;
+
+  // If using the default voice route and we have a roomId, append it (safe, non-breaking)
+  try {
+    const roomId =
+      typeof opts.roomId === "string" && opts.roomId.trim() ? opts.roomId.trim() : "";
+    if (roomId && finalUrl.includes("/api/twilio/voice") && !finalUrl.includes("roomId=")) {
+      const u = new URL(finalUrl);
+      u.searchParams.set("roomId", roomId);
+      finalUrl = u.toString();
+    }
+  } catch {
+    // If URL parsing fails, don't break calls
+  }
 
   // If any env vars missing → skip Twilio (fallback mode)
   if (!sid || !token || !from) {
@@ -46,10 +95,7 @@ export async function startTwilioCall(
     return null;
   }
 
-  // Decide which URL Twilio should request for TwiML
-  const twimlUrl = (opts?.twimlUrl && opts.twimlUrl.trim()) || baseVoiceUrl;
-
-  console.log("[twilio] Using TwiML url:", twimlUrl);
+  console.log("[twilio] Using voiceUrl:", finalUrl);
 
   try {
     const client = twilio(sid, token);
@@ -57,7 +103,7 @@ export async function startTwilioCall(
     const call = await client.calls.create({
       to,
       from,
-      url: twimlUrl,
+      url: finalUrl,
       method: "POST",
     });
 
@@ -68,8 +114,7 @@ export async function startTwilioCall(
       to,
       from,
       note: note ?? "",
-      roomId: opts?.roomId ?? "",
-      twimlUrl,
+      voiceUrl: finalUrl,
     };
   } catch (err) {
     console.error("[twilio] Call failed:", err);

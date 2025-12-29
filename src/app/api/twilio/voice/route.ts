@@ -33,10 +33,17 @@ function getBaseUrl(): string {
   return "https://foundzie-v2.vercel.app";
 }
 
-// Fallback voice (Twilio TTS). Still not as good as realtime stream,
-// but MUCH more human than "alice".
 const FALLBACK_TTS_VOICE =
   (process.env.TWILIO_FALLBACK_VOICE || "").trim() || "Polly.Joanna-Neural";
+
+function buildMessageTwiml(message: string) {
+  const safe = escapeForXml((message || "").trim().slice(0, 900));
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${safe}</Say>
+  <Hangup/>
+</Response>`;
+}
 
 function buildGatherFallbackVerbs(marker: string) {
   const base = getBaseUrl();
@@ -66,7 +73,6 @@ function buildStreamTwiml(opts: {
   const safeCallSid = escapeForXml((opts.callSid || "").trim());
   const safeFrom = escapeForXml((opts.from || "").trim());
 
-  // If no WSS configured, go straight to Gather flow (single Response)
   if (!wss) {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -74,7 +80,6 @@ function buildStreamTwiml(opts: {
 </Response>`;
   }
 
-  // STREAM first. If stream ends immediately, Twilio continues to fallback verbs.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <!-- FOUNDZIE_STREAM ${escapeForXml(opts.marker)} -->
@@ -106,12 +111,20 @@ async function persistActiveCall(roomId: string, callSid: string, from: string) 
       updatedAt: new Date().toISOString(),
     });
   } catch (e) {
-    // non-fatal
     console.warn("[twilio/voice] failed to persist active call mapping", e);
   }
 }
 
 export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+
+  // ✅ NEW: message-only mode (non-breaking)
+  const mode = (url.searchParams.get("mode") || "").trim();
+  const say = (url.searchParams.get("say") || "").trim();
+  if (mode === "message" && say) {
+    return twiml(buildMessageTwiml(say));
+  }
+
   const sha =
     process.env.VERCEL_GIT_COMMIT_SHA ||
     process.env.VERCEL_GITHUB_COMMIT_SHA ||
@@ -120,7 +133,6 @@ export async function GET(req: NextRequest) {
   const wssPresent = !!(process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
   const marker = `mode=STREAM sha=${sha} wssPresent=${wssPresent} method=GET`;
 
-  const url = new URL(req.url);
   const roomId = (url.searchParams.get("roomId") || "").trim();
 
   return twiml(
@@ -132,6 +144,15 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const url = new URL(req.url);
+
+  // ✅ NEW: message-only mode (non-breaking)
+  const mode = (url.searchParams.get("mode") || "").trim();
+  const say = (url.searchParams.get("say") || "").trim();
+  if (mode === "message" && say) {
+    return twiml(buildMessageTwiml(say));
+  }
+
   const sha =
     process.env.VERCEL_GIT_COMMIT_SHA ||
     process.env.VERCEL_GITHUB_COMMIT_SHA ||
@@ -139,7 +160,6 @@ export async function POST(req: NextRequest) {
 
   const wssPresent = !!(process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
 
-  const url = new URL(req.url);
   const roomIdFromQuery = (url.searchParams.get("roomId") || "").trim();
 
   const form = await req.formData().catch(() => null);
@@ -149,12 +169,10 @@ export async function POST(req: NextRequest) {
   const callSid = typeof callSidRaw === "string" ? callSidRaw.trim() : "";
   const from = typeof fromRaw === "string" ? fromRaw.trim() : "";
 
-  // ✅ Prefer explicit roomId when provided by the app (outbound call route)
   const roomId =
     roomIdFromQuery ||
     (callSid ? `call:${callSid}` : from ? `phone:${from}` : "");
 
-  // Persist active call mapping for M14 (safe, non-breaking)
   await persistActiveCall(roomId, callSid, from);
 
   const marker = `mode=STREAM sha=${sha} wssPresent=${wssPresent} method=POST`;

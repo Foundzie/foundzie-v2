@@ -207,7 +207,7 @@ export async function POST(req: NextRequest) {
         roomId,
         userId: roomId,
         source: "mobile",
-        toolsMode: "off",
+        toolsMode: "debug",
       });
 
       if (agentResult.replyText && agentResult.replyText.trim()) {

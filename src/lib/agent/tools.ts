@@ -16,6 +16,7 @@ import "server-only";
 
 import { addEvent, updateEvent, type SosStatus } from "@/app/api/sos/store";
 import { addCallLog } from "@/app/api/calls/store";
+import { startTwilioCall } from "@/lib/twilio";
 
 import {
   mockNotifications,
@@ -103,9 +104,7 @@ export async function log_outbound_call(args: {
       : null;
 
   const phone =
-    typeof args.phone === "string" && args.phone.trim()
-      ? args.phone.trim()
-      : "";
+    typeof args.phone === "string" && args.phone.trim() ? args.phone.trim() : "";
 
   const note =
     typeof args.note === "string" && args.note.trim() ? args.note.trim() : "";
@@ -129,6 +128,66 @@ export async function log_outbound_call(args: {
 
   console.log("[agent tool] log_outbound_call →", log);
   return log;
+}
+
+/* ------------------------------------------------------------------ */
+/* 2b. M14: Third-party message calling (non-breaking)                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * call_third_party
+ * ----------------
+ * Calls a third party and speaks a message (using Twilio).
+ * This does NOT require a conference yet; it is the safest step for M14.
+ *
+ * IMPORTANT:
+ * - Requires /api/twilio/voice to support mode=message&say=... (we already added that earlier).
+ * - Logs into calls store so Admin > Calls shows it.
+ */
+export async function call_third_party(args: {
+  phone: string;
+  message: string;
+}) {
+  const phone =
+    typeof args.phone === "string" ? args.phone.trim() : "";
+  const message =
+    typeof args.message === "string" ? args.message.trim() : "";
+
+  if (!phone) throw new Error("call_third_party: missing phone");
+  if (!message) throw new Error("call_third_party: missing message");
+
+  const baseUrl = getBaseUrl();
+
+  // Use message-only TwiML mode (Say + Hangup)
+  const voiceUrl =
+    `${baseUrl}/api/twilio/voice?mode=message&say=` +
+    encodeURIComponent(message);
+
+  // Trigger the call
+  const result = await startTwilioCall(phone, { voiceUrl, note: message });
+
+  // Log into Admin Calls (safe, non-breaking)
+  try {
+    const id = `agent-thirdparty-${Date.now()}`;
+    await addCallLog({
+      id,
+      userId: null,
+      userName: null,
+      phone,
+      note: `Third-party message: ${message}`.slice(0, 240),
+      direction: "outbound",
+    });
+  } catch {}
+
+  const payload = {
+    ok: Boolean(result),
+    phone,
+    twilioSid: result?.sid ?? null,
+    deliveredMessage: message,
+  };
+
+  console.log("[agent tool] call_third_party →", payload);
+  return payload;
 }
 
 /* ------------------------------------------------------------------ */
@@ -235,10 +294,13 @@ export async function get_places_for_user(args: {
 
   // Decide mode
   const manualMode =
-    args.manualMode === "child" ? "child" : args.manualMode === "normal" ? "normal" : null;
+    args.manualMode === "child"
+      ? "child"
+      : args.manualMode === "normal"
+      ? "normal"
+      : null;
 
-  const inferredMode =
-    user?.interactionMode === "child" ? "child" : "normal";
+  const inferredMode = user?.interactionMode === "child" ? "child" : "normal";
 
   const mode = manualMode ?? inferredMode;
 
@@ -263,7 +325,6 @@ export async function get_places_for_user(args: {
   const res = await fetch(url, {
     method: "GET",
     cache: "no-store",
-    // Keep it simple; no headers required for your current /api/places route
   });
 
   if (!res.ok) {
@@ -273,7 +334,6 @@ export async function get_places_for_user(args: {
   }
 
   const json = await res.json().catch(() => ({} as any));
-
   const places = (json?.places ?? json ?? []) as any[];
 
   const result = {
@@ -299,6 +359,7 @@ export const toolHandlers = {
   log_outbound_call,
   broadcast_notification,
   get_places_for_user,
+  call_third_party, // ✅ M14 tool added
 } as const;
 
 // alias expected by your existing runtime

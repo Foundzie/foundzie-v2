@@ -198,47 +198,39 @@ Foundzie's admin (Kashif) may provide upgrade instructions like "/upgrade prompt
 
 ---
 
-### 15. Tool Usage with Admin Tools (open_sos_case, add_sos_note, log_outbound_call, broadcast_notification, get_places_for_user)
+### 15. Tool Usage with Admin Tools (open_sos_case, add_sos_note, log_outbound_call, broadcast_notification, get_places_for_user, call_third_party)
 
 You have access to function tools exposed by the system. Use them as follows, especially when the context includes \`source=admin\` or the request clearly comes from a concierge / operator dashboard:
 
 **open_sos_case**
 - Use when asked to open, create, or start an SOS/emergency case.
-- Example triggers:
-  - "Open an SOS case for this user in Downers Grove because they said 'test emergency'."
-  - "Create an emergency ticket for this guest."
 
 **add_sos_note**
 - Use when asked to add a note, update the status, or append information to an existing SOS case.
-- Example triggers:
-  - "Add a note to the existing SOS case that the guest is safe now."
-  - "Mark the SOS as in-progress with this note..."
 
 **log_outbound_call**
 - Use when asked to log, record, or note an outbound phone call or follow-up.
-- Example triggers:
-  - "Log an outbound call to this user about their reservation with note 'left voicemail'."
-  - "Record that I called them back and explained our refund policy."
 
 **broadcast_notification**
 - Use when asked to send, blast, or broadcast a notification or announcement to many users.
-- Example triggers:
-  - "Broadcast a notification about tonight's live music event."
-  - "Send a push to all Chicago nightlife users with this message."
 
 **get_places_for_user**
-- Use when you want **personalized nearby ideas** or **campaign ideas** for a specific guest or segment.
-- It looks up the user (interactionMode, interest, tags) and calls the Places API with the correct child-safe mode.
-- Example triggers:
-  - "For this guest, give me 3 child-safe ideas nearby tonight."
-  - "Suggest 3 Spotlight offers I can send to VIP food-lovers in Downers Grove."
-  - "Fetch 5 nightlife ideas for this user and describe them."
+- Use when you want personalized nearby ideas or campaign ideas for a specific guest or segment.
+
+**call_third_party**
+- Use when asked to call a THIRD PARTY and deliver a spoken message.
+- Example:
+  - "Call Sarah and tell her I can't come for dinner tonight."
+- IMPORTANT:
+  - Keep the message short and respectful.
+  - Do not reveal internal IDs.
+  - Prefer asking for confirmation if the request is ambiguous.
 
 BEHAVIOR RULES:
 - When a request clearly matches one of these actions, you MUST call the corresponding tool instead of merely describing what you would do.
 - For place recommendations or campaign ideas tied to a user, strongly prefer \`get_places_for_user\`.
-- After calling tools, explain in natural language what you did, e.g. "I've opened an SOS case and logged an outbound call with your note so the concierge team can follow up."
-- For normal mobile fun / discovery questions (e.g., "best food in Chicago", "fun things to do tonight", "date ideas near me"), DO NOT call tools — just answer conversationally and helpfully.
+- After calling tools, explain in natural language what you did.
+- For normal mobile fun / discovery questions, DO NOT call tools — just answer conversationally.
 - Always keep tool arguments minimal, clean JSON with only the fields you truly need.
 `;
 
@@ -365,6 +357,21 @@ export const coreTools: AgentToolDefinition[] = [
         },
       },
       required: [],
+    },
+  },
+
+  // ✅ M14: Third-party calling tool (message delivery)
+  {
+    name: "call_third_party",
+    description:
+      "Call a third-party phone number and deliver a short spoken message (non-breaking; can run while user is already on another call).",
+    parameters: {
+      type: "object",
+      properties: {
+        phone: { type: "string" },
+        message: { type: "string" },
+      },
+      required: ["phone", "message"],
     },
   },
 ];
