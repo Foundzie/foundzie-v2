@@ -1,5 +1,6 @@
 // src/app/api/twilio/voice/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { kvSetJSON } from "@/lib/kv/redis";
 
 export const dynamic = "force-dynamic";
 
@@ -37,11 +38,6 @@ function getBaseUrl(): string {
 const FALLBACK_TTS_VOICE =
   (process.env.TWILIO_FALLBACK_VOICE || "").trim() || "Polly.Joanna-Neural";
 
-/**
- * IMPORTANT:
- * This returns ONLY TwiML verbs (NO <Response> wrapper).
- * We will embed it inside a single root <Response>.
- */
 function buildGatherFallbackVerbs(marker: string) {
   const base = getBaseUrl();
   const gatherUrl = `${base}/api/twilio/gather`;
@@ -96,6 +92,25 @@ function buildStreamTwiml(opts: {
 </Response>`;
 }
 
+function activeCallKey(roomId: string) {
+  return `foundzie:twilio:active-call:${roomId}:v1`;
+}
+
+async function persistActiveCall(roomId: string, callSid: string, from: string) {
+  if (!roomId || !callSid) return;
+  try {
+    await kvSetJSON(activeCallKey(roomId), {
+      roomId,
+      callSid,
+      from,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    // non-fatal
+    console.warn("[twilio/voice] failed to persist active call mapping", e);
+  }
+}
+
 export async function GET(req: NextRequest) {
   const sha =
     process.env.VERCEL_GIT_COMMIT_SHA ||
@@ -124,6 +139,9 @@ export async function POST(req: NextRequest) {
 
   const wssPresent = !!(process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
 
+  const url = new URL(req.url);
+  const roomIdFromQuery = (url.searchParams.get("roomId") || "").trim();
+
   const form = await req.formData().catch(() => null);
   const callSidRaw = form ? form.get("CallSid") : null;
   const fromRaw = form ? form.get("From") : null;
@@ -131,14 +149,20 @@ export async function POST(req: NextRequest) {
   const callSid = typeof callSidRaw === "string" ? callSidRaw.trim() : "";
   const from = typeof fromRaw === "string" ? fromRaw.trim() : "";
 
-  const roomId = callSid ? `call:${callSid}` : from ? `phone:${from}` : undefined;
+  // ✅ Prefer explicit roomId when provided by the app (outbound call route)
+  const roomId =
+    roomIdFromQuery ||
+    (callSid ? `call:${callSid}` : from ? `phone:${from}` : "");
+
+  // Persist active call mapping for M14 (safe, non-breaking)
+  await persistActiveCall(roomId, callSid, from);
 
   const marker = `mode=STREAM sha=${sha} wssPresent=${wssPresent} method=POST`;
 
   return twiml(
     buildStreamTwiml({
       marker,
-      roomId,
+      roomId: roomId || undefined,
       callSid,
       from,
     })

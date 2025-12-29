@@ -1,12 +1,26 @@
+// src/lib/twilio.ts
 import "server-only";
 import twilio from "twilio";
 
 /**
  * Twilio outbound calling helper.
  * Returns null if Twilio is not configured.
+ *
+ * Backwards compatible:
+ *   startTwilioCall(to, note)
+ *
+ * New capabilities:
+ *   - pass a custom TwiML URL (e.g. /api/twilio/message?text=...)
+ *   - pass roomId for traceability
  */
-
-export async function startTwilioCall(to: string, note?: string) {
+export async function startTwilioCall(
+  to: string,
+  note?: string,
+  opts?: {
+    twimlUrl?: string; // override voiceUrl
+    roomId?: string; // optional identity tag
+  }
+) {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
 
@@ -14,11 +28,11 @@ export async function startTwilioCall(to: string, note?: string) {
   const from =
     process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_NUMBER;
 
-  // ✅ Our canonical voice URL (no more TwiML Bin fallback)
+  // ✅ Canonical default voice URL
   const DEFAULT_VOICE_URL = "https://foundzie-v2.vercel.app/api/twilio/voice";
 
   // Use env if set, otherwise fall back to the stable project URL
-  const voiceUrl =
+  const baseVoiceUrl =
     (process.env.TWILIO_VOICE_URL && process.env.TWILIO_VOICE_URL.trim()) ||
     DEFAULT_VOICE_URL;
 
@@ -32,7 +46,10 @@ export async function startTwilioCall(to: string, note?: string) {
     return null;
   }
 
-  console.log("[twilio] Using voiceUrl:", voiceUrl);
+  // Decide which URL Twilio should request for TwiML
+  const twimlUrl = (opts?.twimlUrl && opts.twimlUrl.trim()) || baseVoiceUrl;
+
+  console.log("[twilio] Using TwiML url:", twimlUrl);
 
   try {
     const client = twilio(sid, token);
@@ -40,7 +57,7 @@ export async function startTwilioCall(to: string, note?: string) {
     const call = await client.calls.create({
       to,
       from,
-      url: voiceUrl,
+      url: twimlUrl,
       method: "POST",
     });
 
@@ -51,6 +68,8 @@ export async function startTwilioCall(to: string, note?: string) {
       to,
       from,
       note: note ?? "",
+      roomId: opts?.roomId ?? "",
+      twimlUrl,
     };
   } catch (err) {
     console.error("[twilio] Call failed:", err);
