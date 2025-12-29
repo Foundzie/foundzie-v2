@@ -4,7 +4,7 @@ import "server-only";
 import { addEvent, updateEvent, type SosStatus } from "@/app/api/sos/store";
 import { addCallLog } from "@/app/api/calls/store";
 import { startTwilioCall, redirectTwilioCall } from "@/lib/twilio";
-import { kvGetJSON } from "@/lib/kv/redis";
+import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 
 import {
   mockNotifications,
@@ -26,7 +26,8 @@ function getBaseUrl(): string {
   if (explicit && explicit.trim()) return explicit.trim().replace(/\/+$/, "");
 
   const vercel = process.env.VERCEL_URL;
-  if (vercel && vercel.trim()) return `https://${vercel.trim().replace(/\/+$/, "")}`;
+  if (vercel && vercel.trim())
+    return `https://${vercel.trim().replace(/\/+$/, "")}`;
 
   return "http://localhost:3000";
 }
@@ -36,6 +37,27 @@ function getBaseUrl(): string {
 /* ------------------------------------------------------------------ */
 function activeCallKey(roomId: string) {
   return `foundzie:twilio:active-call:${roomId}:v1`;
+}
+
+// Optional: store a "last seen call" pointer so tools can recover
+const LAST_ACTIVE_KEY = "foundzie:twilio:last-active-call:v1";
+
+type ActiveCallMapping = {
+  roomId: string;
+  callSid: string;
+  from?: string;
+  updatedAt?: string;
+};
+
+function normalizePhone(phone: string) {
+  const p = (phone || "").trim();
+  return p;
+}
+
+function safeConfName(raw: string) {
+  return (raw || "")
+    .replace(/[^a-zA-Z0-9:_-]/g, "-")
+    .slice(0, 128);
 }
 
 /* ------------------------------------------------------------------ */
@@ -82,7 +104,9 @@ export async function log_outbound_call(args: {
   note: string;
 }) {
   const userId =
-    typeof args.userId === "string" && args.userId.trim() ? args.userId.trim() : null;
+    typeof args.userId === "string" && args.userId.trim()
+      ? args.userId.trim()
+      : null;
 
   const phone =
     typeof args.phone === "string" && args.phone.trim() ? args.phone.trim() : "";
@@ -91,7 +115,9 @@ export async function log_outbound_call(args: {
     typeof args.note === "string" && args.note.trim() ? args.note.trim() : "";
 
   if (!phone) {
-    throw new Error("Missing phone number. Provide a phone or a userId linked to a phone.");
+    throw new Error(
+      "Missing phone number. Provide a phone or a userId linked to a phone."
+    );
   }
 
   const id = `agent-call-${Date.now()}`;
@@ -110,60 +136,112 @@ export async function log_outbound_call(args: {
 }
 
 /* ------------------------------------------------------------------ */
-/* 2b) M14: REAL conference bridge tool                                 */
+/* 2b) M14: Conference bridge tool (FIXED + robust)                     */
 /* ------------------------------------------------------------------ */
+async function resolveActiveCallerCallSid(args: {
+  roomId?: string;
+  callSid?: string;
+  fromPhone?: string;
+}): Promise<{ callSid: string | null; source: string; mapping?: any }> {
+  const callSidDirect = (args.callSid || "").trim();
+  if (callSidDirect) return { callSid: callSidDirect, source: "direct" };
+
+  const roomId = (args.roomId || "").trim();
+  const fromPhone = normalizePhone(args.fromPhone || "");
+
+  // 1) Try roomId → mapping
+  if (roomId) {
+    try {
+      const mapping = await kvGetJSON<ActiveCallMapping>(activeCallKey(roomId));
+      if (mapping?.callSid) {
+        return { callSid: String(mapping.callSid).trim(), source: "roomId", mapping };
+      }
+    } catch (e) {
+      console.warn("[agent tool] resolveActiveCallerCallSid roomId lookup failed", e);
+    }
+  }
+
+  // 2) Try phone-based roomId (common when voice route picked phone:... automatically)
+  if (fromPhone) {
+    const phoneRoom = `phone:${fromPhone}`;
+    try {
+      const mapping = await kvGetJSON<ActiveCallMapping>(activeCallKey(phoneRoom));
+      if (mapping?.callSid) {
+        return { callSid: String(mapping.callSid).trim(), source: "phoneRoomId", mapping };
+      }
+    } catch (e) {
+      console.warn("[agent tool] resolveActiveCallerCallSid phoneRoom lookup failed", e);
+    }
+  }
+
+  // 3) Try "last active call" pointer (recovery)
+  try {
+    const last = await kvGetJSON<ActiveCallMapping>(LAST_ACTIVE_KEY);
+    if (last?.callSid) {
+      return { callSid: String(last.callSid).trim(), source: "lastActive", mapping: last };
+    }
+  } catch (e) {
+    console.warn("[agent tool] resolveActiveCallerCallSid lastActive lookup failed", e);
+  }
+
+  return { callSid: null, source: "none" };
+}
+
 /**
  * call_third_party
- * - Moves the ACTIVE caller leg into a conference (redirect callSid → /conference/join)
- * - Dials third party, speaks message, then joins them into the same conference (via /conference/bridge)
- *
- * If we cannot find an active callSid, we safely fall back to a simple message call.
+ * - Redirects ACTIVE caller into a conference
+ * - Calls third party and joins them into same conference
  */
 export async function call_third_party(args: {
   phone: string;
   message: string;
   roomId?: string;
   callSid?: string;
+
+  // optional (helps recover)
+  fromPhone?: string;
 }) {
   const phone = typeof args.phone === "string" ? args.phone.trim() : "";
   const message = typeof args.message === "string" ? args.message.trim() : "";
 
   const roomId = typeof args.roomId === "string" ? args.roomId.trim() : "";
   const callSidDirect = typeof args.callSid === "string" ? args.callSid.trim() : "";
+  const fromPhone = typeof args.fromPhone === "string" ? args.fromPhone.trim() : "";
 
   if (!phone) throw new Error("call_third_party: missing phone");
   if (!message) throw new Error("call_third_party: missing message");
 
   const baseUrl = getBaseUrl();
 
-  // 1) Determine active caller CallSid (so we can bridge)
-  let callerCallSid = callSidDirect;
+  const resolved = await resolveActiveCallerCallSid({
+    roomId,
+    callSid: callSidDirect,
+    fromPhone,
+  });
 
-  if (!callerCallSid && roomId) {
-    try {
-      const mapping = await kvGetJSON<any>(activeCallKey(roomId));
-      if (mapping?.callSid && typeof mapping.callSid === "string") {
-        callerCallSid = mapping.callSid.trim();
-      }
-    } catch (e) {
-      console.warn("[agent tool] call_third_party: failed to load active callSid", e);
-    }
-  }
+  const callerCallSid = resolved.callSid || "";
 
-  // 2) Conference name
-  // Use roomId when available so it stays stable for the current call session
-  const confName =
-    (roomId ? `foundzie-${roomId}` : callerCallSid ? `foundzie-${callerCallSid}` : `foundzie-${Date.now()}`)
-      .replace(/[^a-zA-Z0-9:_-]/g, "-")
-      .slice(0, 128);
+  // Stable conference name:
+  // prefer roomId, else callSid, else timestamp
+  const confBase =
+    roomId
+      ? `foundzie-${roomId}`
+      : callerCallSid
+        ? `foundzie-${callerCallSid}`
+        : `foundzie-${Date.now()}`;
 
-  const joinUrl = `${baseUrl}/api/twilio/conference/join?conf=${encodeURIComponent(confName)}`;
+  const confName = safeConfName(confBase);
+
+  const joinUrl = `${baseUrl}/api/twilio/conference/join?conf=${encodeURIComponent(
+    confName
+  )}`;
+
   const bridgeUrl =
-    `${baseUrl}/api/twilio/conference/bridge?conf=${encodeURIComponent(confName)}` +
-    `&text=${encodeURIComponent(message)}`;
+    `${baseUrl}/api/twilio/conference/bridge?conf=${encodeURIComponent(
+      confName
+    )}` + `&text=${encodeURIComponent(message)}`;
 
-  // 3) If we CAN bridge: move caller into conference, then call third party into same conference
-  let bridgeMode: "conference" | "message-only" = "message-only";
+  // If we can bridge, do it
   let redirectedCaller = false;
 
   if (callerCallSid) {
@@ -172,15 +250,13 @@ export async function call_third_party(args: {
   }
 
   if (redirectedCaller) {
-    bridgeMode = "conference";
-
-    // Dial third party: speak message then join conference
+    // call third party into bridge url (say message then join conference)
     const outbound = await startTwilioCall(phone, {
       voiceUrl: bridgeUrl,
       note: message,
     });
 
-    // Log into Admin Calls so you can see it
+    // Log
     try {
       const id = `agent-bridge-${Date.now()}`;
       await addCallLog({
@@ -188,26 +264,31 @@ export async function call_third_party(args: {
         userId: null,
         userName: null,
         phone,
-        note: `Bridge call (conf=${confName}): ${message}`.slice(0, 240),
+        note: `Bridge call (conf=${confName}) via ${resolved.source}: ${message}`.slice(
+          0,
+          240
+        ),
         direction: "outbound",
       });
     } catch {}
 
     const payload = {
       ok: Boolean(outbound),
-      mode: bridgeMode,
+      mode: "conference" as const,
       phone,
       message,
       confName,
       callerCallSid,
       thirdPartySid: outbound?.sid ?? null,
+      resolvedCallSidSource: resolved.source,
+      resolvedMapping: resolved.mapping ?? null,
     };
 
     console.log("[agent tool] call_third_party →", payload);
     return payload;
   }
 
-  // 4) Fallback: no active callSid found → just call and speak message (no conference)
+  // Fallback if no active callSid found
   const fallbackVoiceUrl =
     `${baseUrl}/api/twilio/message?text=` + encodeURIComponent(message);
 
@@ -230,12 +311,14 @@ export async function call_third_party(args: {
 
   const payload = {
     ok: Boolean(fallback),
-    mode: "message-only",
+    mode: "message-only" as const,
     phone,
     message,
     confName: null,
     callerCallSid: null,
     thirdPartySid: fallback?.sid ?? null,
+    resolvedCallSidSource: resolved.source,
+    resolvedMapping: resolved.mapping ?? null,
   };
 
   console.log("[agent tool] call_third_party fallback →", payload);
@@ -310,7 +393,11 @@ export async function get_places_for_user(args: {
   }
 
   const manualMode =
-    args.manualMode === "child" ? "child" : args.manualMode === "normal" ? "normal" : null;
+    args.manualMode === "child"
+      ? "child"
+      : args.manualMode === "normal"
+      ? "normal"
+      : null;
 
   const inferredMode = user?.interactionMode === "child" ? "child" : "normal";
   const mode = manualMode ?? inferredMode;

@@ -33,7 +33,7 @@ function buildBridgeTwiml(confName: string, msg: string) {
 <Response>
   <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${spoken}</Say>
   <Dial>
-    <Conference beep="false" startConferenceOnEnter="true" endConferenceOnExit="true">
+    <Conference beep="false" startConferenceOnEnter="true" endConferenceOnExit="false">
       ${safeConf}
     </Conference>
   </Dial>
@@ -48,7 +48,6 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  // support POST from Twilio too
   const url = new URL(req.url);
   const conf = (url.searchParams.get("conf") || "").trim();
 

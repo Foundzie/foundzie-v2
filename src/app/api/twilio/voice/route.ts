@@ -52,10 +52,16 @@ function buildGatherFallbackVerbs(marker: string) {
 
   return `
   <!-- FOUNDZIE_FALLBACK ${escapeForXml(marker)} -->
-  <Gather input="speech" action="${escapeForXml(gatherUrl)}" method="POST" timeout="7" speechTimeout="auto">
-    <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Hi, this is Foundzie. How can I help?</Say>
+  <Gather input="speech" action="${escapeForXml(
+    gatherUrl
+  )}" method="POST" timeout="7" speechTimeout="auto">
+    <Say voice="${escapeForXml(
+      FALLBACK_TTS_VOICE
+    )}">Hi, this is Foundzie. How can I help?</Say>
   </Gather>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">I didn’t catch that. Let’s try again.</Say>
+  <Say voice="${escapeForXml(
+    FALLBACK_TTS_VOICE
+  )}">I didn’t catch that. Let’s try again.</Say>
   <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
   `.trim();
 }
@@ -88,7 +94,9 @@ function buildStreamTwiml(opts: {
       <Parameter name="source" value="twilio-media-streams" />
       <Parameter name="base" value="${escapeForXml(base)}" />
       ${safeRoom ? `<Parameter name="roomId" value="${safeRoom}" />` : ``}
-      ${safeCallSid ? `<Parameter name="callSid" value="${safeCallSid}" />` : ``}
+      ${
+        safeCallSid ? `<Parameter name="callSid" value="${safeCallSid}" />` : ``
+      }
       ${safeFrom ? `<Parameter name="from" value="${safeFrom}" />` : ``}
     </Stream>
   </Connect>
@@ -101,24 +109,35 @@ function activeCallKey(roomId: string) {
   return `foundzie:twilio:active-call:${roomId}:v1`;
 }
 
+const LAST_ACTIVE_KEY = "foundzie:twilio:last-active-call:v1";
+
 async function persistActiveCall(roomId: string, callSid: string, from: string) {
   if (!roomId || !callSid) return;
+
+  const payload = {
+    roomId,
+    callSid,
+    from,
+    updatedAt: new Date().toISOString(),
+  };
+
   try {
-    await kvSetJSON(activeCallKey(roomId), {
-      roomId,
-      callSid,
-      from,
-      updatedAt: new Date().toISOString(),
-    });
+    await kvSetJSON(activeCallKey(roomId), payload);
   } catch (e) {
     console.warn("[twilio/voice] failed to persist active call mapping", e);
+  }
+
+  // recovery pointer (helps bridging when roomId mismatches)
+  try {
+    await kvSetJSON(LAST_ACTIVE_KEY, payload);
+  } catch (e) {
+    console.warn("[twilio/voice] failed to persist last active call pointer", e);
   }
 }
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
 
-  // ✅ NEW: message-only mode (non-breaking)
   const mode = (url.searchParams.get("mode") || "").trim();
   const say = (url.searchParams.get("say") || "").trim();
   if (mode === "message" && say) {
@@ -146,7 +165,6 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const url = new URL(req.url);
 
-  // ✅ NEW: message-only mode (non-breaking)
   const mode = (url.searchParams.get("mode") || "").trim();
   const say = (url.searchParams.get("say") || "").trim();
   if (mode === "message" && say) {
