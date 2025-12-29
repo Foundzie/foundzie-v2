@@ -10,18 +10,35 @@ type StartCallOpts = {
 };
 
 function getFromNumber(): string {
-  return (
-    process.env.TWILIO_PHONE_NUMBER ||
-    process.env.TWILIO_FROM_NUMBER ||
-    ""
-  ).trim();
+  return (process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_NUMBER || "").trim();
 }
 
 function getDefaultVoiceUrl(): string {
-  return (
-    process.env.TWILIO_VOICE_URL ||
-    "https://foundzie-v2.vercel.app/api/twilio/voice"
-  ).trim();
+  return (process.env.TWILIO_VOICE_URL || "https://foundzie-v2.vercel.app/api/twilio/voice").trim();
+}
+
+/** Stable server-side base URL */
+function getBaseUrl(): string {
+  const explicit =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    process.env.APP_URL ||
+    process.env.SITE_URL;
+
+  if (explicit && explicit.trim()) return explicit.trim().replace(/\/+$/, "");
+
+  const vercel = process.env.VERCEL_URL;
+  if (vercel && vercel.trim()) return `https://${vercel.trim().replace(/\/+$/, "")}`;
+
+  return "http://localhost:3000";
+}
+
+function getStatusCallbackUrl(): string {
+  // Optional override if you want
+  const explicit = process.env.TWILIO_STATUS_CALLBACK_URL;
+  if (explicit && explicit.trim()) return explicit.trim();
+
+  return `${getBaseUrl()}/api/twilio/status`;
 }
 
 /**
@@ -51,14 +68,21 @@ export async function createTwilioCall(to: string, url: string) {
   }
 
   try {
+    const statusCallback = getStatusCallbackUrl();
+
     const call = await client.calls.create({
       to,
       from,
       url,
       method: "POST",
+
+      // ✅ This is the key diagnostic hook
+      statusCallback,
+      statusCallbackMethod: "POST",
+      statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
     });
 
-    console.log("[twilio] Created call:", call.sid, "url:", url);
+    console.log("[twilio] Created call:", call.sid, "url:", url, "statusCb:", statusCallback);
     return { sid: call.sid };
   } catch (err) {
     console.error("[twilio] createTwilioCall failed:", err);
@@ -100,20 +124,12 @@ export async function redirectTwilioCall(callSid: string, url: string) {
  *   startTwilioCall(phone, "note")
  *   startTwilioCall(phone, { voiceUrl, note })
  */
-export async function startTwilioCall(
-  to: string,
-  noteOrOpts?: string | StartCallOpts
-) {
+export async function startTwilioCall(to: string, noteOrOpts?: string | StartCallOpts) {
   const opts: StartCallOpts =
-    typeof noteOrOpts === "string"
-      ? { note: noteOrOpts }
-      : (noteOrOpts ?? {});
+    typeof noteOrOpts === "string" ? { note: noteOrOpts } : (noteOrOpts ?? {});
 
-  const voiceUrl =
-    (opts.voiceUrl && opts.voiceUrl.trim()) ||
-    getDefaultVoiceUrl();
+  const voiceUrl = (opts.voiceUrl && opts.voiceUrl.trim()) || getDefaultVoiceUrl();
 
-  // Keep old behavior: "skips" if missing env vars
   const result = await createTwilioCall(to, voiceUrl);
   if (!result) return null;
 
