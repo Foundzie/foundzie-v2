@@ -95,7 +95,11 @@ export async function POST(req: Request) {
   let twilioErrored = false;
 
   try {
-    twilioResult = await startTwilioCall(phone, note, { twimlUrl, roomId });
+    twilioResult = await startTwilioCall(phone, {
+  note,
+  voiceUrl: twimlUrl,
+});
+
   } catch (err) {
     twilioErrored = true;
     console.error("[/api/calls/outbound] Twilio error:", err);
