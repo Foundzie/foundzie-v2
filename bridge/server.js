@@ -5,7 +5,7 @@ import { WebSocketServer, WebSocket } from "ws";
  * Foundzie Twilio <Connect><Stream> bridge (Fly.io)
  * - Receives Twilio Media Streams (g711_ulaw)
  * - Sends audio to OpenAI Realtime
- * - Sends audio back to Twilio (requires TwiML uses <Connect><Stream>, not <Start><Stream>)
+ * - Sends audio back to Twilio
  * - Enables tool calling by POSTing:
  *     POST {BASE}/api/tools/call_third_party
  */
@@ -174,7 +174,6 @@ wss.on("connection", (twilioWs) => {
     if (name === "call_third_party") {
       const p = normalizePhoneForFp(args.phone);
       const m = String(args.message || "").trim().slice(0, 32);
-      // don’t include callSid in fp (avoids “always new”)
       return `${name}:p=${p}:m=${m}`.replace(/[^a-zA-Z0-9:_=.-]/g, "_");
     }
 
@@ -195,12 +194,16 @@ wss.on("connection", (twilioWs) => {
     return { blocked: false, fp, remainingMs: 0 };
   }
 
+  /**
+   * ✅ IMPORTANT FIX:
+   * OpenAI Realtime rejects modalities ["audio"].
+   * Supported combos include ["audio","text"].
+   */
   function createAudioResponse(instructions) {
-    // Always force audio
     wsSend(openaiWs, {
       type: "response.create",
       response: {
-        modalities: ["audio"],
+        modalities: ["audio", "text"],
         instructions,
       },
     });
@@ -306,7 +309,6 @@ wss.on("connection", (twilioWs) => {
       },
     });
 
-    // Continue as audio (important)
     createAudioResponse(
       "Continue the phone call naturally in ENGLISH. " +
         "If the tool succeeded, confirm briefly in one sentence. " +
@@ -314,9 +316,13 @@ wss.on("connection", (twilioWs) => {
     );
   }
 
-  function cancelOpenAIResponse(reason) {
+  /**
+   * ✅ IMPORTANT FIX:
+   * OpenAI Realtime rejects response.cancel with {reason:...}.
+   */
+  function cancelOpenAIResponse() {
     if (!openaiWs) return;
-    wsSend(openaiWs, { type: "response.cancel", reason: reason || "barge_in" });
+    wsSend(openaiWs, { type: "response.cancel" });
     responseInProgress = false;
     clearPendingTimer();
   }
@@ -411,7 +417,7 @@ wss.on("connection", (twilioWs) => {
       if (msg.type === "input_audio_buffer.speech_started") {
         if (responseInProgress) {
           console.log("[vad] speech_started while responding -> cancel");
-          cancelOpenAIResponse("barge_in");
+          cancelOpenAIResponse();
         }
         return;
       }
