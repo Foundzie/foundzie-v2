@@ -10,7 +10,7 @@ import { WebSocketServer, WebSocket } from "ws";
  *     POST {BASE}/api/tools/call_third_party
  */
 
-const PORT = process.env.PORT || 8080;
+const PORT = Number(process.env.PORT || 8080);
 
 const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
 if (!OPENAI_API_KEY) {
@@ -112,6 +112,7 @@ wss.on("connection", (twilioWs) => {
 
   // Audio diagnostics
   let outboundAudioFrames = 0;
+  let inboundTwilioFrames = 0;
   let greetingRetryTimer = null;
 
   let closed = false;
@@ -196,15 +197,15 @@ wss.on("connection", (twilioWs) => {
 
   /**
    * ✅ IMPORTANT FIX:
-   * OpenAI Realtime rejects modalities ["audio"].
-   * Supported combos include ["audio","text"].
+   * Always create responses with modalities ["audio","text"].
+   * This prevents the OpenAI error: Invalid modalities: ['audio']
    */
   function createAudioResponse(instructions) {
     wsSend(openaiWs, {
       type: "response.create",
       response: {
         modalities: ["audio", "text"],
-        instructions,
+        instructions: String(instructions || "").slice(0, 2000),
       },
     });
   }
@@ -234,9 +235,7 @@ wss.on("connection", (twilioWs) => {
 
       console.log("[bridge] greeting retry: no outbound audio deltas observed");
       responseInProgress = true;
-      createAudioResponse(
-        "Speak now. Greet the caller warmly and ask: “How can I help?” Keep it short."
-      );
+      createAudioResponse("Speak now. Greet the caller and ask: “How can I help?” Keep it short.");
     }, 1800);
   }
 
@@ -318,7 +317,7 @@ wss.on("connection", (twilioWs) => {
 
   /**
    * ✅ IMPORTANT FIX:
-   * OpenAI Realtime rejects response.cancel with {reason:...}.
+   * Do NOT send response.cancel with {reason:...}. That param is rejected.
    */
   function cancelOpenAIResponse() {
     if (!openaiWs) return;
@@ -397,6 +396,11 @@ wss.on("connection", (twilioWs) => {
       }
 
       // Response lifecycle
+      if (msg.type === "response.created" || msg.type === "response.started") {
+        responseInProgress = true;
+        return;
+      }
+
       if (
         msg.type === "response.done" ||
         msg.type === "response.completed" ||
@@ -405,11 +409,6 @@ wss.on("connection", (twilioWs) => {
         responseInProgress = false;
         mediaFramesSinceLastResponse = 0;
         clearPendingTimer();
-        return;
-      }
-
-      if (msg.type === "response.created" || msg.type === "response.started") {
-        responseInProgress = true;
         return;
       }
 
@@ -605,6 +604,11 @@ wss.on("connection", (twilioWs) => {
       if (!payload) return;
       if (!openaiReady) return;
 
+      inboundTwilioFrames += 1;
+      if (inboundTwilioFrames === 1) {
+        console.log("[audio] first inbound Twilio media frame", { at: nowIso() });
+      }
+
       mediaFramesSinceLastResponse += 1;
 
       wsSend(openaiWs, {
@@ -631,6 +635,10 @@ wss.on("connection", (twilioWs) => {
   });
 });
 
-server.listen(PORT, () => {
+/**
+ * ✅ Fly.io requires binding to 0.0.0.0
+ * (Fixes "not listening on expected address" warnings)
+ */
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`Bridge listening on :${PORT}`);
 });
