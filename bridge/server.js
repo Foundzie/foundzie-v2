@@ -6,12 +6,15 @@ import { WebSocketServer, WebSocket } from "ws";
  * - Receives Twilio Media Streams (g711_ulaw)
  * - Sends audio to OpenAI Realtime
  * - Sends audio back to Twilio
- * - Tool calling:
- *     POST {BASE}/api/tools/call_third_party
+ *
+ * IMPORTANT BEHAVIOR:
+ * - If OpenAI never produces outbound audio, Twilio will remain silent in <Stream>.
+ * - So we add a watchdog: if no outbound audio within N ms, close the Twilio WS
+ *   so Twilio continues to the fallback <Gather> verbs in /api/twilio/voice.
  */
 
 const PORT = Number(process.env.PORT || 8080);
-const HOST = process.env.HOST || "0.0.0.0";
+const HOST = (process.env.HOST || "0.0.0.0").trim();
 
 const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
 if (!OPENAI_API_KEY) {
@@ -56,12 +59,13 @@ const MIN_MEDIA_FRAMES = Number(process.env.MIN_MEDIA_FRAMES || 10); // ~200ms
 const SPEECH_STOP_DEBOUNCE_MS = Number(process.env.SPEECH_STOP_DEBOUNCE_MS || 450);
 const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 700);
 
-// Reconnect tuning
 const OPENAI_RECONNECT_MAX = Number(process.env.OPENAI_RECONNECT_MAX || 3);
 const OPENAI_RECONNECT_DELAY_MS = Number(process.env.OPENAI_RECONNECT_DELAY_MS || 600);
 
-// Tool calling tuning
 const TOOL_CALL_COOLDOWN_MS = Number(process.env.TOOL_CALL_COOLDOWN_MS || 2500);
+
+// ✅ If OpenAI produces no outbound audio quickly, end stream so Twilio fallback runs
+const NO_OUTBOUND_AUDIO_FALLBACK_MS = Number(process.env.NO_OUTBOUND_AUDIO_FALLBACK_MS || 2500);
 
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
@@ -104,9 +108,8 @@ wss.on("connection", (twilioWs) => {
   let responseInProgress = false;
   let mediaFramesSinceLastResponse = 0;
 
-  // Greeting state
+  // Greeting
   let greeted = false;
-  let greetingUserItemSent = false;
   let pendingResponseTimer = null;
 
   // Tool buffers
@@ -115,9 +118,10 @@ wss.on("connection", (twilioWs) => {
   const seenToolKeys = new Set(); // exact args, short TTL
 
   // Diagnostics
-  let outboundAudioFrames = 0; // count response.audio.delta
-  let inboundMediaFrames = 0;  // count Twilio inbound media frames
-  let firstTextDeltaLogged = false;
+  let outboundAudioFrames = 0; // count of response.audio.delta
+  let inboundMediaFrames = 0;  // count of Twilio media frames
+  let greetingRetryTimer = null;
+  let noOutboundFallbackTimer = null;
 
   let closed = false;
 
@@ -128,11 +132,27 @@ wss.on("connection", (twilioWs) => {
     }
   }
 
+  function clearGreetingRetry() {
+    if (greetingRetryTimer) {
+      clearTimeout(greetingRetryTimer);
+      greetingRetryTimer = null;
+    }
+  }
+
+  function clearNoOutboundFallback() {
+    if (noOutboundFallbackTimer) {
+      clearTimeout(noOutboundFallbackTimer);
+      noOutboundFallbackTimer = null;
+    }
+  }
+
   function shutdown(reason) {
     if (closed) return;
     closed = true;
 
     clearPendingTimer();
+    clearGreetingRetry();
+    clearNoOutboundFallback();
     clearInterval(pingInterval);
 
     console.log("[bridge] shutdown:", reason || "unknown", {
@@ -149,6 +169,14 @@ wss.on("connection", (twilioWs) => {
     try {
       if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
     } catch {}
+  }
+
+  function endStreamSoTwilioFallbackRuns(marker) {
+    // Closing Twilio WS ends <Stream> and Twilio continues to next TwiML verbs (your Gather fallback).
+    if (twilioWs.readyState === WebSocket.OPEN) {
+      console.log("[bridge] ending stream so Twilio fallback can run:", marker);
+      try { twilioWs.close(); } catch {}
+    }
   }
 
   function getVercelBase() {
@@ -197,36 +225,33 @@ wss.on("connection", (twilioWs) => {
     return { blocked: false, fp, remainingMs: 0 };
   }
 
-  // Always request BOTH audio + text
+  // ✅ Always request BOTH audio + text (OpenAI rejects ["audio"] alone)
   function createAudioResponse(instructions) {
     return wsSend(openaiWs, {
       type: "response.create",
       response: {
         modalities: ["audio", "text"],
+        // Be explicit at response-level too (some setups behave better)
+        voice: REALTIME_VOICE,
+        output_audio_format: "g711_ulaw",
         instructions,
       },
     });
   }
 
-  function sendGreetingUserItemOnce() {
-    if (greetingUserItemSent) return;
-    greetingUserItemSent = true;
-
-    // ✅ This is the key fix: give the model something to respond to.
-    wsSend(openaiWs, {
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text:
-              "A phone caller just connected. Greet them warmly in ONE short sentence and ask: “How can I help?”",
-          },
-        ],
-      },
-    });
+  function armNoOutboundFallbackTimer(context) {
+    clearNoOutboundFallback();
+    noOutboundFallbackTimer = setTimeout(() => {
+      if (closed) return;
+      if (outboundAudioFrames > 0) return; // we got audio -> don’t fallback
+      console.log("[bridge] NO outbound audio after", NO_OUTBOUND_AUDIO_FALLBACK_MS, "ms", {
+        context,
+        inboundMediaFrames,
+        outboundAudioFrames,
+        at: nowIso(),
+      });
+      endStreamSoTwilioFallbackRuns("no_outbound_audio");
+    }, NO_OUTBOUND_AUDIO_FALLBACK_MS);
   }
 
   function tryGreet() {
@@ -239,20 +264,28 @@ wss.on("connection", (twilioWs) => {
     outboundAudioFrames = 0;
 
     console.log("[bridge] greeting triggered");
+    armNoOutboundFallbackTimer("greeting");
 
-    sendGreetingUserItemOnce();
-
-    // Now ask for the response (audio+text)
     createAudioResponse(
-      "Speak the greeting now. Keep it short. English only unless asked."
+      "You are Foundzie on a REAL phone call. Speak ONLY ENGLISH. " +
+        "Greet the caller warmly in ONE short sentence, then ask ONE short question: “How can I help?”"
     );
 
-    // If we still see no audio deltas, log hard evidence (text may still appear)
-    setTimeout(() => {
+    // If no audio deltas appear quickly, retry once
+    clearGreetingRetry();
+    greetingRetryTimer = setTimeout(() => {
       if (closed) return;
+      if (!openaiReady) return;
       if (outboundAudioFrames > 0) return;
-      console.log("[bridge] greeting warning: still no outbound audio deltas after 2s");
-    }, 2000);
+
+      console.log("[bridge] greeting retry: still no outbound audio deltas observed");
+      responseInProgress = true;
+      armNoOutboundFallbackTimer("greeting_retry");
+
+      createAudioResponse(
+        "Speak immediately. Greet the caller and ask: “How can I help?” Keep it short."
+      );
+    }, 1400);
   }
 
   // Keepalive ping (Twilio only)
@@ -324,12 +357,17 @@ wss.on("connection", (twilioWs) => {
       },
     });
 
+    responseInProgress = true;
+    armNoOutboundFallbackTimer("tool_result");
+
     createAudioResponse(
-      "Continue naturally in English. Confirm briefly. Ask one short question if needed."
+      "Continue the phone call naturally in ENGLISH. " +
+        "If the tool succeeded, confirm briefly in one sentence. " +
+        "If it failed, apologize briefly and ask ONE short question."
     );
   }
 
-  // Only cancel if we have actually started outputting audio
+  // Cancel only if Foundzie has actually started speaking (outboundAudioFrames > 0)
   function maybeCancelForBargeIn() {
     if (!openaiWs) return;
     if (outboundAudioFrames <= 0) return;
@@ -358,7 +396,9 @@ wss.on("connection", (twilioWs) => {
           },
           instructions:
             "You are Foundzie, a lightning-fast personal concierge on a REAL phone call. " +
-            "Speak naturally. Keep replies short (1–2 sentences). " +
+            "ALWAYS speak ENGLISH unless the caller explicitly asks for another language. " +
+            "Sound natural, warm, confident, like a human. " +
+            "Keep replies short (1–2 sentences). " +
             "Ask only ONE follow-up question when needed. " +
             "Do not mention being an AI unless asked.",
           tools: [
@@ -383,7 +423,6 @@ wss.on("connection", (twilioWs) => {
         },
       });
 
-      // We might already have streamSid by now; greeting will run if so
       tryGreet();
     });
 
@@ -391,17 +430,13 @@ wss.on("connection", (twilioWs) => {
       const msg = safeJsonParse(data.toString());
       if (!msg) return;
 
-      // Log first text delta so we know the model is producing *something*
-      if (!firstTextDeltaLogged && msg.type === "response.text.delta" && msg.delta) {
-        firstTextDeltaLogged = true;
-        console.log("[openai] first text.delta:", String(msg.delta).slice(0, 180));
-      }
-
       // Audio from OpenAI -> Twilio
       if (msg.type === "response.audio.delta" && msg.delta && streamSid) {
         outboundAudioFrames += 1;
+
         if (outboundAudioFrames === 1) {
           console.log("[audio] first outbound audio delta -> Twilio", { at: nowIso() });
+          clearNoOutboundFallback(); // ✅ we got audio; stop fallback timer
         }
 
         wsSend(twilioWs, {
@@ -412,16 +447,21 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
-      // Response lifecycle
       if (msg.type === "response.created" || msg.type === "response.started") {
         responseInProgress = true;
         return;
       }
 
-      if (msg.type === "response.done" || msg.type === "response.completed" || msg.type === "response.stopped") {
+      if (
+        msg.type === "response.done" ||
+        msg.type === "response.completed" ||
+        msg.type === "response.stopped"
+      ) {
         responseInProgress = false;
         mediaFramesSinceLastResponse = 0;
         clearPendingTimer();
+        // If we ended a response and still never produced audio, keep Twilio fallback possibility alive
+        if (outboundAudioFrames === 0) armNoOutboundFallbackTimer("response_done_no_audio");
         return;
       }
 
@@ -448,16 +488,18 @@ wss.on("connection", (twilioWs) => {
 
           responseInProgress = true;
 
-          // ✅ In server_vad mode, do NOT send input_audio_buffer.commit.
+          wsSend(openaiWs, { type: "input_audio_buffer.commit" });
+          armNoOutboundFallbackTimer("speech_response");
+
           createAudioResponse(
-            "Respond briefly in English (1–2 sentences). Ask ONE short follow-up question if needed."
+            "Respond briefly in ENGLISH (1–2 sentences). Ask ONE short follow-up question if needed."
           );
         }, SPEECH_STOP_DEBOUNCE_MS);
 
         return;
       }
 
-      // Tool calling: delta args
+      // Tool calling
       if (msg.type === "response.function_call_arguments.delta") {
         const call_id = msg.call_id || msg.callId || msg.id;
         const delta = msg.delta || "";
@@ -467,7 +509,6 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
-      // Tool calling: done
       if (msg.type === "response.function_call_arguments.done") {
         const call_id = msg.call_id || msg.callId || msg.id;
         const name = msg.name || msg.tool_name || msg.function?.name;
@@ -490,7 +531,6 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
-      // Alternate tool shape
       if (msg.type === "response.output_item.added" && msg.item?.type === "function_call") {
         const call_id = msg.item.call_id || msg.item.id;
         const name = msg.item.name;
@@ -512,7 +552,9 @@ wss.on("connection", (twilioWs) => {
 
       // Errors
       if (msg.type === "error") {
-        console.error("[openai] error:", JSON.stringify(msg, null, 2));
+        console.error("[openai] error:", msg);
+        // If OpenAI errors and can’t talk, force Twilio fallback quickly
+        armNoOutboundFallbackTimer("openai_error");
         return;
       }
 
@@ -527,11 +569,17 @@ wss.on("connection", (twilioWs) => {
       openaiReady = false;
       openaiConnecting = false;
 
+      // If OpenAI died and we never produced audio, let Twilio fallback happen
+      if (!closed && outboundAudioFrames === 0) {
+        armNoOutboundFallbackTimer("openai_closed_no_audio");
+      }
+
       if (closed) return;
       if (twilioWs.readyState !== WebSocket.OPEN) return;
 
       if (openaiReconnects >= OPENAI_RECONNECT_MAX) {
-        console.error("[openai] reconnect limit reached; keeping Twilio alive but no AI");
+        console.error("[openai] reconnect limit reached; forcing Twilio fallback");
+        endStreamSoTwilioFallbackRuns("openai_reconnect_limit");
         return;
       }
 
@@ -547,6 +595,7 @@ wss.on("connection", (twilioWs) => {
 
     ws.on("error", (e) => {
       console.error("[openai] ws error:", e);
+      armNoOutboundFallbackTimer("openai_ws_error");
     });
   }
 
@@ -568,6 +617,7 @@ wss.on("connection", (twilioWs) => {
     } catch (e) {
       openaiConnecting = false;
       console.error("[openai] connect error:", e);
+      armNoOutboundFallbackTimer("openai_connect_exception");
     }
   }
 

@@ -36,6 +36,19 @@ function getBaseUrl(): string {
 const FALLBACK_TTS_VOICE =
   (process.env.TWILIO_FALLBACK_VOICE || "").trim() || "Polly.Joanna-Neural";
 
+// ✅ short message so caller ALWAYS hears something immediately (no dead air)
+function buildPreStreamSay(marker: string) {
+  const msg =
+    (process.env.TWILIO_PRE_STREAM_SAY || "").trim() ||
+    "Connecting you to Foundzie now.";
+  return `
+  <!-- FOUNDZIE_PRE_STREAM ${escapeForXml(marker)} -->
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(
+    msg
+  )}</Say>
+  `.trim();
+}
+
 function buildMessageTwiml(message: string) {
   const safe = escapeForXml((message || "").trim().slice(0, 900));
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -79,6 +92,9 @@ function buildStreamTwiml(opts: {
   const safeCallSid = escapeForXml((opts.callSid || "").trim());
   const safeFrom = escapeForXml((opts.from || "").trim());
 
+  // Optional: Stream status callback (useful for debugging)
+  const statusCb = `${base}/api/twilio/status`;
+
   if (!wss) {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -89,14 +105,17 @@ function buildStreamTwiml(opts: {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <!-- FOUNDZIE_STREAM ${escapeForXml(opts.marker)} -->
+
+  ${buildPreStreamSay(`${opts.marker} pre=1`)}
+
   <Connect>
-    <Stream url="${escapeForXml(wss)}">
+    <Stream url="${escapeForXml(wss)}"
+            statusCallback="${escapeForXml(statusCb)}"
+            statusCallbackMethod="POST">
       <Parameter name="source" value="twilio-media-streams" />
       <Parameter name="base" value="${escapeForXml(base)}" />
       ${safeRoom ? `<Parameter name="roomId" value="${safeRoom}" />` : ``}
-      ${
-        safeCallSid ? `<Parameter name="callSid" value="${safeCallSid}" />` : ``
-      }
+      ${safeCallSid ? `<Parameter name="callSid" value="${safeCallSid}" />` : ``}
       ${safeFrom ? `<Parameter name="from" value="${safeFrom}" />` : ``}
     </Stream>
   </Connect>
@@ -127,7 +146,6 @@ async function persistActiveCall(roomId: string, callSid: string, from: string) 
     console.warn("[twilio/voice] failed to persist active call mapping", e);
   }
 
-  // recovery pointer (helps bridging when roomId mismatches)
   try {
     await kvSetJSON(LAST_ACTIVE_KEY, payload);
   } catch (e) {
@@ -188,8 +206,7 @@ export async function POST(req: NextRequest) {
   const from = typeof fromRaw === "string" ? fromRaw.trim() : "";
 
   const roomId =
-    roomIdFromQuery ||
-    (callSid ? `call:${callSid}` : from ? `phone:${from}` : "");
+    roomIdFromQuery || (callSid ? `call:${callSid}` : from ? `phone:${from}` : "");
 
   await persistActiveCall(roomId, callSid, from);
 
