@@ -45,10 +45,6 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 /**
  * Tunables
  */
@@ -61,7 +57,7 @@ const OPENAI_RECONNECT_MAX = Number(process.env.OPENAI_RECONNECT_MAX || 3);
 const OPENAI_RECONNECT_DELAY_MS = Number(process.env.OPENAI_RECONNECT_DELAY_MS || 600);
 
 // Tool calling tuning
-const TOOL_CALL_COOLDOWN_MS = Number(process.env.TOOL_CALL_COOLDOWN_MS || 3500);
+const TOOL_CALL_COOLDOWN_MS = Number(process.env.TOOL_CALL_COOLDOWN_MS || 2500);
 
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
@@ -114,8 +110,13 @@ wss.on("connection", (twilioWs) => {
 
   // Tool call buffering
   const toolArgBuffers = new Map(); // call_id -> string
-  let lastToolCallAt = 0;
-  const seenToolKeys = new Set(); // prevent repeating same tool call quickly
+
+  // ✅ Fingerprinted cooldowns (instead of tool-name cooldown)
+  // fp -> lastTimeMs
+  const toolCooldownMap = new Map();
+
+  // duplicate suppression (short TTL)
+  const seenToolKeys = new Set();
 
   let closed = false;
 
@@ -161,6 +162,40 @@ wss.on("connection", (twilioWs) => {
     return `${name}::${JSON.stringify(args || {})}`;
   }
 
+  function normalizePhoneForFp(phone) {
+    const raw = String(phone || "").trim();
+    if (!raw) return "";
+    const digits = raw.replace(/[^\d]/g, "");
+    return digits.slice(-11);
+  }
+
+  function fingerprintToolCall(name, args = {}) {
+    if (!args || typeof args !== "object") return `${name}:noargs`;
+
+    if (name === "call_third_party") {
+      const p = normalizePhoneForFp(args.phone);
+      const m = String(args.message || "").trim().slice(0, 32);
+      const c = String(args.callSid || "").trim().slice(-10);
+      const r = String(args.roomId || "").trim().slice(-10);
+      return `${name}:p=${p}:c=${c || r}:m=${m}`.replace(/[^a-zA-Z0-9:_=.-]/g, "_");
+    }
+
+    const short = JSON.stringify(args).slice(0, 80);
+    return `${name}:${short}`.replace(/[^a-zA-Z0-9:_=.-]/g, "_");
+  }
+
+  function toolIsCoolingDown(name, args) {
+    const fp = fingerprintToolCall(name, args);
+    const now = Date.now();
+    const last = toolCooldownMap.get(fp) || 0;
+    const elapsed = now - last;
+    if (elapsed >= 0 && elapsed < TOOL_CALL_COOLDOWN_MS) {
+      return { blocked: true, fp, remainingMs: TOOL_CALL_COOLDOWN_MS - elapsed };
+    }
+    toolCooldownMap.set(fp, now);
+    return { blocked: false, fp, remainingMs: 0 };
+  }
+
   function tryGreet() {
     if (greeted) return;
     if (!openaiReady) return;
@@ -189,23 +224,21 @@ wss.on("connection", (twilioWs) => {
   }, 15000);
 
   async function runToolCall(name, args, call_id) {
-    // hard cooldown to stop loops
-    const now = Date.now();
-    if (now - lastToolCallAt < TOOL_CALL_COOLDOWN_MS) {
-      console.log("[tool] blocked by cooldown", { name });
-      return { ok: false, blocked: "cooldown" };
+    // ✅ Fingerprinted cooldown (not tool-name wide)
+    const cd = toolIsCoolingDown(name, args);
+    if (cd.blocked) {
+      console.log("[tool] blocked by cooldown", { name, fp: cd.fp, remainingMs: cd.remainingMs });
+      return { ok: false, blocked: "cooldown", remainingMs: cd.remainingMs, fingerprint: cd.fp };
     }
 
-    // duplicate suppression
+    // duplicate suppression (exact args) — short TTL
     const k = toolKey(name, args);
     if (seenToolKeys.has(k)) {
       console.log("[tool] blocked duplicate", { name });
       return { ok: false, blocked: "duplicate" };
     }
     seenToolKeys.add(k);
-    setTimeout(() => seenToolKeys.delete(k), 15000);
-
-    lastToolCallAt = now;
+    setTimeout(() => seenToolKeys.delete(k), 12000);
 
     if (name !== "call_third_party") {
       return { ok: false, message: `Unknown tool: ${name}` };
@@ -260,6 +293,14 @@ wss.on("connection", (twilioWs) => {
     wsSend(openaiWs, { type: "response.create" });
   }
 
+  function cancelOpenAIResponse(reason) {
+    // Helps barge-in / interruption
+    if (!openaiWs) return;
+    wsSend(openaiWs, { type: "response.cancel", reason: reason || "barge_in" });
+    responseInProgress = false;
+    clearPendingTimer();
+  }
+
   function attachOpenAiHandlers(ws) {
     ws.on("open", () => {
       openaiReady = true;
@@ -282,13 +323,14 @@ wss.on("connection", (twilioWs) => {
             "Sound natural, warm, confident, like a human. " +
             "Keep replies short (1–2 sentences). " +
             "Ask only ONE follow-up question when needed. " +
+            "If the caller starts speaking while you are speaking, STOP and listen. " +
             "Do not mention being an AI unless asked.",
           tools: [
             {
               type: "function",
               name: "call_third_party",
               description:
-                "Call a third-party phone number and deliver a short spoken message, and bridge into the current call if callSid/roomId are provided.",
+                "Call a_toggle a third-party phone number and deliver a short spoken message, and bridge into the current call if callSid/roomId are provided.",
               parameters: {
                 type: "object",
                 properties: {
@@ -340,6 +382,15 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
+      // ✅ Barge-in: if OpenAI detects speech started and it’s talking, cancel response
+      if (msg.type === "input_audio_buffer.speech_started") {
+        if (responseInProgress) {
+          console.log("[vad] speech_started while responding -> cancel");
+          cancelOpenAIResponse("barge_in");
+        }
+        return;
+      }
+
       // 3) VAD says user stopped speaking → create response (guarded + debounced)
       if (msg.type === "input_audio_buffer.speech_stopped") {
         if (responseInProgress) return;
@@ -361,11 +412,7 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
-      // 4) Tool calling (handle multiple possible realtime shapes)
-      //    We support:
-      //    - response.function_call_arguments.delta/done
-      //    - response.output_item.added with function_call item
-      //    - response.tool_call style (if present)
+      // 4) Tool calling
       if (msg.type === "response.function_call_arguments.delta") {
         const call_id = msg.call_id || msg.callId || msg.id;
         const delta = msg.delta || "";
@@ -538,7 +585,6 @@ wss.on("connection", (twilioWs) => {
         custom.roomId || "(none)"
       );
 
-      // Optional: one-time debug dump of the start payload
       if ((process.env.DEBUG_TWILIO_START || "").trim() === "1") {
         console.log("[twilio] start payload:", JSON.stringify(msg.start || {}, null, 2));
       }
