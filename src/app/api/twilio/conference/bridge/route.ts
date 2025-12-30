@@ -1,4 +1,3 @@
-// src/app/api/twilio/conference/bridge/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -26,12 +25,17 @@ function buildBridgeTwiml(confName: string, msg: string) {
   const safeConf = escapeForXml(confName || "foundzie-default");
   const safeMsg = escapeForXml((msg || "").trim());
 
-  const spoken =
-    safeMsg || "Hello. This is Foundzie with a quick message for you.";
+  const greeting = "Hello. This is Foundzie calling with a quick message.";
+  const spokenMsg = safeMsg || "Your caller asked me to pass along a message.";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${spoken}</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(greeting)}</Say>
+  <Pause length="2"/>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${spokenMsg}</Say>
+  <Pause length="1"/>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Please hold one moment while I connect you.</Say>
+  <Pause length="1"/>
   <Dial>
     <Conference beep="false" startConferenceOnEnter="true" endConferenceOnExit="false">
       ${safeConf}

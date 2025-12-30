@@ -1,4 +1,3 @@
-// src/app/api/twilio/conference/join/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -9,6 +8,7 @@ function escapeForXml(text: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;")
     .replace(/'/g, "&apos;");
 }
 
@@ -22,13 +22,12 @@ function twiml(xml: string) {
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const conf = (url.searchParams.get("conf") || "").trim();
-
   const confName = conf || "foundzie-default";
 
   return twiml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial>
-    <Conference beep="false" startConferenceOnEnter="true" endConferenceOnExit="false">
+    <Conference beep="false" startConferenceOnEnter="true" endConferenceOnExit="true">
       ${escapeForXml(confName)}
     </Conference>
   </Dial>
