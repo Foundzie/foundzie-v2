@@ -1,7 +1,8 @@
 import "server-only";
 import { NextRequest, NextResponse } from "next/server";
+import twilio from "twilio";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
-import { redirectTwilioCall, startTwilioCall } from "@/lib/twilio";
+import { redirectTwilioCall } from "@/lib/twilio";
 
 export const dynamic = "force-dynamic";
 
@@ -33,15 +34,12 @@ function getBaseUrl(): string {
 function normalizeE164(input: string): string {
   const raw = (input || "").trim();
   if (!raw) return "";
-
   if (raw.startsWith("+")) return raw;
 
   const digits = raw.replace(/[^\d]/g, "");
 
   // 00 + countrycode...
-  if (digits.startsWith("00") && digits.length >= 11) {
-    return `+${digits.slice(2)}`;
-  }
+  if (digits.startsWith("00") && digits.length >= 11) return `+${digits.slice(2)}`;
 
   // 11 digits starting with 1 (US)
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
@@ -67,27 +65,26 @@ const LAST_ACTIVE_KEY = "foundzie:twilio:last-active-call:v1";
 
 /** Tool cooldown keys */
 function cooldownKey(kind: string, fingerprint: string) {
-  return `foundzie:tools:cooldown:${kind}:${fingerprint}:v1`;
+  return `foundzie:tools:cooldown:${kind}:${fingerprint}:v2`;
 }
 
-function fingerprintForCall(phone: string, message: string, callSid: string) {
-  const p = (phone || "").slice(-8);
-  const m = (message || "").slice(0, 24);
-  const c = (callSid || "").slice(-10);
-  return `${p}:${c}:${m}`.replace(/[^a-zA-Z0-9:_-]/g, "_");
+function fingerprintForCall(phone: string, message: string) {
+  // Fingerprint should NOT include callSid; otherwise every call looks "new"
+  const p = (phone || "").slice(-10);
+  const m = (message || "").slice(0, 28);
+  return `${p}:${m}`.replace(/[^a-zA-Z0-9:_-]/g, "_");
 }
 
 async function resolveActiveCallSid(roomId?: string) {
-  if (roomId) {
-    const hit = await kvGetJSON<any>(activeCallKey(roomId)).catch(() => null);
-    if (hit?.callSid) {
-      return { callSid: String(hit.callSid), from: String(hit.from || "") };
-    }
+  const rid = (roomId || "").trim();
+  if (rid && rid !== "current") {
+    const hit = await kvGetJSON<any>(activeCallKey(rid)).catch(() => null);
+    if (hit?.callSid) return { callSid: String(hit.callSid), from: String(hit.from || "") };
   }
+
   const last = await kvGetJSON<any>(LAST_ACTIVE_KEY).catch(() => null);
-  if (last?.callSid) {
-    return { callSid: String(last.callSid), from: String(last.from || "") };
-  }
+  if (last?.callSid) return { callSid: String(last.callSid), from: String(last.from || "") };
+
   return { callSid: "", from: "" };
 }
 
@@ -101,16 +98,20 @@ export async function POST(req: NextRequest) {
   const phone = normalizeE164(String(body.phone || ""));
   const message = String(body.message || "").trim().slice(0, 800);
 
-  const roomId = String(body.roomId || "").trim();
+  let roomId = String(body.roomId || "").trim();
   let callSid = String(body.callSid || "").trim();
+
+  // normalize "current"
+  if (roomId === "current") roomId = "";
+  if (callSid === "current") callSid = "";
 
   if (!phone || !message) {
     return json({ ok: false, message: "Missing phone or message." }, 400);
   }
 
-  // If bridge passed "current" or nothing, resolve from KV
-  if (!callSid || callSid === "current") {
-    const resolved = await resolveActiveCallSid(roomId || "");
+  // Resolve active callSid (needed to redirect YOU into the conference)
+  if (!callSid) {
+    const resolved = await resolveActiveCallSid(roomId);
     callSid = resolved.callSid || "";
   }
 
@@ -119,15 +120,15 @@ export async function POST(req: NextRequest) {
       {
         ok: false,
         message:
-          "Missing active callSid. Ensure /api/twilio/voice persists KV mapping, or pass callSid from bridge customParameters.",
+          "Missing active callSid. Ensure /api/twilio/voice stores LAST_ACTIVE_KEY or pass callSid via Twilio Stream customParameters.",
       },
       400
     );
   }
 
-  // ✅ SMART COOLDOWN (NO TTL): store { at } and check elapsed time
-  const COOLDOWN_SECONDS = Number(process.env.TOOL_CALL_COOLDOWN_SECONDS || 12);
-  const fp = fingerprintForCall(phone, message, callSid);
+  // ✅ SMART COOLDOWN
+  const COOLDOWN_SECONDS = Number(process.env.TOOL_CALL_COOLDOWN_SECONDS || 8);
+  const fp = fingerprintForCall(phone, message);
   const cdKey = cooldownKey("call_third_party", fp);
 
   const existing = await kvGetJSON<any>(cdKey).catch(() => null);
@@ -151,27 +152,68 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // set cooldown (2 args only — fixes your error)
   await kvSetJSON(cdKey, { at: new Date().toISOString() }).catch(() => null);
 
-  const conf = safeConfName(roomId ? `foundzie-${roomId}` : `foundzie-${callSid}`);
   const base = getBaseUrl();
+  const conf = safeConfName(roomId ? `foundzie-${roomId}` : `foundzie-${callSid}`);
 
   // 1) Redirect YOU (active caller) into conference
   const joinUrl = `${base}/api/twilio/conference/join?conf=${encodeURIComponent(conf)}`;
-  const redirectResult = await redirectTwilioCall(callSid, joinUrl);
-  const callerRedirected = !!redirectResult?.sid;
+  const redirectResult = await redirectTwilioCall(callSid, joinUrl).catch((e: any) => {
+    return { error: String(e?.message || e) };
+  });
 
-  // 2) Dial third party into same conference (bridge TwiML handles greet+pause+message)
+  const callerRedirected = !!(redirectResult as any)?.sid;
+
+  // 2) Dial third party using Twilio REST DIRECTLY (guarantees bridgeUrl is used)
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from = process.env.TWILIO_PHONE_NUMBER;
+
+  if (!sid || !token || !from) {
+    return json(
+      {
+        ok: false,
+        message: "Twilio env vars missing (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER).",
+        steps: { callerRedirected },
+        urls: { joinUrl },
+      },
+      500
+    );
+  }
+
   const bridgeUrl =
     `${base}/api/twilio/conference/bridge` +
     `?conf=${encodeURIComponent(conf)}` +
     `&text=${encodeURIComponent(message)}`;
 
-  const calleeCall = await startTwilioCall(phone, {
-    voiceUrl: bridgeUrl,
-    note: "tool:call_third_party",
-  });
+  const client = twilio(sid, token);
+
+  let callee: any = null;
+  try {
+    callee = await client.calls.create({
+      to: phone,
+      from,
+      // Important: Twilio will fetch TwiML from this URL.
+      url: bridgeUrl,
+      method: "GET",
+    });
+  } catch (e: any) {
+    return json(
+      {
+        ok: false,
+        message: "Failed to create outbound call via Twilio.",
+        error: String(e?.message || e),
+        phone,
+        conf,
+        base,
+        steps: { callerRedirected, calleeDialed: false },
+        urls: { joinUrl, bridgeUrl },
+        twilio: { redirect: redirectResult },
+      },
+      502
+    );
+  }
 
   return json({
     ok: true,
@@ -183,15 +225,16 @@ export async function POST(req: NextRequest) {
     cooldownSeconds: COOLDOWN_SECONDS,
     steps: {
       callerRedirected,
-      calleeDialed: !!calleeCall?.sid,
+      calleeDialed: !!callee?.sid,
     },
     urls: {
       joinUrl,
       bridgeUrl,
     },
     twilio: {
-      redirectSid: redirectResult?.sid ?? null,
-      calleeSid: calleeCall?.sid ?? null,
+      redirect: (redirectResult as any)?.sid ? { sid: (redirectResult as any).sid } : redirectResult,
+      calleeSid: callee?.sid ?? null,
+      calleeStatus: callee?.status ?? null,
     },
   });
 }
