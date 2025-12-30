@@ -2,11 +2,11 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 
 /**
- * Foundzie Twilio <Stream> bridge (Fly.io)
+ * Foundzie Twilio <Connect><Stream> bridge (Fly.io)
  * - Receives Twilio Media Streams (g711_ulaw)
  * - Sends audio to OpenAI Realtime
- * - Sends audio back to Twilio
- * - Enables tool calling by POSTing to your Vercel endpoint:
+ * - Sends audio back to Twilio (requires TwiML uses <Connect><Stream>, not <Start><Stream>)
+ * - Enables tool calling by POSTing:
  *     POST {BASE}/api/tools/call_third_party
  */
 
@@ -34,11 +34,14 @@ function safeJsonParse(s) {
 }
 
 function wsSend(ws, obj) {
-  if (!ws) return;
-  if (ws.readyState !== WebSocket.OPEN) return;
+  if (!ws) return false;
+  if (ws.readyState !== WebSocket.OPEN) return false;
   try {
     ws.send(JSON.stringify(obj));
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function nowIso() {
@@ -48,7 +51,7 @@ function nowIso() {
 /**
  * Tunables
  */
-const MIN_MEDIA_FRAMES = Number(process.env.MIN_MEDIA_FRAMES || 10); // ~200ms
+const MIN_MEDIA_FRAMES = Number(process.env.MIN_MEDIA_FRAMES || 10);
 const SPEECH_STOP_DEBOUNCE_MS = Number(process.env.SPEECH_STOP_DEBOUNCE_MS || 450);
 const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 700);
 
@@ -96,27 +99,20 @@ wss.on("connection", (twilioWs) => {
   let openaiConnecting = false;
   let openaiReconnects = 0;
 
-  // Prevent duplicate responses / overlapping responses
   let responseInProgress = false;
-
-  // Track if we actually received enough audio before responding
   let mediaFramesSinceLastResponse = 0;
 
-  // Greeting protection
   let greeted = false;
-
-  // Debounce timer so speech_stopped doesn’t instantly trigger response
   let pendingResponseTimer = null;
 
-  // Tool call buffering
+  // Tool buffers
   const toolArgBuffers = new Map(); // call_id -> string
+  const toolCooldownMap = new Map(); // fp -> lastTimeMs
+  const seenToolKeys = new Set(); // exact args, short TTL
 
-  // ✅ Fingerprinted cooldowns (instead of tool-name cooldown)
-  // fp -> lastTimeMs
-  const toolCooldownMap = new Map();
-
-  // duplicate suppression (short TTL)
-  const seenToolKeys = new Set();
+  // Audio diagnostics
+  let outboundAudioFrames = 0;
+  let greetingRetryTimer = null;
 
   let closed = false;
 
@@ -127,11 +123,19 @@ wss.on("connection", (twilioWs) => {
     }
   }
 
+  function clearGreetingRetry() {
+    if (greetingRetryTimer) {
+      clearTimeout(greetingRetryTimer);
+      greetingRetryTimer = null;
+    }
+  }
+
   function shutdown(reason) {
     if (closed) return;
     closed = true;
 
     clearPendingTimer();
+    clearGreetingRetry();
     clearInterval(pingInterval);
 
     console.log("[bridge] shutdown:", reason || "unknown");
@@ -145,11 +149,6 @@ wss.on("connection", (twilioWs) => {
   }
 
   function getVercelBase() {
-    // Priority:
-    // 1) Twilio <Parameter name="base" value="...">
-    // 2) env TWILIO_BASE_URL
-    // 3) env TWILIO_BASE_URL_FALLBACK
-    // 4) hard default (your prod)
     const b =
       (custom.base || "").trim() ||
       (process.env.TWILIO_BASE_URL || "").trim() ||
@@ -175,9 +174,8 @@ wss.on("connection", (twilioWs) => {
     if (name === "call_third_party") {
       const p = normalizePhoneForFp(args.phone);
       const m = String(args.message || "").trim().slice(0, 32);
-      const c = String(args.callSid || "").trim().slice(-10);
-      const r = String(args.roomId || "").trim().slice(-10);
-      return `${name}:p=${p}:c=${c || r}:m=${m}`.replace(/[^a-zA-Z0-9:_=.-]/g, "_");
+      // don’t include callSid in fp (avoids “always new”)
+      return `${name}:p=${p}:m=${m}`.replace(/[^a-zA-Z0-9:_=.-]/g, "_");
     }
 
     const short = JSON.stringify(args).slice(0, 80);
@@ -189,11 +187,23 @@ wss.on("connection", (twilioWs) => {
     const now = Date.now();
     const last = toolCooldownMap.get(fp) || 0;
     const elapsed = now - last;
+
     if (elapsed >= 0 && elapsed < TOOL_CALL_COOLDOWN_MS) {
       return { blocked: true, fp, remainingMs: TOOL_CALL_COOLDOWN_MS - elapsed };
     }
     toolCooldownMap.set(fp, now);
     return { blocked: false, fp, remainingMs: 0 };
+  }
+
+  function createAudioResponse(instructions) {
+    // Always force audio
+    wsSend(openaiWs, {
+      type: "response.create",
+      response: {
+        modalities: ["audio"],
+        instructions,
+      },
+    });
   }
 
   function tryGreet() {
@@ -203,17 +213,28 @@ wss.on("connection", (twilioWs) => {
 
     greeted = true;
     responseInProgress = true;
+    outboundAudioFrames = 0;
 
-    wsSend(openaiWs, {
-      type: "response.create",
-      response: {
-        instructions:
-          "You are Foundzie on a real phone call. Speak ONLY ENGLISH. " +
-          "Greet the caller warmly in ONE short sentence, then ask ONE short question: “How can I help?”",
-      },
-    });
+    createAudioResponse(
+      "You are Foundzie on a REAL phone call. Speak ONLY ENGLISH. " +
+        "Greet the caller warmly in ONE short sentence, then ask ONE short question: “How can I help?”"
+    );
 
     console.log("[bridge] greeting triggered");
+
+    // If no audio deltas appear quickly, retry once
+    clearGreetingRetry();
+    greetingRetryTimer = setTimeout(() => {
+      if (closed) return;
+      if (!openaiReady) return;
+      if (outboundAudioFrames > 0) return;
+
+      console.log("[bridge] greeting retry: no outbound audio deltas observed");
+      responseInProgress = true;
+      createAudioResponse(
+        "Speak now. Greet the caller warmly and ask: “How can I help?” Keep it short."
+      );
+    }, 1800);
   }
 
   // Keepalive ping (Twilio only)
@@ -224,14 +245,12 @@ wss.on("connection", (twilioWs) => {
   }, 15000);
 
   async function runToolCall(name, args, call_id) {
-    // ✅ Fingerprinted cooldown (not tool-name wide)
     const cd = toolIsCoolingDown(name, args);
     if (cd.blocked) {
       console.log("[tool] blocked by cooldown", { name, fp: cd.fp, remainingMs: cd.remainingMs });
       return { ok: false, blocked: "cooldown", remainingMs: cd.remainingMs, fingerprint: cd.fp };
     }
 
-    // duplicate suppression (exact args) — short TTL
     const k = toolKey(name, args);
     if (seenToolKeys.has(k)) {
       console.log("[tool] blocked duplicate", { name });
@@ -249,9 +268,8 @@ wss.on("connection", (twilioWs) => {
 
     const payload = {
       ...(args || {}),
-      // Ensure the backend can bridge correctly
-      roomId: (args?.roomId || custom.roomId || "").toString(),
-      callSid: (args?.callSid || custom.callSid || "").toString(),
+      roomId: (args?.roomId || custom.roomId || "").toString() || "current",
+      callSid: (args?.callSid || custom.callSid || "").toString() || "current",
     };
 
     console.log("[tool] calling backend", { url, payload });
@@ -279,7 +297,6 @@ wss.on("connection", (twilioWs) => {
   }
 
   function sendToolResultToOpenAI(call_id, resultObj) {
-    // Realtime expects a function_call_output item with matching call_id
     wsSend(openaiWs, {
       type: "conversation.item.create",
       item: {
@@ -289,12 +306,15 @@ wss.on("connection", (twilioWs) => {
       },
     });
 
-    // Nudge model to continue after tool result
-    wsSend(openaiWs, { type: "response.create" });
+    // Continue as audio (important)
+    createAudioResponse(
+      "Continue the phone call naturally in ENGLISH. " +
+        "If the tool succeeded, confirm briefly in one sentence. " +
+        "If it failed, apologize briefly and ask ONE short question."
+    );
   }
 
   function cancelOpenAIResponse(reason) {
-    // Helps barge-in / interruption
     if (!openaiWs) return;
     wsSend(openaiWs, { type: "response.cancel", reason: reason || "barge_in" });
     responseInProgress = false;
@@ -330,7 +350,7 @@ wss.on("connection", (twilioWs) => {
               type: "function",
               name: "call_third_party",
               description:
-                "Call a_toggle a third-party phone number and deliver a short spoken message, and bridge into the current call if callSid/roomId are provided.",
+                "Call a third-party phone number and deliver a short spoken message, and bridge into the current call if callSid/roomId are provided.",
               parameters: {
                 type: "object",
                 properties: {
@@ -355,8 +375,13 @@ wss.on("connection", (twilioWs) => {
       const msg = safeJsonParse(data.toString());
       if (!msg) return;
 
-      // 1) Audio from OpenAI -> Twilio
+      // Audio from OpenAI -> Twilio
       if (msg.type === "response.audio.delta" && msg.delta && streamSid) {
+        outboundAudioFrames += 1;
+        if (outboundAudioFrames === 1) {
+          console.log("[audio] first outbound audio delta -> Twilio", { at: nowIso() });
+        }
+
         wsSend(twilioWs, {
           event: "media",
           streamSid,
@@ -365,7 +390,7 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
-      // 2) Response lifecycle
+      // Response lifecycle
       if (
         msg.type === "response.done" ||
         msg.type === "response.completed" ||
@@ -382,7 +407,7 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
-      // ✅ Barge-in: if OpenAI detects speech started and it’s talking, cancel response
+      // Barge-in
       if (msg.type === "input_audio_buffer.speech_started") {
         if (responseInProgress) {
           console.log("[vad] speech_started while responding -> cancel");
@@ -391,7 +416,7 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
-      // 3) VAD says user stopped speaking → create response (guarded + debounced)
+      // Speech stopped -> respond (debounced)
       if (msg.type === "input_audio_buffer.speech_stopped") {
         if (responseInProgress) return;
         if (mediaFramesSinceLastResponse < MIN_MEDIA_FRAMES) return;
@@ -406,13 +431,15 @@ wss.on("connection", (twilioWs) => {
           responseInProgress = true;
 
           wsSend(openaiWs, { type: "input_audio_buffer.commit" });
-          wsSend(openaiWs, { type: "response.create" });
+          createAudioResponse(
+            "Respond briefly in ENGLISH (1–2 sentences). Ask ONE short follow-up question if needed."
+          );
         }, SPEECH_STOP_DEBOUNCE_MS);
 
         return;
       }
 
-      // 4) Tool calling
+      // Tool calling: delta args
       if (msg.type === "response.function_call_arguments.delta") {
         const call_id = msg.call_id || msg.callId || msg.id;
         const delta = msg.delta || "";
@@ -422,6 +449,7 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
+      // Tool calling: done
       if (msg.type === "response.function_call_arguments.done") {
         const call_id = msg.call_id || msg.callId || msg.id;
         const name = msg.name || msg.tool_name || msg.function?.name;
@@ -437,18 +465,14 @@ wss.on("connection", (twilioWs) => {
           args = {};
         }
 
-        console.log("[tool] received", {
-          name,
-          callId: call_id,
-          args,
-          at: nowIso(),
-        });
+        console.log("[tool] received", { name, callId: call_id, args, at: nowIso() });
 
         const result = await runToolCall(name, args, call_id);
         sendToolResultToOpenAI(call_id, result);
         return;
       }
 
+      // Alternate tool shape
       if (msg.type === "response.output_item.added" && msg.item?.type === "function_call") {
         const call_id = msg.item.call_id || msg.item.id;
         const name = msg.item.name;
@@ -461,24 +485,6 @@ wss.on("connection", (twilioWs) => {
           args = {};
         }
 
-        console.log("[tool] received", {
-          name,
-          callId: call_id,
-          args,
-          at: nowIso(),
-        });
-
-        const result = await runToolCall(name, args, call_id);
-        sendToolResultToOpenAI(call_id, result);
-        return;
-      }
-
-      if (msg.type === "response.tool_call" || msg.type === "tool.call") {
-        const call_id = msg.call_id || msg.callId || msg.id;
-        const name = msg.name || msg.tool_name;
-        const args = msg.arguments || msg.args || {};
-        if (!call_id || !name) return;
-
         console.log("[tool] received", { name, callId: call_id, args, at: nowIso() });
 
         const result = await runToolCall(name, args, call_id);
@@ -486,7 +492,7 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
-      // 5) Errors
+      // Errors
       if (msg.type === "error") {
         const code = msg?.error?.code || msg?.code;
 
@@ -567,7 +573,6 @@ wss.on("connection", (twilioWs) => {
       streamSid = msg.start?.streamSid || null;
 
       const cp = msg.start?.customParameters || {};
-      // Twilio lowercases keys sometimes; normalize
       custom = {
         base: String(cp.base || cp.BASE || "").trim(),
         roomId: String(cp.roomId || cp.roomid || "").trim(),
@@ -585,10 +590,6 @@ wss.on("connection", (twilioWs) => {
         custom.roomId || "(none)"
       );
 
-      if ((process.env.DEBUG_TWILIO_START || "").trim() === "1") {
-        console.log("[twilio] start payload:", JSON.stringify(msg.start || {}, null, 2));
-      }
-
       tryGreet();
       return;
     }
@@ -596,7 +597,6 @@ wss.on("connection", (twilioWs) => {
     if (msg.event === "media") {
       const payload = msg.media?.payload;
       if (!payload) return;
-
       if (!openaiReady) return;
 
       mediaFramesSinceLastResponse += 1;

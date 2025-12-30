@@ -23,14 +23,6 @@ function getBaseUrl(): string {
   return "https://foundzie-v2.vercel.app";
 }
 
-/**
- * Accepts:
- * - 3312998167
- * - +13312998167
- * - 0013312998167
- * - 13312998167
- * - (331) 299-8167
- */
 function normalizeE164(input: string): string {
   const raw = (input || "").trim();
   if (!raw) return "";
@@ -38,16 +30,9 @@ function normalizeE164(input: string): string {
 
   const digits = raw.replace(/[^\d]/g, "");
 
-  // 00 + countrycode...
   if (digits.startsWith("00") && digits.length >= 11) return `+${digits.slice(2)}`;
-
-  // 11 digits starting with 1 (US)
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-
-  // 10 digits -> assume US
   if (digits.length === 10) return `+1${digits}`;
-
-  // typed countrycode without +
   if (digits.length >= 11 && digits.length <= 15) return `+${digits}`;
 
   return raw;
@@ -63,14 +48,13 @@ function activeCallKey(roomId: string) {
 }
 const LAST_ACTIVE_KEY = "foundzie:twilio:last-active-call:v1";
 
-/** Tool cooldown keys */
+/** cooldown key (fingerprinted) */
 function cooldownKey(kind: string, fingerprint: string) {
-  return `foundzie:tools:cooldown:${kind}:${fingerprint}:v2`;
+  return `foundzie:tools:cooldown:${kind}:${fingerprint}:v3`;
 }
 
 function fingerprintForCall(phone: string, message: string) {
-  // Fingerprint should NOT include callSid; otherwise every call looks "new"
-  const p = (phone || "").slice(-10);
+  const p = (phone || "").replace(/[^\d]/g, "").slice(-10);
   const m = (message || "").slice(0, 28);
   return `${p}:${m}`.replace(/[^a-zA-Z0-9:_-]/g, "_");
 }
@@ -101,7 +85,6 @@ export async function POST(req: NextRequest) {
   let roomId = String(body.roomId || "").trim();
   let callSid = String(body.callSid || "").trim();
 
-  // normalize "current"
   if (roomId === "current") roomId = "";
   if (callSid === "current") callSid = "";
 
@@ -109,7 +92,7 @@ export async function POST(req: NextRequest) {
     return json({ ok: false, message: "Missing phone or message." }, 400);
   }
 
-  // Resolve active callSid (needed to redirect YOU into the conference)
+  // Resolve active callSid for redirect
   if (!callSid) {
     const resolved = await resolveActiveCallSid(roomId);
     callSid = resolved.callSid || "";
@@ -120,13 +103,13 @@ export async function POST(req: NextRequest) {
       {
         ok: false,
         message:
-          "Missing active callSid. Ensure /api/twilio/voice stores LAST_ACTIVE_KEY or pass callSid via Twilio Stream customParameters.",
+          "Missing active callSid. Ensure /api/twilio/voice stores LAST_ACTIVE_KEY (or pass callSid via Twilio Stream customParameters).",
       },
       400
     );
   }
 
-  // ✅ SMART COOLDOWN
+  // Cooldown
   const COOLDOWN_SECONDS = Number(process.env.TOOL_CALL_COOLDOWN_SECONDS || 8);
   const fp = fingerprintForCall(phone, message);
   const cdKey = cooldownKey("call_third_party", fp);
@@ -157,7 +140,7 @@ export async function POST(req: NextRequest) {
   const base = getBaseUrl();
   const conf = safeConfName(roomId ? `foundzie-${roomId}` : `foundzie-${callSid}`);
 
-  // 1) Redirect YOU (active caller) into conference
+  // 1) Redirect active caller into conference
   const joinUrl = `${base}/api/twilio/conference/join?conf=${encodeURIComponent(conf)}`;
   const redirectResult = await redirectTwilioCall(callSid, joinUrl).catch((e: any) => {
     return { error: String(e?.message || e) };
@@ -165,7 +148,7 @@ export async function POST(req: NextRequest) {
 
   const callerRedirected = !!(redirectResult as any)?.sid;
 
-  // 2) Dial third party using Twilio REST DIRECTLY (guarantees bridgeUrl is used)
+  // 2) Dial third party and play message (bridge route always delivers message)
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
   const from = process.env.TWILIO_PHONE_NUMBER;
@@ -194,7 +177,6 @@ export async function POST(req: NextRequest) {
     callee = await client.calls.create({
       to: phone,
       from,
-      // Important: Twilio will fetch TwiML from this URL.
       url: bridgeUrl,
       method: "GET",
     });
