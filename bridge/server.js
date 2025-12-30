@@ -11,8 +11,6 @@ import { WebSocketServer, WebSocket } from "ws";
  */
 
 const PORT = Number(process.env.PORT || 8080);
-
-// ✅ Fly: MUST listen on 0.0.0.0
 const HOST = process.env.HOST || "0.0.0.0";
 
 const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
@@ -106,8 +104,9 @@ wss.on("connection", (twilioWs) => {
   let responseInProgress = false;
   let mediaFramesSinceLastResponse = 0;
 
-  // Greeting
+  // Greeting state
   let greeted = false;
+  let greetingUserItemSent = false;
   let pendingResponseTimer = null;
 
   // Tool buffers
@@ -116,9 +115,9 @@ wss.on("connection", (twilioWs) => {
   const seenToolKeys = new Set(); // exact args, short TTL
 
   // Diagnostics
-  let outboundAudioFrames = 0; // how many response.audio.delta we saw
-  let inboundMediaFrames = 0;  // how many Twilio media frames we got
-  let greetingRetryTimer = null;
+  let outboundAudioFrames = 0; // count response.audio.delta
+  let inboundMediaFrames = 0;  // count Twilio inbound media frames
+  let firstTextDeltaLogged = false;
 
   let closed = false;
 
@@ -129,19 +128,11 @@ wss.on("connection", (twilioWs) => {
     }
   }
 
-  function clearGreetingRetry() {
-    if (greetingRetryTimer) {
-      clearTimeout(greetingRetryTimer);
-      greetingRetryTimer = null;
-    }
-  }
-
   function shutdown(reason) {
     if (closed) return;
     closed = true;
 
     clearPendingTimer();
-    clearGreetingRetry();
     clearInterval(pingInterval);
 
     console.log("[bridge] shutdown:", reason || "unknown", {
@@ -206,13 +197,34 @@ wss.on("connection", (twilioWs) => {
     return { blocked: false, fp, remainingMs: 0 };
   }
 
-  // ✅ Always request BOTH audio + text (OpenAI rejects ["audio"] alone)
+  // Always request BOTH audio + text
   function createAudioResponse(instructions) {
     return wsSend(openaiWs, {
       type: "response.create",
       response: {
         modalities: ["audio", "text"],
         instructions,
+      },
+    });
+  }
+
+  function sendGreetingUserItemOnce() {
+    if (greetingUserItemSent) return;
+    greetingUserItemSent = true;
+
+    // ✅ This is the key fix: give the model something to respond to.
+    wsSend(openaiWs, {
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text:
+              "A phone caller just connected. Greet them warmly in ONE short sentence and ask: “How can I help?”",
+          },
+        ],
       },
     });
   }
@@ -228,25 +240,19 @@ wss.on("connection", (twilioWs) => {
 
     console.log("[bridge] greeting triggered");
 
+    sendGreetingUserItemOnce();
+
+    // Now ask for the response (audio+text)
     createAudioResponse(
-      "You are Foundzie on a REAL phone call. Speak ONLY ENGLISH. " +
-        "Greet the caller warmly in ONE short sentence, then ask ONE short question: “How can I help?”"
+      "Speak the greeting now. Keep it short. English only unless asked."
     );
 
-    // If no audio deltas appear quickly, retry once
-    clearGreetingRetry();
-    greetingRetryTimer = setTimeout(() => {
+    // If we still see no audio deltas, log hard evidence (text may still appear)
+    setTimeout(() => {
       if (closed) return;
-      if (!openaiReady) return;
       if (outboundAudioFrames > 0) return;
-
-      console.log("[bridge] greeting retry: no outbound audio deltas observed");
-      responseInProgress = true;
-
-      createAudioResponse(
-        "Speak immediately. Greet the caller and ask: “How can I help?” Keep it short."
-      );
-    }, 1800);
+      console.log("[bridge] greeting warning: still no outbound audio deltas after 2s");
+    }, 2000);
   }
 
   // Keepalive ping (Twilio only)
@@ -319,17 +325,14 @@ wss.on("connection", (twilioWs) => {
     });
 
     createAudioResponse(
-      "Continue the phone call naturally in ENGLISH. " +
-        "If the tool succeeded, confirm briefly in one sentence. " +
-        "If it failed, apologize briefly and ask ONE short question."
+      "Continue naturally in English. Confirm briefly. Ask one short question if needed."
     );
   }
 
-  // ✅ OpenAI Realtime rejects response.cancel with {reason:...}
-  // ✅ Also: only cancel if Foundzie has actually started speaking (outboundAudioFrames > 0)
+  // Only cancel if we have actually started outputting audio
   function maybeCancelForBargeIn() {
     if (!openaiWs) return;
-    if (outboundAudioFrames <= 0) return; // don't cancel greeting before it even starts
+    if (outboundAudioFrames <= 0) return;
     wsSend(openaiWs, { type: "response.cancel" });
     responseInProgress = false;
     clearPendingTimer();
@@ -355,9 +358,7 @@ wss.on("connection", (twilioWs) => {
           },
           instructions:
             "You are Foundzie, a lightning-fast personal concierge on a REAL phone call. " +
-            "ALWAYS speak ENGLISH unless the caller explicitly asks for another language. " +
-            "Sound natural, warm, confident, like a human. " +
-            "Keep replies short (1–2 sentences). " +
+            "Speak naturally. Keep replies short (1–2 sentences). " +
             "Ask only ONE follow-up question when needed. " +
             "Do not mention being an AI unless asked.",
           tools: [
@@ -382,6 +383,7 @@ wss.on("connection", (twilioWs) => {
         },
       });
 
+      // We might already have streamSid by now; greeting will run if so
       tryGreet();
     });
 
@@ -389,10 +391,10 @@ wss.on("connection", (twilioWs) => {
       const msg = safeJsonParse(data.toString());
       if (!msg) return;
 
-      // Helpful diagnostics
-      if (msg.type === "response.text.delta" && msg.delta) {
-        // don’t spam—just show the first few text deltas
-        // console.log("[openai] text.delta:", String(msg.delta).slice(0, 120));
+      // Log first text delta so we know the model is producing *something*
+      if (!firstTextDeltaLogged && msg.type === "response.text.delta" && msg.delta) {
+        firstTextDeltaLogged = true;
+        console.log("[openai] first text.delta:", String(msg.delta).slice(0, 180));
       }
 
       // Audio from OpenAI -> Twilio
@@ -446,9 +448,9 @@ wss.on("connection", (twilioWs) => {
 
           responseInProgress = true;
 
-          wsSend(openaiWs, { type: "input_audio_buffer.commit" });
+          // ✅ In server_vad mode, do NOT send input_audio_buffer.commit.
           createAudioResponse(
-            "Respond briefly in ENGLISH (1–2 sentences). Ask ONE short follow-up question if needed."
+            "Respond briefly in English (1–2 sentences). Ask ONE short follow-up question if needed."
           );
         }, SPEECH_STOP_DEBOUNCE_MS);
 
@@ -510,12 +512,11 @@ wss.on("connection", (twilioWs) => {
 
       // Errors
       if (msg.type === "error") {
-        console.error("[openai] error:", msg);
+        console.error("[openai] error:", JSON.stringify(msg, null, 2));
         return;
       }
 
       if (msg.type === "session.created" || msg.type === "session.updated") {
-        // Don’t spam greeting, but if Twilio start arrived late, this helps
         tryGreet();
         return;
       }
