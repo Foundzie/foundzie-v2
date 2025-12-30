@@ -6,11 +6,14 @@ import { WebSocketServer, WebSocket } from "ws";
  * - Receives Twilio Media Streams (g711_ulaw)
  * - Sends audio to OpenAI Realtime
  * - Sends audio back to Twilio
- * - Enables tool calling by POSTing:
+ * - Tool calling:
  *     POST {BASE}/api/tools/call_third_party
  */
 
 const PORT = Number(process.env.PORT || 8080);
+
+// ✅ Fly: MUST listen on 0.0.0.0
+const HOST = process.env.HOST || "0.0.0.0";
 
 const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
 if (!OPENAI_API_KEY) {
@@ -51,7 +54,7 @@ function nowIso() {
 /**
  * Tunables
  */
-const MIN_MEDIA_FRAMES = Number(process.env.MIN_MEDIA_FRAMES || 10);
+const MIN_MEDIA_FRAMES = Number(process.env.MIN_MEDIA_FRAMES || 10); // ~200ms
 const SPEECH_STOP_DEBOUNCE_MS = Number(process.env.SPEECH_STOP_DEBOUNCE_MS || 450);
 const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 700);
 
@@ -99,9 +102,11 @@ wss.on("connection", (twilioWs) => {
   let openaiConnecting = false;
   let openaiReconnects = 0;
 
+  // Response state
   let responseInProgress = false;
   let mediaFramesSinceLastResponse = 0;
 
+  // Greeting
   let greeted = false;
   let pendingResponseTimer = null;
 
@@ -110,9 +115,9 @@ wss.on("connection", (twilioWs) => {
   const toolCooldownMap = new Map(); // fp -> lastTimeMs
   const seenToolKeys = new Set(); // exact args, short TTL
 
-  // Audio diagnostics
-  let outboundAudioFrames = 0;
-  let inboundTwilioFrames = 0;
+  // Diagnostics
+  let outboundAudioFrames = 0; // how many response.audio.delta we saw
+  let inboundMediaFrames = 0;  // how many Twilio media frames we got
   let greetingRetryTimer = null;
 
   let closed = false;
@@ -139,7 +144,13 @@ wss.on("connection", (twilioWs) => {
     clearGreetingRetry();
     clearInterval(pingInterval);
 
-    console.log("[bridge] shutdown:", reason || "unknown");
+    console.log("[bridge] shutdown:", reason || "unknown", {
+      inboundMediaFrames,
+      outboundAudioFrames,
+      streamSid,
+      callSid: custom.callSid || null,
+      roomId: custom.roomId || null,
+    });
 
     try {
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
@@ -195,17 +206,13 @@ wss.on("connection", (twilioWs) => {
     return { blocked: false, fp, remainingMs: 0 };
   }
 
-  /**
-   * ✅ IMPORTANT FIX:
-   * Always create responses with modalities ["audio","text"].
-   * This prevents the OpenAI error: Invalid modalities: ['audio']
-   */
+  // ✅ Always request BOTH audio + text (OpenAI rejects ["audio"] alone)
   function createAudioResponse(instructions) {
-    wsSend(openaiWs, {
+    return wsSend(openaiWs, {
       type: "response.create",
       response: {
         modalities: ["audio", "text"],
-        instructions: String(instructions || "").slice(0, 2000),
+        instructions,
       },
     });
   }
@@ -219,12 +226,12 @@ wss.on("connection", (twilioWs) => {
     responseInProgress = true;
     outboundAudioFrames = 0;
 
+    console.log("[bridge] greeting triggered");
+
     createAudioResponse(
       "You are Foundzie on a REAL phone call. Speak ONLY ENGLISH. " +
         "Greet the caller warmly in ONE short sentence, then ask ONE short question: “How can I help?”"
     );
-
-    console.log("[bridge] greeting triggered");
 
     // If no audio deltas appear quickly, retry once
     clearGreetingRetry();
@@ -235,7 +242,10 @@ wss.on("connection", (twilioWs) => {
 
       console.log("[bridge] greeting retry: no outbound audio deltas observed");
       responseInProgress = true;
-      createAudioResponse("Speak now. Greet the caller and ask: “How can I help?” Keep it short.");
+
+      createAudioResponse(
+        "Speak immediately. Greet the caller and ask: “How can I help?” Keep it short."
+      );
     }, 1800);
   }
 
@@ -315,12 +325,11 @@ wss.on("connection", (twilioWs) => {
     );
   }
 
-  /**
-   * ✅ IMPORTANT FIX:
-   * Do NOT send response.cancel with {reason:...}. That param is rejected.
-   */
-  function cancelOpenAIResponse() {
+  // ✅ OpenAI Realtime rejects response.cancel with {reason:...}
+  // ✅ Also: only cancel if Foundzie has actually started speaking (outboundAudioFrames > 0)
+  function maybeCancelForBargeIn() {
     if (!openaiWs) return;
+    if (outboundAudioFrames <= 0) return; // don't cancel greeting before it even starts
     wsSend(openaiWs, { type: "response.cancel" });
     responseInProgress = false;
     clearPendingTimer();
@@ -330,6 +339,8 @@ wss.on("connection", (twilioWs) => {
     ws.on("open", () => {
       openaiReady = true;
       openaiConnecting = false;
+
+      console.log("[openai] ws open -> session.update");
 
       wsSend(ws, {
         type: "session.update",
@@ -348,7 +359,6 @@ wss.on("connection", (twilioWs) => {
             "Sound natural, warm, confident, like a human. " +
             "Keep replies short (1–2 sentences). " +
             "Ask only ONE follow-up question when needed. " +
-            "If the caller starts speaking while you are speaking, STOP and listen. " +
             "Do not mention being an AI unless asked.",
           tools: [
             {
@@ -372,13 +382,18 @@ wss.on("connection", (twilioWs) => {
         },
       });
 
-      console.log("[openai] ws open; session.update sent");
       tryGreet();
     });
 
     ws.on("message", async (data) => {
       const msg = safeJsonParse(data.toString());
       if (!msg) return;
+
+      // Helpful diagnostics
+      if (msg.type === "response.text.delta" && msg.delta) {
+        // don’t spam—just show the first few text deltas
+        // console.log("[openai] text.delta:", String(msg.delta).slice(0, 120));
+      }
 
       // Audio from OpenAI -> Twilio
       if (msg.type === "response.audio.delta" && msg.delta && streamSid) {
@@ -401,11 +416,7 @@ wss.on("connection", (twilioWs) => {
         return;
       }
 
-      if (
-        msg.type === "response.done" ||
-        msg.type === "response.completed" ||
-        msg.type === "response.stopped"
-      ) {
+      if (msg.type === "response.done" || msg.type === "response.completed" || msg.type === "response.stopped") {
         responseInProgress = false;
         mediaFramesSinceLastResponse = 0;
         clearPendingTimer();
@@ -415,8 +426,8 @@ wss.on("connection", (twilioWs) => {
       // Barge-in
       if (msg.type === "input_audio_buffer.speech_started") {
         if (responseInProgress) {
-          console.log("[vad] speech_started while responding -> cancel");
-          cancelOpenAIResponse();
+          console.log("[vad] speech_started while responding -> cancel (only if speaking)");
+          maybeCancelForBargeIn();
         }
         return;
       }
@@ -499,18 +510,12 @@ wss.on("connection", (twilioWs) => {
 
       // Errors
       if (msg.type === "error") {
-        const code = msg?.error?.code || msg?.code;
-
-        if (code === "conversation_already_has_active_response") {
-          responseInProgress = true;
-          return;
-        }
-
         console.error("[openai] error:", msg);
         return;
       }
 
       if (msg.type === "session.created" || msg.type === "session.updated") {
+        // Don’t spam greeting, but if Twilio start arrived late, this helps
         tryGreet();
         return;
       }
@@ -518,7 +523,6 @@ wss.on("connection", (twilioWs) => {
 
     ws.on("close", () => {
       console.log("[openai] closed");
-
       openaiReady = false;
       openaiConnecting = false;
 
@@ -586,14 +590,12 @@ wss.on("connection", (twilioWs) => {
         source: String(cp.source || "").trim(),
       };
 
-      console.log(
-        "[twilio] start streamSid=",
+      console.log("[twilio] start", {
         streamSid,
-        "callSid=",
-        custom.callSid || "(none)",
-        "roomId=",
-        custom.roomId || "(none)"
-      );
+        callSid: custom.callSid || null,
+        roomId: custom.roomId || null,
+        from: custom.from || null,
+      });
 
       tryGreet();
       return;
@@ -604,8 +606,8 @@ wss.on("connection", (twilioWs) => {
       if (!payload) return;
       if (!openaiReady) return;
 
-      inboundTwilioFrames += 1;
-      if (inboundTwilioFrames === 1) {
+      inboundMediaFrames += 1;
+      if (inboundMediaFrames === 1) {
         console.log("[audio] first inbound Twilio media frame", { at: nowIso() });
       }
 
@@ -635,10 +637,6 @@ wss.on("connection", (twilioWs) => {
   });
 });
 
-/**
- * ✅ Fly.io requires binding to 0.0.0.0
- * (Fixes "not listening on expected address" warnings)
- */
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Bridge listening on :${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Bridge listening on http://${HOST}:${PORT}`);
 });
