@@ -15,7 +15,7 @@ const HOST = process.env.HOST || "0.0.0.0";
 
 const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
 if (!OPENAI_API_KEY) {
-  console.error("Missing OPENAI_API_KEY");
+  console.error("Missing OPENAI_API_KEY (set it with: fly secrets set OPENAI_API_KEY=...)");
   process.exit(1);
 }
 
@@ -40,6 +40,7 @@ const TOOL_CALL_COOLDOWN_MS = Number(process.env.TOOL_CALL_COOLDOWN_MS || 2500);
 
 // Debug
 const DEBUG_OPENAI_EVENTS = (process.env.DEBUG_OPENAI_EVENTS || "").trim() === "1";
+const DEBUG_TWILIO_EVENTS = (process.env.DEBUG_TWILIO_EVENTS || "").trim() === "1";
 
 function nowIso() {
   return new Date().toISOString();
@@ -67,7 +68,6 @@ function wsSend(ws, obj) {
 function extractAudioDelta(msg) {
   if (!msg || typeof msg !== "object") return null;
 
-  // different variants have been seen in the wild
   if (msg.type === "response.audio.delta" && msg.delta) return msg.delta;
   if (msg.type === "response.output_audio.delta" && msg.delta) return msg.delta;
 
@@ -81,17 +81,40 @@ function extractAudioDelta(msg) {
   return null;
 }
 
+// --- simple diagnostics so you can see what’s missing/mismatched instantly ---
+const diag = {
+  startedAt: nowIso(),
+  model: REALTIME_MODEL,
+  voice: REALTIME_VOICE,
+  lastTwilioStartAt: null,
+  lastTwilioMediaAt: null,
+  lastOpenAiOpenAt: null,
+  lastOpenAiSessionUpdatedAt: null,
+  lastOpenAiErrorAt: null,
+  lastOpenAiError: null,
+  lastOutboundAudioAt: null,
+  lastInboundAudioAt: null,
+};
+
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, ts: nowIso() }));
     return;
   }
+
+  if (req.url === "/diag") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, ts: nowIso(), ...diag }, null, 2));
+    return;
+  }
+
   if (req.url === "/") {
     res.writeHead(200, { "content-type": "text/plain" });
     res.end("Foundzie Bridge is running");
     return;
   }
+
   res.writeHead(404);
   res.end("not found");
 });
@@ -226,7 +249,6 @@ wss.on("connection", (twilioWs) => {
       type: "response.create",
       response: {
         modalities: ["audio", "text"],
-        voice: REALTIME_VOICE,
         instructions,
       },
     });
@@ -260,7 +282,7 @@ wss.on("connection", (twilioWs) => {
       responseInProgress = true;
 
       createAudioResponse("Speak immediately. Say: “Hi, this is Foundzie. How can I help?”");
-    }, 1800);
+    }, 2000);
   }
 
   // Keepalive ping (Twilio only)
@@ -340,7 +362,7 @@ wss.on("connection", (twilioWs) => {
 
   function maybeCancelForBargeIn() {
     if (!openaiWs) return;
-    if (outboundAudioFrames <= 0) return; // only cancel if we were actually speaking
+    if (outboundAudioFrames <= 0) return;
     wsSend(openaiWs, { type: "response.cancel" });
     responseInProgress = false;
     clearPendingTimer();
@@ -390,6 +412,7 @@ wss.on("connection", (twilioWs) => {
     ws.on("open", () => {
       openaiConnecting = false;
       openaiReady = false; // wait for session.updated
+      diag.lastOpenAiOpenAt = nowIso();
       console.log("[openai] ws open -> session.update", { model: REALTIME_MODEL, voice: REALTIME_VOICE });
       sendSessionUpdate(ws);
     });
@@ -404,13 +427,15 @@ wss.on("connection", (twilioWs) => {
       }
 
       if (msg.type === "error") {
+        diag.lastOpenAiErrorAt = nowIso();
+        diag.lastOpenAiError = msg;
         console.error("[openai] error:", JSON.stringify(msg, null, 2));
         return;
       }
 
-      // Mark ready only after session.updated
       if (msg.type === "session.updated") {
         openaiReady = true;
+        diag.lastOpenAiSessionUpdatedAt = nowIso();
         console.log("[openai] session.updated -> ready");
         tryGreet();
         return;
@@ -421,7 +446,8 @@ wss.on("connection", (twilioWs) => {
       if (audioDelta && streamSid) {
         outboundAudioFrames += 1;
         if (outboundAudioFrames === 1) {
-          console.log("[audio] first outbound audio delta -> Twilio", { at: nowIso() });
+          diag.lastOutboundAudioAt = nowIso();
+          console.log("[audio] first outbound audio delta -> Twilio", { at: diag.lastOutboundAudioAt });
         }
 
         wsSend(twilioWs, { event: "media", streamSid, media: { payload: audioDelta } });
@@ -546,6 +572,8 @@ wss.on("connection", (twilioWs) => {
     });
 
     ws.on("error", (e) => {
+      diag.lastOpenAiErrorAt = nowIso();
+      diag.lastOpenAiError = String(e?.message || e);
       console.error("[openai] ws error:", e);
     });
   }
@@ -574,6 +602,8 @@ wss.on("connection", (twilioWs) => {
     const msg = safeJsonParse(data.toString());
     if (!msg) return;
 
+    if (DEBUG_TWILIO_EVENTS) console.log("[twilio:event]", msg.event);
+
     if (msg.event === "start") {
       streamSid = msg.start?.streamSid || null;
 
@@ -585,6 +615,8 @@ wss.on("connection", (twilioWs) => {
         from: String(cp.from || cp.FROM || "").trim(),
         source: String(cp.source || "").trim(),
       };
+
+      diag.lastTwilioStartAt = nowIso();
 
       console.log("[twilio] start", {
         streamSid,
@@ -600,15 +632,18 @@ wss.on("connection", (twilioWs) => {
     if (msg.event === "media") {
       const payload = msg.media?.payload;
       if (!payload) return;
-      if (!openaiReady) return;
 
       inboundMediaFrames += 1;
+      diag.lastTwilioMediaAt = nowIso();
+
       if (inboundMediaFrames === 1) {
-        console.log("[audio] first inbound Twilio media frame", { at: nowIso() });
+        diag.lastInboundAudioAt = nowIso();
+        console.log("[audio] first inbound Twilio media frame", { at: diag.lastInboundAudioAt });
       }
 
-      mediaFramesSinceLastResponse += 1;
+      if (!openaiReady) return;
 
+      mediaFramesSinceLastResponse += 1;
       wsSend(openaiWs, { type: "input_audio_buffer.append", audio: payload });
       return;
     }
