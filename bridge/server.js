@@ -6,6 +6,11 @@ import { WebSocketServer, WebSocket } from "ws";
  * - Receives Twilio Media Streams (g711_ulaw)
  * - Sends audio to OpenAI Realtime
  * - Sends audio back to Twilio
+ *
+ * Key Fixes:
+ * - STRICT single in-flight response (prevents "conversation_already_has_active_response")
+ * - Force-speak/watchdogs are gated + backoff (no spam loops)
+ * - Better diagnostics for silence
  */
 
 const PORT = Number(process.env.PORT || 8080);
@@ -17,7 +22,6 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
-// Keep overridable (hotfix without code change)
 const REALTIME_MODEL = (process.env.REALTIME_MODEL || "gpt-4o-realtime-preview").trim();
 const REALTIME_VOICE = (process.env.REALTIME_VOICE || "alloy").trim();
 
@@ -37,10 +41,14 @@ const OPENAI_RECONNECT_DELAY_MS = Number(process.env.OPENAI_RECONNECT_DELAY_MS |
 // Tool calling tuning
 const TOOL_CALL_COOLDOWN_MS = Number(process.env.TOOL_CALL_COOLDOWN_MS || 2500);
 
-// Debug (defaults OFF to avoid “waterfall”)
+// Debug (defaults OFF)
 const DEBUG_OPENAI_EVENTS = (process.env.DEBUG_OPENAI_EVENTS || "").trim() === "1";
 const DEBUG_TWILIO_EVENTS = (process.env.DEBUG_TWILIO_EVENTS || "").trim() === "1";
 const DEBUG_OPENAI_TEXT = (process.env.DEBUG_OPENAI_TEXT || "").trim() === "1";
+
+// Anti-spam safety
+const RESPONSE_CREATE_MIN_GAP_MS = Number(process.env.RESPONSE_CREATE_MIN_GAP_MS || 350);
+const FORCE_SPEAK_MAX_PER_CALL = Number(process.env.FORCE_SPEAK_MAX_PER_CALL || 3);
 
 function nowIso() {
   return new Date().toISOString();
@@ -71,7 +79,6 @@ function wsSend(ws, obj) {
 function extractAudioDelta(msg) {
   if (!msg || typeof msg !== "object") return null;
 
-  // Common
   if (
     (msg.type === "response.audio.delta" || msg.type === "response.output_audio.delta") &&
     msg.delta
@@ -79,7 +86,6 @@ function extractAudioDelta(msg) {
     return msg.delta;
   }
 
-  // Nested
   if (
     (msg.type === "response.audio.delta" || msg.type === "response.output_audio.delta") &&
     msg.audio?.delta
@@ -87,17 +93,14 @@ function extractAudioDelta(msg) {
     return msg.audio.delta;
   }
 
-  // Alternate
   if (msg.type === "output_audio.delta" && msg.delta) return msg.delta;
   if (msg.type === "output_audio.delta" && msg.output_audio?.delta) return msg.output_audio.delta;
 
-  // Output item shapes
   if (msg.type === "response.output_item.added") {
     const d = msg.item?.content?.[0]?.audio?.delta;
     if (d) return d;
   }
 
-  // Some builds emit delta events for output items
   if (msg.type === "response.output_item.delta") {
     const d = msg.delta?.content?.[0]?.audio?.delta;
     if (d) return d;
@@ -147,12 +150,10 @@ const diag = {
   lastOutboundTextAt: null,
   lastOutboundTextSample: null,
 
-  // New: why silent?
   lastResponseDoneAt: null,
   lastResponseDoneSample: null,
   responseDoneNoOutputCount: 0,
 
-  // Counters
   counters: {
     twilioMediaFrames: 0,
     twilioConnections: 0,
@@ -161,6 +162,7 @@ const diag = {
     openaiTextDeltas: 0,
     openaiResponseCreates: 0,
     openaiResponseDones: 0,
+    openaiActiveResponseErrors: 0,
   },
 };
 
@@ -205,25 +207,33 @@ wss.on("connection", (twilioWs, req) => {
   let openaiReconnects = 0;
   let openaiReady = false;
 
-  // Response state
-  let responseInProgress = false;
-  let mediaFramesSinceLastResponse = 0;
+  // STRICT response gate
+  let responseInFlight = false;
+  let lastResponseCreateAtMs = 0;
 
-  // Greeting
-  let greeted = false;
+  // Per-response output counters (used to detect silent response)
+  let respOutboundAudioFrames = 0;
+  let respOutboundTextPieces = 0;
+
+  // Call counters
+  let inboundMediaFrames = 0;
+  let outboundAudioFramesTotal = 0;
+
+  // Speech tracking
+  let mediaFramesSinceLastResponse = 0;
   let pendingResponseTimer = null;
-  let greetingRetryTimer = null;
+
+  // Greeting/force-speak controls
+  let greeted = false;
   let audioWatchdogTimer = null;
+  let greetingRetryTimer = null;
+  let forceSpeakCount = 0;
+  let queuedForceSpeakReason = null;
 
   // Tool buffers
   const toolArgBuffers = new Map(); // call_id -> string
   const toolCooldownMap = new Map(); // fp -> lastTimeMs
   const seenToolKeys = new Set(); // exact args, short TTL
-
-  // Per-call counters
-  let outboundAudioFrames = 0;
-  let outboundTextPieces = 0;
-  let inboundMediaFrames = 0;
 
   let closed = false;
 
@@ -237,14 +247,14 @@ wss.on("connection", (twilioWs, req) => {
     closed = true;
 
     pendingResponseTimer = clearTimer(pendingResponseTimer);
-    greetingRetryTimer = clearTimer(greetingRetryTimer);
     audioWatchdogTimer = clearTimer(audioWatchdogTimer);
+    greetingRetryTimer = clearTimer(greetingRetryTimer);
 
     clearInterval(pingInterval);
 
     console.log("[bridge] shutdown:", reason || "unknown", {
       inboundMediaFrames,
-      outboundAudioFrames,
+      outboundAudioFramesTotal,
       streamSid,
       callSid: custom.callSid || null,
       roomId: custom.roomId || null,
@@ -306,12 +316,46 @@ wss.on("connection", (twilioWs, req) => {
     return { blocked: false, fp, remainingMs: 0 };
   }
 
-  /**
-   * ✅ CRITICAL FIX: keep response.create MINIMAL (compat across Realtime builds).
-   * Voice + formats are set in session.update only.
-   */
-  function createResponse(instructions) {
+  // ---------- Response gating helpers ----------
+
+  function canCreateResponseNow() {
+    if (!openaiReady || !openaiWs) return false;
+    if (responseInFlight) return false;
+    const now = Date.now();
+    if (now - lastResponseCreateAtMs < RESPONSE_CREATE_MIN_GAP_MS) return false;
+    return true;
+  }
+
+  function markResponseCreate() {
+    responseInFlight = true;
+    lastResponseCreateAtMs = Date.now();
+    respOutboundAudioFrames = 0;
+    respOutboundTextPieces = 0;
     diag.counters.openaiResponseCreates += 1;
+  }
+
+  function markResponseDone(msg) {
+    responseInFlight = false;
+    diag.counters.openaiResponseDones += 1;
+    diag.lastResponseDoneAt = nowIso();
+    diag.lastResponseDoneSample = msg;
+
+    // If it finished but no outputs, count it
+    if (respOutboundAudioFrames === 0 && respOutboundTextPieces === 0) {
+      diag.responseDoneNoOutputCount += 1;
+    }
+
+    // If we queued a force-speak while busy, run it now
+    if (queuedForceSpeakReason) {
+      const reason = queuedForceSpeakReason;
+      queuedForceSpeakReason = null;
+      safeForceSpeak(reason);
+    }
+  }
+
+  function createResponse(instructions) {
+    if (!canCreateResponseNow()) return false;
+    markResponseCreate();
     return wsSend(openaiWs, {
       type: "response.create",
       response: {
@@ -332,18 +376,25 @@ wss.on("connection", (twilioWs, req) => {
     });
   }
 
-  /**
-   * If OpenAI returns response.done with no deltas,
-   * we force a user message + response.create (works on stricter builds).
-   */
-  function forceSpeakNow(reason) {
-    if (!openaiReady) return;
-    if (!openaiWs) return;
+  function safeForceSpeak(reason) {
+    if (!openaiReady || !openaiWs) return;
+    if (forceSpeakCount >= FORCE_SPEAK_MAX_PER_CALL) {
+      console.log("[bridge] forceSpeak suppressed (max reached)", { reason });
+      return;
+    }
 
-    console.log("[bridge] forceSpeakNow:", reason);
+    // If a response is already running, queue it once
+    if (responseInFlight) {
+      queuedForceSpeakReason = queuedForceSpeakReason || reason;
+      return;
+    }
+
+    forceSpeakCount += 1;
+    console.log("[bridge] forceSpeakNow:", reason, { count: forceSpeakCount });
 
     createUserMessage("Call connected. Speak a short greeting now.");
     createResponse("Greet the caller in ONE short sentence, then ask: “How can I help?”");
+    armAudioWatchdog("force_speak");
   }
 
   function armAudioWatchdog(label) {
@@ -351,10 +402,11 @@ wss.on("connection", (twilioWs, req) => {
     audioWatchdogTimer = setTimeout(() => {
       if (closed) return;
       if (!openaiReady) return;
-      if (outboundAudioFrames > 0) return; // audio arrived, good
-      // no audio arrived after response.create
+      // If we already produced audio for the current response, don't fire
+      if (respOutboundAudioFrames > 0) return;
+
       console.log("[bridge] audio watchdog fired:", label);
-      forceSpeakNow(`audio_watchdog:${label}`);
+      safeForceSpeak(`audio_watchdog:${label}`);
     }, 1700);
   }
 
@@ -364,17 +416,19 @@ wss.on("connection", (twilioWs, req) => {
     if (!streamSid) return;
 
     greeted = true;
-    responseInProgress = true;
-    outboundAudioFrames = 0;
-    outboundTextPieces = 0;
-
     console.log("[bridge] greeting triggered");
 
-    createResponse(
+    const ok = createResponse(
       "You are Foundzie on a REAL phone call. Speak naturally and warmly. " +
         "Do NOT explain capabilities or policies. " +
         "Greet the caller in ONE short sentence, then ask: “How can I help?”"
     );
+
+    if (!ok) {
+      // If we couldn't create yet, queue it via forceSpeak mechanism
+      safeForceSpeak("greet_create_blocked");
+      return;
+    }
 
     armAudioWatchdog("greet");
 
@@ -382,9 +436,10 @@ wss.on("connection", (twilioWs, req) => {
     greetingRetryTimer = setTimeout(() => {
       if (closed) return;
       if (!openaiReady) return;
-      if (outboundAudioFrames > 0) return;
+      if (respOutboundAudioFrames > 0) return;
+
       console.log("[bridge] greeting retry: still no outbound audio deltas observed");
-      forceSpeakNow("greeting_retry_no_audio");
+      safeForceSpeak("greeting_retry_no_audio");
     }, 2600);
   }
 
@@ -457,19 +512,26 @@ wss.on("connection", (twilioWs, req) => {
       },
     });
 
-    createResponse(
+    // Only create a response if not already in flight
+    const ok = createResponse(
       "Continue naturally. If the tool succeeded, confirm briefly. " +
         "If it failed, apologize briefly and ask ONE question."
     );
+
+    if (!ok) {
+      // queue a single follow-up attempt
+      queuedForceSpeakReason = queuedForceSpeakReason || "tool_result_followup";
+    }
 
     armAudioWatchdog("tool_result");
   }
 
   function maybeCancelForBargeIn() {
     if (!openaiWs) return;
-    if (outboundAudioFrames <= 0) return;
+    if (respOutboundAudioFrames <= 0) return;
+
     wsSend(openaiWs, { type: "response.cancel" });
-    responseInProgress = false;
+    responseInFlight = false;
     pendingResponseTimer = clearTimer(pendingResponseTimer);
   }
 
@@ -518,6 +580,7 @@ wss.on("connection", (twilioWs, req) => {
       openaiConnecting = false;
       openaiReady = false;
       diag.lastOpenAiOpenAt = nowIso();
+
       console.log("[openai] ws open -> session.update", { model: REALTIME_MODEL, voice: REALTIME_VOICE });
       sendSessionUpdate(ws);
     });
@@ -534,6 +597,14 @@ wss.on("connection", (twilioWs, req) => {
       if (msg.type === "error") {
         diag.lastOpenAiErrorAt = nowIso();
         diag.lastOpenAiError = msg;
+
+        const code = msg?.error?.code || msg?.error?.type || "";
+        if (code === "conversation_already_has_active_response") {
+          diag.counters.openaiActiveResponseErrors += 1;
+          // Treat as: response is in flight; do NOT spam new creates
+          responseInFlight = true;
+        }
+
         console.error("[openai] error:", JSON.stringify(msg, null, 2));
         return;
       }
@@ -549,10 +620,11 @@ wss.on("connection", (twilioWs, req) => {
       // Audio from OpenAI -> Twilio
       const audioDelta = extractAudioDelta(msg);
       if (audioDelta && streamSid) {
-        outboundAudioFrames += 1;
+        respOutboundAudioFrames += 1;
+        outboundAudioFramesTotal += 1;
         diag.counters.openaiAudioDeltas += 1;
 
-        if (outboundAudioFrames === 1) {
+        if (outboundAudioFramesTotal === 1) {
           diag.lastOutboundAudioAt = nowIso();
           console.log("[audio] first outbound audio delta -> Twilio", { at: diag.lastOutboundAudioAt });
         }
@@ -561,10 +633,10 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // Text deltas (record even if DEBUG_OPENAI_TEXT is off)
+      // Text deltas
       const textDelta = extractTextDelta(msg);
       if (textDelta) {
-        outboundTextPieces += 1;
+        respOutboundTextPieces += 1;
         diag.counters.openaiTextDeltas += 1;
         diag.lastOutboundTextAt = nowIso();
         diag.lastOutboundTextSample = String(textDelta).slice(0, 180);
@@ -573,23 +645,23 @@ wss.on("connection", (twilioWs, req) => {
 
       // Response lifecycle
       if (msg.type === "response.created" || msg.type === "response.started") {
-        responseInProgress = true;
+        responseInFlight = true;
         return;
       }
 
-      if (msg.type === "response.done" || msg.type === "response.completed" || msg.type === "response.stopped") {
-        diag.counters.openaiResponseDones += 1;
-        diag.lastResponseDoneAt = nowIso();
-        diag.lastResponseDoneSample = msg;
+      if (
+        msg.type === "response.done" ||
+        msg.type === "response.completed" ||
+        msg.type === "response.stopped"
+      ) {
+        markResponseDone(msg);
 
-        // If we got a done but NO audio AND NO text, that’s the silent failure we need to catch.
-        if (outboundAudioFrames === 0 && outboundTextPieces === 0) {
-          diag.responseDoneNoOutputCount += 1;
-          console.log("[openai] response.done with NO output (no audio/text) -> forcing speak");
-          forceSpeakNow("response_done_no_output");
+        // If NO output, attempt a single gated force-speak
+        if (respOutboundAudioFrames === 0 && respOutboundTextPieces === 0) {
+          console.log("[openai] response.done with NO output -> gated forceSpeak");
+          safeForceSpeak("response_done_no_output");
         }
 
-        responseInProgress = false;
         mediaFramesSinceLastResponse = 0;
         pendingResponseTimer = clearTimer(pendingResponseTimer);
         return;
@@ -597,29 +669,26 @@ wss.on("connection", (twilioWs, req) => {
 
       // Barge-in
       if (msg.type === "input_audio_buffer.speech_started") {
-        if (responseInProgress) maybeCancelForBargeIn();
+        if (responseInFlight) maybeCancelForBargeIn();
         return;
       }
 
       // Speech stopped -> respond (debounced)
       if (msg.type === "input_audio_buffer.speech_stopped") {
-        if (responseInProgress) return;
+        if (responseInFlight) return;
         if (mediaFramesSinceLastResponse < MIN_MEDIA_FRAMES) return;
 
         pendingResponseTimer = clearTimer(pendingResponseTimer);
         pendingResponseTimer = setTimeout(() => {
           if (closed) return;
           if (!openaiReady) return;
-          if (responseInProgress) return;
+          if (responseInFlight) return;
           if (mediaFramesSinceLastResponse < MIN_MEDIA_FRAMES) return;
 
-          responseInProgress = true;
-          outboundAudioFrames = 0;
-          outboundTextPieces = 0;
-
           wsSend(openaiWs, { type: "input_audio_buffer.commit" });
-          createResponse("Reply briefly and naturally (1–2 sentences). Ask ONE question if needed.");
-          armAudioWatchdog("post_speech");
+
+          const ok = createResponse("Reply briefly and naturally (1–2 sentences). Ask ONE question if needed.");
+          if (ok) armAudioWatchdog("post_speech");
         }, SPEECH_STOP_DEBOUNCE_MS);
 
         return;
@@ -683,6 +752,7 @@ wss.on("connection", (twilioWs, req) => {
       console.log("[openai] closed");
       openaiReady = false;
       openaiConnecting = false;
+      responseInFlight = false;
 
       if (closed) return;
       if (twilioWs.readyState !== WebSocket.OPEN) return;
@@ -768,7 +838,6 @@ wss.on("connection", (twilioWs, req) => {
       diag.counters.twilioMediaFrames += 1;
       diag.lastTwilioMediaAt = nowIso();
 
-      // Don’t spam logs; only print first frame unless DEBUG_TWILIO_EVENTS=1
       if (inboundMediaFrames === 1) {
         diag.lastInboundAudioAt = nowIso();
         console.log("[audio] first inbound Twilio media frame", { at: diag.lastInboundAudioAt });
