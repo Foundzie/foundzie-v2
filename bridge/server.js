@@ -19,6 +19,11 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
+/**
+ * IMPORTANT:
+ * Keep this overridable via env.
+ * If your account/model changes, you can hot-fix without code changes.
+ */
 const REALTIME_MODEL = (process.env.REALTIME_MODEL || "gpt-4o-realtime-preview").trim();
 const REALTIME_VOICE = (process.env.REALTIME_VOICE || "alloy").trim();
 
@@ -41,6 +46,7 @@ const TOOL_CALL_COOLDOWN_MS = Number(process.env.TOOL_CALL_COOLDOWN_MS || 2500);
 // Debug
 const DEBUG_OPENAI_EVENTS = (process.env.DEBUG_OPENAI_EVENTS || "").trim() === "1";
 const DEBUG_TWILIO_EVENTS = (process.env.DEBUG_TWILIO_EVENTS || "").trim() === "1";
+const DEBUG_OPENAI_TEXT = (process.env.DEBUG_OPENAI_TEXT || "").trim() === "1";
 
 function nowIso() {
   return new Date().toISOString();
@@ -65,23 +71,57 @@ function wsSend(ws, obj) {
   }
 }
 
+/**
+ * Realtime has multiple possible audio delta shapes across versions.
+ * We extract from all common variants.
+ */
 function extractAudioDelta(msg) {
   if (!msg || typeof msg !== "object") return null;
 
-  if (msg.type === "response.audio.delta" && msg.delta) return msg.delta;
-  if (msg.type === "response.output_audio.delta" && msg.delta) return msg.delta;
+  // Most common
+  if ((msg.type === "response.audio.delta" || msg.type === "response.output_audio.delta") && msg.delta) {
+    return msg.delta;
+  }
 
-  if (
-    (msg.type === "response.audio.delta" || msg.type === "response.output_audio.delta") &&
-    msg.audio?.delta
-  ) {
+  // Nested
+  if ((msg.type === "response.audio.delta" || msg.type === "response.output_audio.delta") && msg.audio?.delta) {
     return msg.audio.delta;
+  }
+
+  // Alternate newer shapes
+  if (msg.type === "output_audio.delta" && msg.delta) return msg.delta;
+  if (msg.type === "output_audio.delta" && msg.output_audio?.delta) return msg.output_audio.delta;
+
+  // Some builds send audio chunks inside response output items
+  if (msg.type === "response.output_item.added") {
+    const d = msg.item?.content?.[0]?.audio?.delta;
+    if (d) return d;
   }
 
   return null;
 }
 
-// --- simple diagnostics so you can see what’s missing/mismatched instantly ---
+/**
+ * Optional: detect text-only streaming so we can prove whether model is responding without audio.
+ */
+function extractTextDelta(msg) {
+  if (!msg || typeof msg !== "object") return null;
+
+  // Common text delta events
+  if (msg.type === "response.text.delta" && typeof msg.delta === "string") return msg.delta;
+  if (msg.type === "response.output_text.delta" && typeof msg.delta === "string") return msg.delta;
+
+  // Output item shapes
+  if (msg.type === "response.output_item.added") {
+    const t = msg.item?.content?.[0]?.text;
+    if (typeof t === "string") return t;
+    if (typeof t?.value === "string") return t.value;
+  }
+
+  return null;
+}
+
+// --- diagnostics ---
 const diag = {
   startedAt: nowIso(),
   model: REALTIME_MODEL,
@@ -94,6 +134,8 @@ const diag = {
   lastOpenAiError: null,
   lastOutboundAudioAt: null,
   lastInboundAudioAt: null,
+  lastOutboundTextAt: null,
+  lastOutboundTextSample: null,
 };
 
 const server = http.createServer((req, res) => {
@@ -119,6 +161,7 @@ const server = http.createServer((req, res) => {
   res.end("not found");
 });
 
+// IMPORTANT: Twilio Stream URL must include this path:
 const wss = new WebSocketServer({ server, path: "/twilio/stream" });
 
 wss.on("connection", (twilioWs) => {
@@ -134,7 +177,7 @@ wss.on("connection", (twilioWs) => {
   let openaiConnecting = false;
   let openaiReconnects = 0;
 
-  // IMPORTANT: only true after session.updated
+  // Only true after session.updated
   let openaiReady = false;
 
   // Response state
@@ -243,12 +286,18 @@ wss.on("connection", (twilioWs) => {
     return { blocked: false, fp, remainingMs: 0 };
   }
 
+  /**
+   * CRITICAL FIX:
+   * In addition to session.update, we explicitly ask for audio in response.create,
+   * including voice + format to avoid “text-only done” responses.
+   */
   function createAudioResponse(instructions) {
-    // Always request BOTH audio + text
     return wsSend(openaiWs, {
       type: "response.create",
       response: {
         modalities: ["audio", "text"],
+        voice: REALTIME_VOICE,
+        output_audio_format: "g711_ulaw",
         instructions,
       },
     });
@@ -369,7 +418,6 @@ wss.on("connection", (twilioWs) => {
   }
 
   function sendSessionUpdate(ws) {
-    // CRITICAL: do not send session.type or any extra keys
     wsSend(ws, {
       type: "session.update",
       session: {
@@ -411,7 +459,7 @@ wss.on("connection", (twilioWs) => {
   function attachOpenAiHandlers(ws) {
     ws.on("open", () => {
       openaiConnecting = false;
-      openaiReady = false; // wait for session.updated
+      openaiReady = false;
       diag.lastOpenAiOpenAt = nowIso();
       console.log("[openai] ws open -> session.update", { model: REALTIME_MODEL, voice: REALTIME_VOICE });
       sendSessionUpdate(ws);
@@ -452,6 +500,14 @@ wss.on("connection", (twilioWs) => {
 
         wsSend(twilioWs, { event: "media", streamSid, media: { payload: audioDelta } });
         return;
+      }
+
+      // Optional: text deltas (debugging only)
+      const textDelta = extractTextDelta(msg);
+      if (textDelta && DEBUG_OPENAI_TEXT) {
+        diag.lastOutboundTextAt = nowIso();
+        diag.lastOutboundTextSample = String(textDelta).slice(0, 180);
+        console.log("[text] delta:", String(textDelta).slice(0, 200));
       }
 
       // Response lifecycle

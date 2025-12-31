@@ -1,4 +1,3 @@
-// src/app/api/twilio/voice/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { kvSetJSON } from "@/lib/kv/redis";
 
@@ -36,16 +35,14 @@ function getBaseUrl(): string {
 const FALLBACK_TTS_VOICE =
   (process.env.TWILIO_FALLBACK_VOICE || "").trim() || "Polly.Joanna-Neural";
 
-// ✅ short message so caller ALWAYS hears something immediately (no dead air)
 function buildPreStreamSay(marker: string) {
   const msg =
     (process.env.TWILIO_PRE_STREAM_SAY || "").trim() ||
     "Connecting you to Foundzie now.";
   return `
   <!-- FOUNDZIE_PRE_STREAM ${escapeForXml(marker)} -->
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(
-    msg
-  )}</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(msg)}</Say>
+  <Pause length="1"/>
   `.trim();
 }
 
@@ -92,7 +89,6 @@ function buildStreamTwiml(opts: {
   const safeCallSid = escapeForXml((opts.callSid || "").trim());
   const safeFrom = escapeForXml((opts.from || "").trim());
 
-  // Optional: Stream status callback (useful for debugging)
   const statusCb = `${base}/api/twilio/status`;
 
   if (!wss) {
@@ -127,7 +123,6 @@ function buildStreamTwiml(opts: {
 function activeCallKey(roomId: string) {
   return `foundzie:twilio:active-call:${roomId}:v1`;
 }
-
 const LAST_ACTIVE_KEY = "foundzie:twilio:last-active-call:v1";
 
 async function persistActiveCall(roomId: string, callSid: string, from: string) {
@@ -167,8 +162,8 @@ export async function GET(req: NextRequest) {
     process.env.VERCEL_GITHUB_COMMIT_SHA ||
     "sha-unknown";
 
-  const wssPresent = !!(process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
-  const marker = `mode=STREAM sha=${sha} wssPresent=${wssPresent} method=GET`;
+  const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
+  const marker = `mode=STREAM sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=GET`;
 
   const roomId = (url.searchParams.get("roomId") || "").trim();
 
@@ -194,7 +189,8 @@ export async function POST(req: NextRequest) {
     process.env.VERCEL_GITHUB_COMMIT_SHA ||
     "sha-unknown";
 
-  const wssPresent = !!(process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
+  const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
+  const marker = `mode=STREAM sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=POST`;
 
   const roomIdFromQuery = (url.searchParams.get("roomId") || "").trim();
 
@@ -209,8 +205,6 @@ export async function POST(req: NextRequest) {
     roomIdFromQuery || (callSid ? `call:${callSid}` : from ? `phone:${from}` : "");
 
   await persistActiveCall(roomId, callSid, from);
-
-  const marker = `mode=STREAM sha=${sha} wssPresent=${wssPresent} method=POST`;
 
   return twiml(
     buildStreamTwiml({
