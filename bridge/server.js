@@ -8,6 +8,11 @@ import { WebSocketServer, WebSocket } from "ws";
  * - Sends audio back to Twilio
  * - Tool calling:
  *     POST {BASE}/api/tools/call_third_party
+ *
+ * DEFENSIVE FIX:
+ * Twilio should connect to: wss://<host>/twilio/stream
+ * But if the env accidentally points Twilio to just: wss://<host>
+ * we also accept "/" so calls don't fail.
  */
 
 const PORT = Number(process.env.PORT || 8080);
@@ -161,11 +166,26 @@ const server = http.createServer((req, res) => {
   res.end("not found");
 });
 
-// IMPORTANT: Twilio Stream URL must include this path:
-const wss = new WebSocketServer({ server, path: "/twilio/stream" });
+/**
+ * IMPORTANT FIX:
+ * Don't lock to a single ws path here.
+ * We'll accept BOTH "/" and "/twilio/stream" in the connection handler.
+ *
+ * This prevents failures when the Twilio Stream URL env is missing "/twilio/stream".
+ */
+const wss = new WebSocketServer({ server });
 
-wss.on("connection", (twilioWs) => {
-  console.log("[twilio] ws connected");
+wss.on("connection", (twilioWs, req) => {
+  const url = (req?.url || "").split("?")[0] || "";
+  const allowed = url === "/" || url === "/twilio/stream";
+
+  if (!allowed) {
+    console.warn("[twilio] ws rejected (bad path)", { url });
+    try { twilioWs.close(1008, "invalid path"); } catch {}
+    return;
+  }
+
+  console.log("[twilio] ws connected", { url });
 
   let streamSid = null;
 
@@ -287,8 +307,7 @@ wss.on("connection", (twilioWs) => {
   }
 
   /**
-   * CRITICAL FIX:
-   * In addition to session.update, we explicitly ask for audio in response.create,
+   * In addition to session.update, explicitly ask for audio in response.create,
    * including voice + format to avoid “text-only done” responses.
    */
   function createAudioResponse(instructions) {
