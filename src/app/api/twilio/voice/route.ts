@@ -35,36 +35,6 @@ function getBaseUrl(): string {
 const FALLBACK_TTS_VOICE =
   (process.env.TWILIO_FALLBACK_VOICE || "").trim() || "Polly.Joanna-Neural";
 
-function buildMessageTwiml(message: string) {
-  const safe = escapeForXml((message || "").trim().slice(0, 900));
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${safe}</Say>
-  <Hangup/>
-</Response>`;
-}
-
-function buildGatherFallbackVerbs(marker: string) {
-  const base = getBaseUrl();
-  const gatherUrl = `${base}/api/twilio/gather`;
-  const voiceUrl = `${base}/api/twilio/voice`;
-
-  return `
-  <!-- FOUNDZIE_FALLBACK ${escapeForXml(marker)} -->
-  <Gather input="speech" action="${escapeForXml(
-    gatherUrl
-  )}" method="POST" timeout="7" speechTimeout="auto">
-    <Say voice="${escapeForXml(
-      FALLBACK_TTS_VOICE
-    )}">Hi, this is Foundzie. How can I help?</Say>
-  </Gather>
-  <Say voice="${escapeForXml(
-    FALLBACK_TTS_VOICE
-  )}">I didn’t catch that. Let’s try again.</Say>
-  <Redirect method="POST">${escapeForXml(voiceUrl)}</Redirect>
-  `.trim();
-}
-
 function buildStreamOnlyTwiml(opts: {
   marker: string;
   roomId?: string;
@@ -80,16 +50,14 @@ function buildStreamOnlyTwiml(opts: {
 
   const statusCb = `${base}/api/twilio/status`;
 
-  // If no stream configured, fall back to Gather
   if (!wss) {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  ${buildGatherFallbackVerbs(`${opts.marker} wss=EMPTY`)}
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Voice streaming is not configured.</Say>
+  <Hangup/>
 </Response>`;
   }
 
-  // ✅ IMPORTANT: Stream-first, NO pre-say, NO gather after stream.
-  // Anything after <Connect><Stream> will run when the stream ends naturally.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <!-- FOUNDZIE_STREAM ${escapeForXml(opts.marker)} -->
@@ -104,7 +72,6 @@ function buildStreamOnlyTwiml(opts: {
       ${safeFrom ? `<Parameter name="from" value="${safeFrom}" />` : ``}
     </Stream>
   </Connect>
-  <Hangup/>
 </Response>`;
 }
 
@@ -136,14 +103,16 @@ async function persistActiveCall(roomId: string, callSid: string, from: string) 
   }
 }
 
+/**
+ * GET /api/twilio/voice
+ * - mode=message&say=... -> speak message THEN return to Stream (no hangup)
+ * - otherwise -> Stream-first TwiML
+ */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
 
   const mode = (url.searchParams.get("mode") || "").trim();
   const say = (url.searchParams.get("say") || "").trim();
-  if (mode === "message" && say) {
-    return twiml(buildMessageTwiml(say));
-  }
 
   const sha =
     process.env.VERCEL_GIT_COMMIT_SHA ||
@@ -151,16 +120,23 @@ export async function GET(req: NextRequest) {
     "sha-unknown";
 
   const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
-  const marker = `mode=STREAM sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=GET`;
 
+  // ✅ message mode: say then return to streaming
+  if (mode === "message" && say) {
+    const roomId = (url.searchParams.get("roomId") || "").trim();
+    const marker = `mode=MESSAGE->STREAM sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=GET`;
+
+    return twiml(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(say.slice(0, 900))}</Say>
+  ${buildStreamOnlyTwiml({ marker, roomId: roomId || undefined })}
+</Response>`);
+  }
+
+  const marker = `mode=STREAM sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=GET`;
   const roomId = (url.searchParams.get("roomId") || "").trim();
 
-  return twiml(
-    buildStreamOnlyTwiml({
-      marker,
-      roomId: roomId || undefined,
-    })
-  );
+  return twiml(buildStreamOnlyTwiml({ marker, roomId: roomId || undefined }));
 }
 
 export async function POST(req: NextRequest) {
@@ -168,9 +144,6 @@ export async function POST(req: NextRequest) {
 
   const mode = (url.searchParams.get("mode") || "").trim();
   const say = (url.searchParams.get("say") || "").trim();
-  if (mode === "message" && say) {
-    return twiml(buildMessageTwiml(say));
-  }
 
   const sha =
     process.env.VERCEL_GIT_COMMIT_SHA ||
@@ -178,11 +151,24 @@ export async function POST(req: NextRequest) {
     "sha-unknown";
 
   const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
+
+  // ✅ message mode: say then return to streaming
+  if (mode === "message" && say) {
+    const roomId = (url.searchParams.get("roomId") || "").trim();
+    const marker = `mode=MESSAGE->STREAM sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=POST`;
+
+    return twiml(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(say.slice(0, 900))}</Say>
+  ${buildStreamOnlyTwiml({ marker, roomId: roomId || undefined })}
+</Response>`);
+  }
+
   const marker = `mode=STREAM sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=POST`;
 
   const roomIdFromQuery = (url.searchParams.get("roomId") || "").trim();
-
   const form = await req.formData().catch(() => null);
+
   const callSidRaw = form ? form.get("CallSid") : null;
   const fromRaw = form ? form.get("From") : null;
 

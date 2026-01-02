@@ -11,9 +11,6 @@ function escapeForXml(text: string): string {
     .replace(/'/g, "&apos;");
 }
 
-const FALLBACK_TTS_VOICE =
-  (process.env.TWILIO_FALLBACK_VOICE || "").trim() || "Polly.Joanna-Neural";
-
 function getBaseUrl(): string {
   const explicit = process.env.TWILIO_BASE_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
@@ -27,6 +24,9 @@ function getBaseUrl(): string {
   return "https://foundzie-v2.vercel.app";
 }
 
+const FALLBACK_TTS_VOICE =
+  (process.env.TWILIO_FALLBACK_VOICE || "").trim() || "Polly.Joanna-Neural";
+
 function twiml(xml: string) {
   return new NextResponse(xml, {
     status: 200,
@@ -36,23 +36,28 @@ function twiml(xml: string) {
 
 /**
  * GET/POST /api/twilio/hold?sid=<sessionId>
- * ✅ Plays hold music continuously (no repeated robotic reassurance loops)
+ * ✅ Safe "hold loop" that doesn't depend on unreliable external MP3s.
+ * - Plays Twilio-hosted music (reliable)
+ * - Loops using Redirect (no robotic repeated voice lines)
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const sid = (url.searchParams.get("sid") || "").trim();
 
-  // You can set your own MP3 via env
+  const base = getBaseUrl();
+  const self = `${base}/api/twilio/hold?sid=${encodeURIComponent(sid)}`;
+
+  // ✅ Twilio-hosted reliable audio
   const holdMusic =
     (process.env.TWILIO_HOLD_MUSIC_URL || "").trim() ||
-    // safe default (replace later with your preferred track)
-    "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Kevin_MacLeod/Classical_Sampler/Kevin_MacLeod_-_Gymnopedie_No_1.mp3";
+    "https://com.twilio.music.classical.s3.amazonaws.com/BusyStrings.mp3";
 
   return twiml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <!-- FOUNDZIE_HOLD sid=${escapeForXml(sid)} base=${escapeForXml(getBaseUrl())} -->
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">One moment.</Say>
-  <Play loop="0">${escapeForXml(holdMusic)}</Play>
+  <!-- FOUNDZIE_HOLD sid=${escapeForXml(sid)} -->
+  <Play>${escapeForXml(holdMusic)}</Play>
+  <Pause length="1"/>
+  <Redirect method="GET">${escapeForXml(self)}</Redirect>
 </Response>`);
 }
 
