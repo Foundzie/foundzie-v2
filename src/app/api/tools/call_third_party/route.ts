@@ -38,11 +38,6 @@ function normalizeE164(input: string): string {
   return raw;
 }
 
-function safeConfName(input: string) {
-  const s = (input || "foundzie-default").trim();
-  return s.replace(/[^a-zA-Z0-9:_-]/g, "-").slice(0, 80);
-}
-
 function activeCallKey(roomId: string) {
   return `foundzie:twilio:active-call:${roomId}:v1`;
 }
@@ -50,7 +45,7 @@ const LAST_ACTIVE_KEY = "foundzie:twilio:last-active-call:v1";
 
 /** cooldown key (fingerprinted) */
 function cooldownKey(kind: string, fingerprint: string) {
-  return `foundzie:tools:cooldown:${kind}:${fingerprint}:v3`;
+  return `foundzie:tools:cooldown:${kind}:${fingerprint}:v4`;
 }
 
 function fingerprintForCall(phone: string, message: string) {
@@ -72,9 +67,22 @@ async function resolveActiveCallSid(roomId?: string) {
   return { callSid: "", from: "" };
 }
 
+function relaySessionKey(id: string) {
+  return `foundzie:relay:${id}:v1`;
+}
+
+function makeSessionId() {
+  return `relay-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 /**
  * POST /api/tools/call_third_party
  * Body: { phone, message, roomId?, callSid? }
+ *
+ * ✅ NO CONFERENCE:
+ * - Put caller on a "hold loop" (separate leg)
+ * - Dial recipient, deliver message, ask for reply, then hang up
+ * - Redirect caller back with result
  */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as any;
@@ -88,11 +96,12 @@ export async function POST(req: NextRequest) {
   if (roomId === "current") roomId = "";
   if (callSid === "current") callSid = "";
 
+  // ✅ Guardrails: block empty args
   if (!phone || !message) {
     return json({ ok: false, message: "Missing phone or message." }, 400);
   }
 
-  // Resolve active callSid for redirect
+  // Resolve active callSid for caller leg
   if (!callSid) {
     const resolved = await resolveActiveCallSid(roomId);
     callSid = resolved.callSid || "";
@@ -103,13 +112,13 @@ export async function POST(req: NextRequest) {
       {
         ok: false,
         message:
-          "Missing active callSid. Ensure /api/twilio/voice stores LAST_ACTIVE_KEY (or pass callSid via Twilio Stream customParameters).",
+          "Missing active callSid. Ensure /api/twilio/voice stores LAST_ACTIVE_KEY (or pass callSid).",
       },
       400
     );
   }
 
-  // Cooldown
+  // Cooldown (dedupe repeated tool calls)
   const COOLDOWN_SECONDS = Number(process.env.TOOL_CALL_COOLDOWN_SECONDS || 8);
   const fp = fingerprintForCall(phone, message);
   const cdKey = cooldownKey("call_third_party", fp);
@@ -138,17 +147,27 @@ export async function POST(req: NextRequest) {
   await kvSetJSON(cdKey, { at: new Date().toISOString() }).catch(() => null);
 
   const base = getBaseUrl();
-  const conf = safeConfName(roomId ? `foundzie-${roomId}` : `foundzie-${callSid}`);
+  const sessionId = makeSessionId();
 
-  // 1) Redirect active caller into conference
-  const joinUrl = `${base}/api/twilio/conference/join?conf=${encodeURIComponent(conf)}`;
-  const redirectResult = await redirectTwilioCall(callSid, joinUrl).catch((e: any) => {
+  // Persist session state so /twilio/relay can store reply + finalize caller
+  await kvSetJSON(relaySessionKey(sessionId), {
+    sessionId,
+    roomId: roomId || null,
+    callerCallSid: callSid,
+    toPhone: phone,
+    message,
+    status: "created",
+    createdAt: new Date().toISOString(),
+  }).catch(() => null);
+
+  // 1) Put caller on hold (separate leg, no conference)
+  const holdUrl = `${base}/api/twilio/hold?sid=${encodeURIComponent(sessionId)}`;
+  const redirectResult = await redirectTwilioCall(callSid, holdUrl).catch((e: any) => {
     return { error: String(e?.message || e) };
   });
-
   const callerRedirected = !!(redirectResult as any)?.sid;
 
-  // 2) Dial third party and play message (bridge route always delivers message)
+  // 2) Dial recipient and run relay flow
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
   const from = process.env.TWILIO_PHONE_NUMBER;
@@ -159,16 +178,15 @@ export async function POST(req: NextRequest) {
         ok: false,
         message: "Twilio env vars missing (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER).",
         steps: { callerRedirected },
-        urls: { joinUrl },
+        urls: { holdUrl },
       },
       500
     );
   }
 
-  const bridgeUrl =
-    `${base}/api/twilio/conference/bridge` +
-    `?conf=${encodeURIComponent(conf)}` +
-    `&text=${encodeURIComponent(message)}`;
+  const relayUrl =
+    `${base}/api/twilio/relay?sid=${encodeURIComponent(sessionId)}` +
+    `&roomId=${encodeURIComponent(roomId || "")}`;
 
   const client = twilio(sid, token);
 
@@ -177,41 +195,71 @@ export async function POST(req: NextRequest) {
     callee = await client.calls.create({
       to: phone,
       from,
-      url: bridgeUrl,
+      url: relayUrl,
       method: "GET",
+      statusCallback: `${base}/api/twilio/status`,
+      statusCallbackMethod: "POST",
+      statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
     });
   } catch (e: any) {
+    await kvSetJSON(relaySessionKey(sessionId), {
+      sessionId,
+      roomId: roomId || null,
+      callerCallSid: callSid,
+      toPhone: phone,
+      message,
+      status: "callee_create_failed",
+      error: String(e?.message || e),
+      updatedAt: new Date().toISOString(),
+    }).catch(() => null);
+
+    // try to pull caller back with failure message
+    const failMsg =
+      "I tried calling them, but the call didn’t go through. Want me to try again or text them instead?";
+    await redirectTwilioCall(callSid, `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(failMsg)}`).catch(
+      () => null
+    );
+
     return json(
       {
         ok: false,
         message: "Failed to create outbound call via Twilio.",
         error: String(e?.message || e),
         phone,
-        conf,
-        base,
+        sessionId,
         steps: { callerRedirected, calleeDialed: false },
-        urls: { joinUrl, bridgeUrl },
+        urls: { holdUrl, relayUrl },
         twilio: { redirect: redirectResult },
       },
       502
     );
   }
 
+  await kvSetJSON(relaySessionKey(sessionId), {
+    sessionId,
+    roomId: roomId || null,
+    callerCallSid: callSid,
+    toPhone: phone,
+    message,
+    status: "callee_dialed",
+    calleeSid: callee?.sid ?? null,
+    updatedAt: new Date().toISOString(),
+  }).catch(() => null);
+
   return json({
     ok: true,
     phone,
     roomId: roomId || null,
     callSid,
-    conf,
-    base,
+    sessionId,
     cooldownSeconds: COOLDOWN_SECONDS,
     steps: {
       callerRedirected,
       calleeDialed: !!callee?.sid,
     },
     urls: {
-      joinUrl,
-      bridgeUrl,
+      holdUrl,
+      relayUrl,
     },
     twilio: {
       redirect: (redirectResult as any)?.sid ? { sid: (redirectResult as any).sid } : redirectResult,

@@ -3,8 +3,6 @@ import "server-only";
 
 import { addEvent, updateEvent, type SosStatus } from "@/app/api/sos/store";
 import { addCallLog } from "@/app/api/calls/store";
-import { startTwilioCall, redirectTwilioCall } from "@/lib/twilio";
-import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 
 import {
   mockNotifications,
@@ -30,34 +28,6 @@ function getBaseUrl(): string {
     return `https://${vercel.trim().replace(/\/+$/, "")}`;
 
   return "http://localhost:3000";
-}
-
-/* ------------------------------------------------------------------ */
-/* KV key for active call mapping (set by /api/twilio/voice)            */
-/* ------------------------------------------------------------------ */
-function activeCallKey(roomId: string) {
-  return `foundzie:twilio:active-call:${roomId}:v1`;
-}
-
-// Optional: store a "last seen call" pointer so tools can recover
-const LAST_ACTIVE_KEY = "foundzie:twilio:last-active-call:v1";
-
-type ActiveCallMapping = {
-  roomId: string;
-  callSid: string;
-  from?: string;
-  updatedAt?: string;
-};
-
-function normalizePhone(phone: string) {
-  const p = (phone || "").trim();
-  return p;
-}
-
-function safeConfName(raw: string) {
-  return (raw || "")
-    .replace(/[^a-zA-Z0-9:_-]/g, "-")
-    .slice(0, 128);
 }
 
 /* ------------------------------------------------------------------ */
@@ -136,192 +106,77 @@ export async function log_outbound_call(args: {
 }
 
 /* ------------------------------------------------------------------ */
-/* 2b) M14: Conference bridge tool (FIXED + robust)                     */
+/* 2b) call_third_party (RELAY MODE - NO CONFERENCE)                    */
 /* ------------------------------------------------------------------ */
-async function resolveActiveCallerCallSid(args: {
-  roomId?: string;
-  callSid?: string;
-  fromPhone?: string;
-}): Promise<{ callSid: string | null; source: string; mapping?: any }> {
-  const callSidDirect = (args.callSid || "").trim();
-  if (callSidDirect) return { callSid: callSidDirect, source: "direct" };
-
-  const roomId = (args.roomId || "").trim();
-  const fromPhone = normalizePhone(args.fromPhone || "");
-
-  // 1) Try roomId → mapping
-  if (roomId) {
-    try {
-      const mapping = await kvGetJSON<ActiveCallMapping>(activeCallKey(roomId));
-      if (mapping?.callSid) {
-        return { callSid: String(mapping.callSid).trim(), source: "roomId", mapping };
-      }
-    } catch (e) {
-      console.warn("[agent tool] resolveActiveCallerCallSid roomId lookup failed", e);
-    }
-  }
-
-  // 2) Try phone-based roomId (common when voice route picked phone:... automatically)
-  if (fromPhone) {
-    const phoneRoom = `phone:${fromPhone}`;
-    try {
-      const mapping = await kvGetJSON<ActiveCallMapping>(activeCallKey(phoneRoom));
-      if (mapping?.callSid) {
-        return { callSid: String(mapping.callSid).trim(), source: "phoneRoomId", mapping };
-      }
-    } catch (e) {
-      console.warn("[agent tool] resolveActiveCallerCallSid phoneRoom lookup failed", e);
-    }
-  }
-
-  // 3) Try "last active call" pointer (recovery)
-  try {
-    const last = await kvGetJSON<ActiveCallMapping>(LAST_ACTIVE_KEY);
-    if (last?.callSid) {
-      return { callSid: String(last.callSid).trim(), source: "lastActive", mapping: last };
-    }
-  } catch (e) {
-    console.warn("[agent tool] resolveActiveCallerCallSid lastActive lookup failed", e);
-  }
-
-  return { callSid: null, source: "none" };
-}
-
 /**
  * call_third_party
- * - Redirects ACTIVE caller into a conference
- * - Calls third party and joins them into same conference
+ * ✅ Uses server endpoint /api/tools/call_third_party
+ * That endpoint performs:
+ * - redirect caller to /api/twilio/hold
+ * - dial recipient via /api/twilio/relay (deliver message + capture reply)
+ * - redirect caller back with result
  */
 export async function call_third_party(args: {
   phone: string;
   message: string;
   roomId?: string;
   callSid?: string;
-
-  // optional (helps recover)
-  fromPhone?: string;
+  fromPhone?: string; // optional
 }) {
   const phone = typeof args.phone === "string" ? args.phone.trim() : "";
   const message = typeof args.message === "string" ? args.message.trim() : "";
-
   const roomId = typeof args.roomId === "string" ? args.roomId.trim() : "";
-  const callSidDirect = typeof args.callSid === "string" ? args.callSid.trim() : "";
-  const fromPhone = typeof args.fromPhone === "string" ? args.fromPhone.trim() : "";
+  const callSid = typeof args.callSid === "string" ? args.callSid.trim() : "";
 
   if (!phone) throw new Error("call_third_party: missing phone");
   if (!message) throw new Error("call_third_party: missing message");
 
   const baseUrl = getBaseUrl();
+  const url = `${baseUrl}/api/tools/call_third_party`;
 
-  const resolved = await resolveActiveCallerCallSid({
-    roomId,
-    callSid: callSidDirect,
-    fromPhone,
-  });
-
-  const callerCallSid = resolved.callSid || "";
-
-  // Stable conference name:
-  // prefer roomId, else callSid, else timestamp
-  const confBase =
-    roomId
-      ? `foundzie-${roomId}`
-      : callerCallSid
-        ? `foundzie-${callerCallSid}`
-        : `foundzie-${Date.now()}`;
-
-  const confName = safeConfName(confBase);
-
-  const joinUrl = `${baseUrl}/api/twilio/conference/join?conf=${encodeURIComponent(
-    confName
-  )}`;
-
-  const bridgeUrl =
-    `${baseUrl}/api/twilio/conference/bridge?conf=${encodeURIComponent(
-      confName
-    )}` + `&text=${encodeURIComponent(message)}`;
-
-  // If we can bridge, do it
-  let redirectedCaller = false;
-
-  if (callerCallSid) {
-    const redirectRes = await redirectTwilioCall(callerCallSid, joinUrl);
-    redirectedCaller = !!redirectRes;
-  }
-
-  if (redirectedCaller) {
-    // call third party into bridge url (say message then join conference)
-    const outbound = await startTwilioCall(phone, {
-      voiceUrl: bridgeUrl,
-      note: message,
-    });
-
-    // Log
-    try {
-      const id = `agent-bridge-${Date.now()}`;
-      await addCallLog({
-        id,
-        userId: null,
-        userName: null,
-        phone,
-        note: `Bridge call (conf=${confName}) via ${resolved.source}: ${message}`.slice(
-          0,
-          240
-        ),
-        direction: "outbound",
-      });
-    } catch {}
-
-    const payload = {
-      ok: Boolean(outbound),
-      mode: "conference" as const,
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({
       phone,
       message,
-      confName,
-      callerCallSid,
-      thirdPartySid: outbound?.sid ?? null,
-      resolvedCallSidSource: resolved.source,
-      resolvedMapping: resolved.mapping ?? null,
-    };
-
-    console.log("[agent tool] call_third_party →", payload);
-    return payload;
-  }
-
-  // Fallback if no active callSid found
-  const fallbackVoiceUrl =
-    `${baseUrl}/api/twilio/message?text=` + encodeURIComponent(message);
-
-  const fallback = await startTwilioCall(phone, {
-    voiceUrl: fallbackVoiceUrl,
-    note: message,
+      roomId: roomId || undefined,
+      callSid: callSid || undefined,
+      fromPhone:
+        typeof args.fromPhone === "string" ? args.fromPhone.trim() : undefined,
+    }),
   });
 
+  const data = await res.json().catch(() => ({} as any));
+
+  // Log for admin visibility
   try {
-    const id = `agent-thirdparty-${Date.now()}`;
+    const id = `agent-relay-${Date.now()}`;
     await addCallLog({
       id,
       userId: null,
       userName: null,
       phone,
-      note: `Third-party message (no-bridge): ${message}`.slice(0, 240),
+      note: `Relay call: ${message}`.slice(0, 240),
       direction: "outbound",
     });
   } catch {}
 
+  const ok = Boolean(data?.ok) && res.ok;
+
   const payload = {
-    ok: Boolean(fallback),
-    mode: "message-only" as const,
+    ok,
+    mode: "relay" as const,
     phone,
     message,
-    confName: null,
-    callerCallSid: null,
-    thirdPartySid: fallback?.sid ?? null,
-    resolvedCallSidSource: resolved.source,
-    resolvedMapping: resolved.mapping ?? null,
+    sessionId: data?.sessionId ?? null,
+    steps: data?.steps ?? null,
+    urls: data?.urls ?? null,
+    error: ok ? null : data?.message ?? `HTTP ${res.status}`,
   };
 
-  console.log("[agent tool] call_third_party fallback →", payload);
+  console.log("[agent tool] call_third_party →", payload);
   return payload;
 }
 
@@ -370,10 +225,14 @@ export async function get_places_for_user(args: {
   manualMode?: "normal" | "child";
 }) {
   const userId =
-    typeof args.userId === "string" && args.userId.trim() ? args.userId.trim() : null;
+    typeof args.userId === "string" && args.userId.trim()
+      ? args.userId.trim()
+      : null;
 
   const roomId =
-    typeof args.roomId === "string" && args.roomId.trim() ? args.roomId.trim() : null;
+    typeof args.roomId === "string" && args.roomId.trim()
+      ? args.roomId.trim()
+      : null;
 
   const rawLimit = Number.isFinite(args.limit as any) ? Number(args.limit) : 5;
   const limit = Math.max(1, Math.min(10, rawLimit || 5));
@@ -402,8 +261,10 @@ export async function get_places_for_user(args: {
   const inferredMode = user?.interactionMode === "child" ? "child" : "normal";
   const mode = manualMode ?? inferredMode;
 
-  const manualInterest = typeof args.manualInterest === "string" ? args.manualInterest.trim() : "";
-  const userInterest = typeof user?.interest === "string" ? String(user.interest).trim() : "";
+  const manualInterest =
+    typeof args.manualInterest === "string" ? args.manualInterest.trim() : "";
+  const userInterest =
+    typeof user?.interest === "string" ? String(user.interest).trim() : "";
   const q = manualInterest || userInterest || "";
 
   const searchParams = new URLSearchParams();

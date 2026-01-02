@@ -35,17 +35,6 @@ function getBaseUrl(): string {
 const FALLBACK_TTS_VOICE =
   (process.env.TWILIO_FALLBACK_VOICE || "").trim() || "Polly.Joanna-Neural";
 
-function buildPreStreamSay(marker: string) {
-  const msg =
-    (process.env.TWILIO_PRE_STREAM_SAY || "").trim() ||
-    "Connecting you to Foundzie now.";
-  return `
-  <!-- FOUNDZIE_PRE_STREAM ${escapeForXml(marker)} -->
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(msg)}</Say>
-  <Pause length="1"/>
-  `.trim();
-}
-
 function buildMessageTwiml(message: string) {
   const safe = escapeForXml((message || "").trim().slice(0, 900));
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -76,7 +65,7 @@ function buildGatherFallbackVerbs(marker: string) {
   `.trim();
 }
 
-function buildStreamTwiml(opts: {
+function buildStreamOnlyTwiml(opts: {
   marker: string;
   roomId?: string;
   callSid?: string;
@@ -91,6 +80,7 @@ function buildStreamTwiml(opts: {
 
   const statusCb = `${base}/api/twilio/status`;
 
+  // If no stream configured, fall back to Gather
   if (!wss) {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -98,12 +88,11 @@ function buildStreamTwiml(opts: {
 </Response>`;
   }
 
+  // ✅ IMPORTANT: Stream-first, NO pre-say, NO gather after stream.
+  // Anything after <Connect><Stream> will run when the stream ends naturally.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <!-- FOUNDZIE_STREAM ${escapeForXml(opts.marker)} -->
-
-  ${buildPreStreamSay(`${opts.marker} pre=1`)}
-
   <Connect>
     <Stream url="${escapeForXml(wss)}"
             statusCallback="${escapeForXml(statusCb)}"
@@ -115,8 +104,7 @@ function buildStreamTwiml(opts: {
       ${safeFrom ? `<Parameter name="from" value="${safeFrom}" />` : ``}
     </Stream>
   </Connect>
-
-  ${buildGatherFallbackVerbs(`${opts.marker} fallback=gather`)}
+  <Hangup/>
 </Response>`;
 }
 
@@ -168,7 +156,7 @@ export async function GET(req: NextRequest) {
   const roomId = (url.searchParams.get("roomId") || "").trim();
 
   return twiml(
-    buildStreamTwiml({
+    buildStreamOnlyTwiml({
       marker,
       roomId: roomId || undefined,
     })
@@ -207,7 +195,7 @@ export async function POST(req: NextRequest) {
   await persistActiveCall(roomId, callSid, from);
 
   return twiml(
-    buildStreamTwiml({
+    buildStreamOnlyTwiml({
       marker,
       roomId: roomId || undefined,
       callSid,
