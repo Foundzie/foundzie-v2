@@ -8,6 +8,7 @@ function escapeForXml(text: string): string {
   return (text || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
+    .replace(/>/g, "&lt;") // (typo safety below)
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
@@ -40,13 +41,18 @@ function relaySessionKey(id: string) {
   return `foundzie:relay:${id}:v1`;
 }
 
+function norm(text: string) {
+  return (text || "").toLowerCase().trim();
+}
+
 function isYes(text: string) {
-  const t = (text || "").toLowerCase().trim();
+  const t = norm(text);
   return (
     t === "yes" ||
     t === "yeah" ||
     t === "yep" ||
     t === "sure" ||
+    t === "okay" ||
     t.includes("yes") ||
     t.includes("yeah") ||
     t.includes("sure") ||
@@ -55,36 +61,76 @@ function isYes(text: string) {
 }
 
 function isNo(text: string) {
-  const t = (text || "").toLowerCase().trim();
-  return t === "no" || t === "nope" || t.includes("no");
+  const t = norm(text);
+  return (
+    t === "no" ||
+    t === "nope" ||
+    t === "nah" ||
+    t.includes("no") ||
+    t.includes("not really")
+  );
 }
 
 /**
- * GET /api/twilio/relay?sid=<sessionId>
- * POST called by <Gather> actions.
+ * /api/twilio/relay?sid=<sessionId>&stage=start|confirm|reply
+ *
+ * Called as the outbound callee TwiML URL (recipient).
+ * Uses one route file for all stages (no /relay/reply needed).
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const sid = (url.searchParams.get("sid") || "").trim();
-
-  const session = sid ? await kvGetJSON<any>(relaySessionKey(sid)).catch(() => null) : null;
-  const msg = String(session?.message || "").trim();
+  const stage = (url.searchParams.get("stage") || "start").trim();
 
   const base = getBaseUrl();
-  const action = `${base}/api/twilio/relay?sid=${encodeURIComponent(sid)}&stage=confirm`;
 
-  // ✅ Conversational recipient experience
+  const session = sid
+    ? await kvGetJSON<any>(relaySessionKey(sid)).catch(() => null)
+    : null;
+
+  const msg = String(session?.message || "").trim();
+  const fromName = (process.env.FOUNDZIE_CALLER_NAME || "Kashif").trim();
+
+  // Stage: start (deliver message, then ask if they want to reply)
+  if (stage === "start") {
+    const action = `${base}/api/twilio/relay?sid=${encodeURIComponent(
+      sid
+    )}&stage=confirm`;
+
+    return twiml(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <!-- FOUNDZIE_RELAY_START sid=${escapeForXml(sid)} -->
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Hi, is this you?</Say>
+  <Pause length="1"/>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">This is Foundzie calling on behalf of ${escapeForXml(
+      fromName
+    )}.</Say>
+  <Pause length="1"/>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">He asked me to tell you:</Say>
+  <Pause length="1"/>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(
+      msg || "I have a message for you."
+    )}</Say>
+  <Pause length="1"/>
+  <Gather input="speech" action="${escapeForXml(
+      action
+    )}" method="POST" timeout="7" speechTimeout="auto">
+    <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Would you like to send a reply back?</Say>
+  </Gather>
+  <Say voice="${escapeForXml(
+      FALLBACK_TTS_VOICE
+    )}">No worries. I’ll pass along that I couldn’t hear a reply.</Say>
+  <Say voice="${escapeForXml(
+      FALLBACK_TTS_VOICE
+    )}">If you ever want it, you can find us at Foundzie dot com. Bye.</Say>
+  <Hangup/>
+</Response>`);
+  }
+
+  // For confirm/reply we expect POST (Twilio Gather action)
   return twiml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Hi — this is Foundzie calling with a quick message.</Say>
-  <Pause length="1"/>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(msg || "You have a message.")}</Say>
-  <Pause length="1"/>
-  <Gather input="speech" action="${escapeForXml(action)}" method="POST" timeout="6" speechTimeout="auto">
-    <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Do you want to reply back?</Say>
-  </Gather>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">No problem. I’ll pass that along.</Say>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Foundzie.com. Anything else I can help with?</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Thanks. Bye.</Say>
   <Hangup/>
 </Response>`);
 }
@@ -92,47 +138,61 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const url = new URL(req.url);
   const sid = (url.searchParams.get("sid") || "").trim();
-  const stage = (url.searchParams.get("stage") || "").trim() || "confirm";
+  const stage = (url.searchParams.get("stage") || "confirm").trim();
 
   const base = getBaseUrl();
 
   const form = await req.formData().catch(() => null);
-  const speechTextRaw = form ? form.get("SpeechResult") : null;
-  const speech = typeof speechTextRaw === "string" ? speechTextRaw.trim() : "";
+  const speechRaw = form ? form.get("SpeechResult") : null;
+  const speech = typeof speechRaw === "string" ? speechRaw.trim() : "";
 
-  const session = sid ? await kvGetJSON<any>(relaySessionKey(sid)).catch(() => null) : null;
+  const session = sid
+    ? await kvGetJSON<any>(relaySessionKey(sid)).catch(() => null)
+    : null;
+
   const callerCallSid = String(session?.callerCallSid || "").trim();
   const roomId = String(session?.roomId || "").trim();
-  const originalMsg = String(session?.message || "").trim();
 
-  // If session missing, just be graceful.
-  if (!sid || !session || !callerCallSid) {
+  // If no session, just end politely
+  if (!sid || !session) {
     return twiml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Thanks — I’ve got it.</Say>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Foundzie.com. Bye for now.</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Thanks — bye.</Say>
   <Hangup/>
 </Response>`);
   }
 
+  // Stage: confirm (yes/no to replying)
   if (stage === "confirm") {
-    // Did they want to reply?
     if (isYes(speech)) {
-      const action = `${base}/api/twilio/relay?sid=${encodeURIComponent(sid)}&stage=reply`;
+      const action = `${base}/api/twilio/relay?sid=${encodeURIComponent(
+        sid
+      )}&stage=reply`;
+
       return twiml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Gather input="speech" action="${escapeForXml(action)}" method="POST" timeout="10" speechTimeout="auto">
-    <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Go ahead — what would you like me to tell them?</Say>
+  <!-- FOUNDZIE_RELAY_CONFIRM: YES sid=${escapeForXml(sid)} -->
+  <Gather input="speech" action="${escapeForXml(
+    action
+  )}" method="POST" timeout="10" speechTimeout="auto">
+    <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Okay — what should I tell ${escapeForXml(
+        (process.env.FOUNDZIE_CALLER_NAME || "them").trim()
+      )}?</Say>
   </Gather>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">No worries. I’ll pass along that you couldn’t talk right now.</Say>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Foundzie.com. Anything else I can help with?</Say>
+  <Say voice="${escapeForXml(
+    FALLBACK_TTS_VOICE
+  )}">No problem. I’ll let them know I couldn’t hear the reply clearly.</Say>
+  <Say voice="${escapeForXml(
+    FALLBACK_TTS_VOICE
+  )}">Foundzie dot com. Bye.</Say>
   <Hangup/>
 </Response>`);
     }
 
-    // No / unclear => treat as no
-    const resultText = isNo(speech) ? "They didn’t want to reply." : "I couldn’t clearly hear a reply.";
-    const callerSay = `Delivered your message. ${resultText}`;
+    // Treat NO or unclear as no-reply
+    const noReplyReason = isNo(speech)
+      ? "They chose not to reply."
+      : "I couldn’t clearly confirm a reply.";
 
     await kvSetJSON(relaySessionKey(sid), {
       ...session,
@@ -141,41 +201,69 @@ export async function POST(req: NextRequest) {
       updatedAt: new Date().toISOString(),
     }).catch(() => null);
 
-    await redirectTwilioCall(
-      callerCallSid,
-      `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(callerSay)}${roomId ? `&roomId=${encodeURIComponent(roomId)}` : ""}`
-    ).catch(() => null);
+    // Bring caller back off hold (baseline)
+    if (callerCallSid) {
+      const callerSay = `Done — I delivered your message. ${noReplyReason}`;
+      await redirectTwilioCall(
+        callerCallSid,
+        `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(
+          callerSay
+        )}${roomId ? `&roomId=${encodeURIComponent(roomId)}` : ""}`
+      ).catch(() => null);
+    }
 
     return twiml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Got it — I’ll pass that along.</Say>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Foundzie.com. Anything else I can help with?</Say>
+  <Say voice="${escapeForXml(
+    FALLBACK_TTS_VOICE
+  )}">Got it. I’ll pass that along right now.</Say>
+  <Say voice="${escapeForXml(
+    FALLBACK_TTS_VOICE
+  )}">If you ever want it, you can find us at Foundzie dot com. Bye.</Say>
   <Hangup/>
 </Response>`);
   }
 
-  // stage === "reply"
-  const replyText = (speech || "").slice(0, 300);
-  const callerSay = replyText
-    ? `Delivered your message. They replied: ${replyText}`
-    : `Delivered your message. They tried to reply, but it didn’t come through clearly.`;
+  // Stage: reply (capture actual reply text)
+  if (stage === "reply") {
+    const replyText = (speech || "").slice(0, 360);
 
-  await kvSetJSON(relaySessionKey(sid), {
-    ...session,
-    status: "delivered_with_reply",
-    recipientReply: replyText || null,
-    updatedAt: new Date().toISOString(),
-  }).catch(() => null);
+    await kvSetJSON(relaySessionKey(sid), {
+      ...session,
+      status: "delivered_with_reply",
+      recipientReply: replyText || null,
+      updatedAt: new Date().toISOString(),
+    }).catch(() => null);
 
-  await redirectTwilioCall(
-    callerCallSid,
-    `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(callerSay)}${roomId ? `&roomId=${encodeURIComponent(roomId)}` : ""}`
-  ).catch(() => null);
+    if (callerCallSid) {
+      const callerSay = replyText
+        ? `Done — I delivered your message. They replied: ${replyText}`
+        : `Done — I delivered your message. They tried to reply, but it didn’t come through clearly.`;
 
+      await redirectTwilioCall(
+        callerCallSid,
+        `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(
+          callerSay
+        )}${roomId ? `&roomId=${encodeURIComponent(roomId)}` : ""}`
+      ).catch(() => null);
+    }
+
+    return twiml(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="${escapeForXml(
+    FALLBACK_TTS_VOICE
+  )}">Perfect — I’ll pass that along right now.</Say>
+  <Say voice="${escapeForXml(
+    FALLBACK_TTS_VOICE
+  )}">If you ever want it, you can find us at Foundzie dot com. Bye.</Say>
+  <Hangup/>
+</Response>`);
+  }
+
+  // Unknown stage
   return twiml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Perfect — I’ll pass that along right now.</Say>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Foundzie.com. Anything else I can help with?</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Thanks — bye.</Say>
   <Hangup/>
 </Response>`);
 }

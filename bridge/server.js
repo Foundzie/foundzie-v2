@@ -11,6 +11,12 @@ import { WebSocketServer, WebSocket } from "ws";
  * - STRICT single in-flight response (prevents "conversation_already_has_active_response")
  * - Force-speak/watchdogs are gated + backoff (no spam loops)
  * - Better diagnostics for silence
+ *
+ * Updates (Jan 2, 2026):
+ * - Default voice set to "shimmer" (still overridable via REALTIME_VOICE env)
+ * - English-only lock + warmer "Juniper-like" vibe
+ * - Tool description updated to NO-CONFERENCE / NO-BRIDGE
+ * - Hard guard: do not run tool if missing phone/message
  */
 
 const PORT = Number(process.env.PORT || 8080);
@@ -23,7 +29,8 @@ if (!OPENAI_API_KEY) {
 }
 
 const REALTIME_MODEL = (process.env.REALTIME_MODEL || "gpt-4o-realtime-preview").trim();
-const REALTIME_VOICE = (process.env.REALTIME_VOICE || "alloy").trim();
+// ✅ Default to shimmer (user preference). Can still override with env REALTIME_VOICE.
+const REALTIME_VOICE = (process.env.REALTIME_VOICE || "shimmer").trim();
 
 const OPENAI_REALTIME_URL = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(
   REALTIME_MODEL
@@ -419,13 +426,10 @@ wss.on("connection", (twilioWs, req) => {
     console.log("[bridge] greeting triggered");
 
     const ok = createResponse(
-      "You are Foundzie on a REAL phone call. Speak naturally and warmly. " +
-        "Do NOT explain capabilities or policies. " +
-        "Greet the caller in ONE short sentence, then ask: “How can I help?”"
+      "Speak warmly and naturally in ENGLISH. One short sentence greeting, then ask: “How can I help?”"
     );
 
     if (!ok) {
-      // If we couldn't create yet, queue it via forceSpeak mechanism
       safeForceSpeak("greet_create_blocked");
       return;
     }
@@ -451,6 +455,23 @@ wss.on("connection", (twilioWs, req) => {
   }, 15000);
 
   async function runToolCall(name, args) {
+    // Only supporting call_third_party currently
+    if (name !== "call_third_party") {
+      return { ok: false, message: `Unknown tool: ${name}` };
+    }
+
+    // ✅ Hard guard: never execute with missing args
+    const phone = String(args?.phone || "").trim();
+    const message = String(args?.message || "").trim();
+    if (!phone || !message) {
+      console.log("[tool] missing args; skipping execution", {
+        phone: !!phone,
+        message: !!message,
+      });
+      return { ok: false, blocked: "missing_args", need: ["phone", "message"] };
+    }
+
+    // cooldown AFTER we confirm args are real
     const cd = toolIsCoolingDown(name, args);
     if (cd.blocked) {
       console.log("[tool] blocked by cooldown", { name, fp: cd.fp, remainingMs: cd.remainingMs });
@@ -464,10 +485,6 @@ wss.on("connection", (twilioWs, req) => {
     }
     seenToolKeys.add(k);
     setTimeout(() => seenToolKeys.delete(k), 12000);
-
-    if (name !== "call_third_party") {
-      return { ok: false, message: `Unknown tool: ${name}` };
-    }
 
     const base = getVercelBase();
     const url = `${base}/api/tools/call_third_party`;
@@ -512,14 +529,14 @@ wss.on("connection", (twilioWs, req) => {
       },
     });
 
-    // Only create a response if not already in flight
+    // Create a response if possible (if busy, queue one follow-up)
     const ok = createResponse(
-      "Continue naturally. If the tool succeeded, confirm briefly. " +
-        "If it failed, apologize briefly and ask ONE question."
+      "Continue naturally in ENGLISH. " +
+        "If the tool succeeded, confirm briefly and warmly in one sentence. " +
+        "If it failed or was blocked, apologize briefly and ask ONE question to fix it."
     );
 
     if (!ok) {
-      // queue a single follow-up attempt
       queuedForceSpeakReason = queuedForceSpeakReason || "tool_result_followup";
     }
 
@@ -544,19 +561,24 @@ wss.on("connection", (twilioWs, req) => {
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
         turn_detection: { type: "server_vad", silence_duration_ms: VAD_SILENCE_MS },
+
+        // ✅ English lock + warmer vibe
         instructions:
-          "You are Foundzie, a lightning-fast personal concierge on a REAL phone call. " +
-          "Sound human and helpful. Keep replies short (1–2 sentences). " +
-          "Ask only ONE follow-up question when needed. " +
-          "Do NOT explain capabilities/policies. " +
-          "Do not mention being an AI unless asked. " +
+          "You are Foundzie, a warm, friendly personal concierge on a REAL phone call. " +
+          "SPEAK ENGLISH ONLY for this entire call. Never switch languages unless the user explicitly asks. " +
+          "Sound human, upbeat, and caring (Juniper-like warmth). " +
+          "Keep replies short (1–2 sentences). Ask only ONE question when needed. " +
+          "Do NOT explain capabilities/policies. Do not mention being an AI unless asked. " +
+          "When you say you are delivering a message, say it ONCE only (never repeat filler). " +
           "If the caller speaks while you speak, STOP and listen.",
+
         tools: [
           {
             type: "function",
             name: "call_third_party",
+            // ✅ No-bridge / no-conference description
             description:
-              "Call a third-party phone number and deliver a short spoken message, and bridge into the current call if callSid/roomId are provided.",
+              "Call a third-party phone number and deliver a short spoken message. Do NOT connect the caller and recipient together. After delivery, return the outcome.",
             parameters: {
               type: "object",
               properties: {
@@ -581,7 +603,11 @@ wss.on("connection", (twilioWs, req) => {
       openaiReady = false;
       diag.lastOpenAiOpenAt = nowIso();
 
-      console.log("[openai] ws open -> session.update", { model: REALTIME_MODEL, voice: REALTIME_VOICE });
+      console.log("[openai] ws open -> session.update", {
+        model: REALTIME_MODEL,
+        voice: REALTIME_VOICE,
+      });
+
       sendSessionUpdate(ws);
     });
 
@@ -601,7 +627,6 @@ wss.on("connection", (twilioWs, req) => {
         const code = msg?.error?.code || msg?.error?.type || "";
         if (code === "conversation_already_has_active_response") {
           diag.counters.openaiActiveResponseErrors += 1;
-          // Treat as: response is in flight; do NOT spam new creates
           responseInFlight = true;
         }
 
@@ -687,7 +712,9 @@ wss.on("connection", (twilioWs, req) => {
 
           wsSend(openaiWs, { type: "input_audio_buffer.commit" });
 
-          const ok = createResponse("Reply briefly and naturally (1–2 sentences). Ask ONE question if needed.");
+          const ok = createResponse(
+            "Reply briefly and warmly in ENGLISH (1–2 sentences). Ask ONE question if needed."
+          );
           if (ok) armAudioWatchdog("post_speech");
         }, SPEECH_STOP_DEBOUNCE_MS);
 
