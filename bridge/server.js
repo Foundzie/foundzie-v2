@@ -7,16 +7,13 @@ import { WebSocketServer, WebSocket } from "ws";
  * - Sends audio to OpenAI Realtime
  * - Sends audio back to Twilio
  *
- * Key Fixes:
- * - STRICT single in-flight response (prevents "conversation_already_has_active_response")
- * - Force-speak/watchdogs are gated + backoff (no spam loops)
- * - Better diagnostics for silence
+ * Supports BOTH Realtime session schemas:
+ * - Legacy: session.voice
+ * - Newer: session.audio.output.voice
  *
- * Updates (Jan 2, 2026):
- * - Default voice set to "shimmer" (still overridable via REALTIME_VOICE env)
- * - English-only lock + warmer "Juniper-like" vibe
- * - Tool description updated to NO-CONFERENCE / NO-BRIDGE
- * - Hard guard: do not run tool if missing phone/message
+ * Defaults:
+ * - REALTIME_MODEL=gpt-realtime
+ * - REALTIME_VOICE=marin
  */
 
 const PORT = Number(process.env.PORT || 8080);
@@ -28,9 +25,9 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
-const REALTIME_MODEL = (process.env.REALTIME_MODEL || "gpt-4o-realtime-preview").trim();
-// ✅ Default to shimmer (user preference). Can still override with env REALTIME_VOICE.
-const REALTIME_VOICE = (process.env.REALTIME_VOICE || "shimmer").trim();
+// ✅ Default to gpt-realtime + marin (overridable via Fly secrets)
+const REALTIME_MODEL = (process.env.REALTIME_MODEL || "gpt-realtime").trim();
+const REALTIME_VOICE = (process.env.REALTIME_VOICE || "marin").trim();
 
 const OPENAI_REALTIME_URL = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(
   REALTIME_MODEL
@@ -244,6 +241,14 @@ wss.on("connection", (twilioWs, req) => {
 
   let closed = false;
 
+  // Session schema fallback:
+  // - try "new" schema first (audio.output.voice)
+  // - if OpenAI errors, fallback to "legacy" schema (voice)
+  let sessionSchema = (process.env.REALTIME_SESSION_SCHEMA || "auto").trim(); // auto|new|legacy
+  let schemaChosen = null; // "new" | "legacy"
+  let schemaTriedNew = false;
+  let schemaTriedLegacy = false;
+
   function clearTimer(t) {
     if (t) clearTimeout(t);
     return null;
@@ -267,6 +272,7 @@ wss.on("connection", (twilioWs, req) => {
       roomId: custom.roomId || null,
       model: REALTIME_MODEL,
       voice: REALTIME_VOICE,
+      schema: schemaChosen || sessionSchema,
     });
 
     try {
@@ -347,12 +353,10 @@ wss.on("connection", (twilioWs, req) => {
     diag.lastResponseDoneAt = nowIso();
     diag.lastResponseDoneSample = msg;
 
-    // If it finished but no outputs, count it
     if (respOutboundAudioFrames === 0 && respOutboundTextPieces === 0) {
       diag.responseDoneNoOutputCount += 1;
     }
 
-    // If we queued a force-speak while busy, run it now
     if (queuedForceSpeakReason) {
       const reason = queuedForceSpeakReason;
       queuedForceSpeakReason = null;
@@ -390,7 +394,6 @@ wss.on("connection", (twilioWs, req) => {
       return;
     }
 
-    // If a response is already running, queue it once
     if (responseInFlight) {
       queuedForceSpeakReason = queuedForceSpeakReason || reason;
       return;
@@ -409,7 +412,6 @@ wss.on("connection", (twilioWs, req) => {
     audioWatchdogTimer = setTimeout(() => {
       if (closed) return;
       if (!openaiReady) return;
-      // If we already produced audio for the current response, don't fire
       if (respOutboundAudioFrames > 0) return;
 
       console.log("[bridge] audio watchdog fired:", label);
@@ -455,23 +457,17 @@ wss.on("connection", (twilioWs, req) => {
   }, 15000);
 
   async function runToolCall(name, args) {
-    // Only supporting call_third_party currently
     if (name !== "call_third_party") {
       return { ok: false, message: `Unknown tool: ${name}` };
     }
 
-    // ✅ Hard guard: never execute with missing args
     const phone = String(args?.phone || "").trim();
     const message = String(args?.message || "").trim();
     if (!phone || !message) {
-      console.log("[tool] missing args; skipping execution", {
-        phone: !!phone,
-        message: !!message,
-      });
+      console.log("[tool] missing args; skipping execution", { phone: !!phone, message: !!message });
       return { ok: false, blocked: "missing_args", need: ["phone", "message"] };
     }
 
-    // cooldown AFTER we confirm args are real
     const cd = toolIsCoolingDown(name, args);
     if (cd.blocked) {
       console.log("[tool] blocked by cooldown", { name, fp: cd.fp, remainingMs: cd.remainingMs });
@@ -522,24 +518,16 @@ wss.on("connection", (twilioWs, req) => {
   function sendToolResultToOpenAI(call_id, resultObj) {
     wsSend(openaiWs, {
       type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id,
-        output: JSON.stringify(resultObj || {}),
-      },
+      item: { type: "function_call_output", call_id, output: JSON.stringify(resultObj || {}) },
     });
 
-    // Create a response if possible (if busy, queue one follow-up)
     const ok = createResponse(
       "Continue naturally in ENGLISH. " +
         "If the tool succeeded, confirm briefly and warmly in one sentence. " +
         "If it failed or was blocked, apologize briefly and ask ONE question to fix it."
     );
 
-    if (!ok) {
-      queuedForceSpeakReason = queuedForceSpeakReason || "tool_result_followup";
-    }
-
+    if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_result_followup";
     armAudioWatchdog("tool_result");
   }
 
@@ -552,48 +540,124 @@ wss.on("connection", (twilioWs, req) => {
     pendingResponseTimer = clearTimer(pendingResponseTimer);
   }
 
-  function sendSessionUpdate(ws) {
-    wsSend(ws, {
-      type: "session.update",
-      session: {
-        modalities: ["audio", "text"],
-        voice: REALTIME_VOICE,
-        input_audio_format: "g711_ulaw",
-        output_audio_format: "g711_ulaw",
-        turn_detection: { type: "server_vad", silence_duration_ms: VAD_SILENCE_MS },
+  // ---------- session.update (dual-schema) ----------
 
-        // ✅ English lock + warmer vibe
-        instructions:
-          "You are Foundzie, a warm, friendly personal concierge on a REAL phone call. " +
-          "SPEAK ENGLISH ONLY for this entire call. Never switch languages unless the user explicitly asks. " +
-          "Sound human, upbeat, and caring (Juniper-like warmth). " +
-          "Keep replies short (1–2 sentences). Ask only ONE question when needed. " +
-          "Do NOT explain capabilities/policies. Do not mention being an AI unless asked. " +
-          "When you say you are delivering a message, say it ONCE only (never repeat filler). " +
-          "If the caller speaks while you speak, STOP and listen.",
+  function buildSessionUpdatePayload(schema /* "new" | "legacy" */) {
+    const baseSession = {
+      modalities: ["audio", "text"],
+      input_audio_format: "g711_ulaw",
+      output_audio_format: "g711_ulaw",
+      turn_detection: { type: "server_vad", silence_duration_ms: VAD_SILENCE_MS },
 
-        tools: [
-          {
-            type: "function",
-            name: "call_third_party",
-            // ✅ No-bridge / no-conference description
-            description:
-              "Call a third-party phone number and deliver a short spoken message. Do NOT connect the caller and recipient together. After delivery, return the outcome.",
-            parameters: {
-              type: "object",
-              properties: {
-                phone: { type: "string" },
-                message: { type: "string" },
-                roomId: { type: "string" },
-                callSid: { type: "string" },
-              },
-              required: ["phone", "message"],
+      instructions:
+        "You are Foundzie, a warm, friendly personal concierge on a REAL phone call. " +
+        "SPEAK ENGLISH ONLY for this entire call. Never switch languages unless the user explicitly asks. " +
+        "Sound human, upbeat, and caring. " +
+        "Keep replies short (1–2 sentences). Ask only ONE question when needed. " +
+        "Do NOT explain capabilities/policies. Do not mention being an AI unless asked. " +
+        "When you say you are delivering a message, say it ONCE only (never repeat filler). " +
+        "If the caller speaks while you speak, STOP and listen.",
+
+      tools: [
+        {
+          type: "function",
+          name: "call_third_party",
+          description:
+            "Call a third-party phone number and deliver a short spoken message. Do NOT connect the caller and recipient together. After delivery, return the outcome.",
+          parameters: {
+            type: "object",
+            properties: {
+              phone: { type: "string" },
+              message: { type: "string" },
+              roomId: { type: "string" },
+              callSid: { type: "string" },
             },
+            required: ["phone", "message"],
           },
-        ],
-        tool_choice: "auto",
-      },
+        },
+      ],
+      tool_choice: "auto",
+    };
+
+    if (schema === "new") {
+      // Newer schema: session.audio.output.voice
+      return {
+        ...baseSession,
+        audio: {
+          output: { voice: REALTIME_VOICE },
+        },
+      };
+    }
+
+    // Legacy schema: session.voice
+    return {
+      ...baseSession,
+      voice: REALTIME_VOICE,
+    };
+  }
+
+  function sendSessionUpdate(ws) {
+    // schema selection:
+    // - forced by env REALTIME_SESSION_SCHEMA=new|legacy
+    // - else auto: try new first, fallback legacy on error
+    let schemaToUse = "new";
+    if (sessionSchema === "legacy") schemaToUse = "legacy";
+    if (sessionSchema === "new") schemaToUse = "new";
+
+    if (sessionSchema === "auto") {
+      if (schemaChosen) schemaToUse = schemaChosen;
+      else if (!schemaTriedNew) schemaToUse = "new";
+      else schemaToUse = "legacy";
+    }
+
+    if (schemaToUse === "new") schemaTriedNew = true;
+    if (schemaToUse === "legacy") schemaTriedLegacy = true;
+
+    const payload = buildSessionUpdatePayload(schemaToUse);
+
+    const ok = wsSend(ws, {
+      type: "session.update",
+      session: payload,
     });
+
+    if (ok) {
+      schemaChosen = schemaChosen || schemaToUse;
+    }
+
+    return { ok, schemaToUse };
+  }
+
+  function forceSchemaFallback(ws) {
+    // If new failed, try legacy (once). If legacy failed, try new (once).
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+
+    if (schemaChosen === "new" && !schemaTriedLegacy) {
+      console.log("[openai] schema fallback -> legacy session.update");
+      schemaChosen = "legacy";
+      return sendSessionUpdate(ws).ok;
+    }
+
+    if (schemaChosen === "legacy" && !schemaTriedNew) {
+      console.log("[openai] schema fallback -> new session.update");
+      schemaChosen = "new";
+      return sendSessionUpdate(ws).ok;
+    }
+
+    // auto mode and we haven't chosen yet
+    if (!schemaChosen) {
+      if (schemaTriedNew && !schemaTriedLegacy) {
+        console.log("[openai] schema fallback -> legacy session.update");
+        schemaChosen = "legacy";
+        return sendSessionUpdate(ws).ok;
+      }
+      if (schemaTriedLegacy && !schemaTriedNew) {
+        console.log("[openai] schema fallback -> new session.update");
+        schemaChosen = "new";
+        return sendSessionUpdate(ws).ok;
+      }
+    }
+
+    return false;
   }
 
   function attachOpenAiHandlers(ws) {
@@ -606,8 +670,10 @@ wss.on("connection", (twilioWs, req) => {
       console.log("[openai] ws open -> session.update", {
         model: REALTIME_MODEL,
         voice: REALTIME_VOICE,
+        schema: sessionSchema,
       });
 
+      // Try sending session update immediately
       sendSessionUpdate(ws);
     });
 
@@ -630,14 +696,29 @@ wss.on("connection", (twilioWs, req) => {
           responseInFlight = true;
         }
 
+        // If session.update schema was rejected, try fallback once
+        const message = String(msg?.error?.message || "");
+        const looksLikeSchemaIssue =
+          message.includes("voice") ||
+          message.includes("audio") ||
+          message.includes("session") ||
+          message.includes("unknown") ||
+          message.includes("invalid");
+
         console.error("[openai] error:", JSON.stringify(msg, null, 2));
+
+        if (!openaiReady && looksLikeSchemaIssue) {
+          const did = forceSchemaFallback(ws);
+          if (did) return;
+        }
+
         return;
       }
 
       if (msg.type === "session.updated") {
         openaiReady = true;
         diag.lastOpenAiSessionUpdatedAt = nowIso();
-        console.log("[openai] session.updated -> ready");
+        console.log("[openai] session.updated -> ready", { schemaChosen: schemaChosen || "unknown" });
         tryGreet();
         return;
       }
@@ -681,7 +762,6 @@ wss.on("connection", (twilioWs, req) => {
       ) {
         markResponseDone(msg);
 
-        // If NO output, attempt a single gated force-speak
         if (respOutboundAudioFrames === 0 && respOutboundTextPieces === 0) {
           console.log("[openai] response.done with NO output -> gated forceSpeak");
           safeForceSpeak("response_done_no_output");
@@ -898,5 +978,6 @@ server.listen(PORT, HOST, () => {
   console.log(`Bridge listening on http://${HOST}:${PORT}`, {
     model: REALTIME_MODEL,
     voice: REALTIME_VOICE,
+    url: OPENAI_REALTIME_URL,
   });
 });
