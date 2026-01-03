@@ -40,7 +40,9 @@ function buildMessageTwiml(message: string, roomId?: string) {
   const safe = escapeForXml((message || "").trim().slice(0, 900));
 
   // ✅ Speak message, then immediately resume the realtime stream (do NOT hang up)
-  const resumeUrl = `${base}/api/twilio/voice${roomId ? `?roomId=${encodeURIComponent(roomId)}` : ""}`;
+  const resumeUrl = `${base}/api/twilio/voice${
+    roomId ? `?roomId=${encodeURIComponent(roomId)}` : ""
+  }`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -83,6 +85,8 @@ function buildStreamOnlyTwiml(opts: {
   const safeCallSid = escapeForXml((opts.callSid || "").trim());
   const safeFrom = escapeForXml((opts.from || "").trim());
 
+  // IMPORTANT: This endpoint expects real call status webhooks.
+  // Stream status callbacks (if any) may not match. So we do NOT rely on them.
   const statusCb = `${base}/api/twilio/status`;
 
   if (!wss) {
@@ -92,6 +96,11 @@ function buildStreamOnlyTwiml(opts: {
 </Response>`;
   }
 
+  const gatherFallbackUrl = `${base}/api/twilio/gather`;
+
+  // ✅ Key fix:
+  // - Do NOT <Hangup/> after <Connect><Stream>.
+  // - If stream fails or ends, fall back into Gather so the call stays alive + conversational.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <!-- FOUNDZIE_STREAM ${escapeForXml(opts.marker)} -->
@@ -106,7 +115,9 @@ function buildStreamOnlyTwiml(opts: {
       ${safeFrom ? `<Parameter name="from" value="${safeFrom}" />` : ``}
     </Stream>
   </Connect>
-  <Hangup/>
+
+  <!-- If the Stream cannot connect or ends, keep the call alive and switch to speech fallback -->
+  <Redirect method="POST">${escapeForXml(gatherFallbackUrl)}</Redirect>
 </Response>`;
 }
 
@@ -192,7 +203,8 @@ export async function POST(req: NextRequest) {
   const from = typeof fromRaw === "string" ? fromRaw.trim() : "";
 
   const roomId =
-    roomIdFromQuery || (callSid ? `call:${callSid}` : from ? `phone:${from}` : "");
+    roomIdFromQuery ||
+    (callSid ? `call:${callSid}` : from ? `phone:${from}` : "");
 
   await persistActiveCall(roomId, callSid, from);
 

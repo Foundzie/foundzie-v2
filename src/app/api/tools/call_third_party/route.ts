@@ -82,10 +82,13 @@ function makeSessionId() {
  * POST /api/tools/call_third_party
  * Body: { phone, message, roomId?, callSid? }
  *
- * ✅ NO CONFERENCE:
- * - Put caller on a "hold loop" (separate leg)
- * - Dial recipient, deliver message, ask for reply, then hang up
- * - ALWAYS bring caller back (even if recipient doesn't answer) via /api/twilio/status
+ * ✅ RELAY MODE (NO CONFERENCE):
+ * - Redirect caller to hold loop
+ * - Dial recipient, deliver message, optionally capture reply
+ * - Status callback brings caller back
+ *
+ * IMPORTANT FIX:
+ * - If we FAIL to redirect the caller to hold, we STOP and do NOT dial the callee.
  */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as any;
@@ -161,12 +164,41 @@ export async function POST(req: NextRequest) {
     createdAt: new Date().toISOString(),
   }).catch(() => null);
 
-  // 1) Put caller on hold (separate leg, no conference)
+  // 1) Put caller on hold
   const holdUrl = `${base}/api/twilio/hold?sid=${encodeURIComponent(sessionId)}`;
   const redirectResult = await redirectTwilioCall(callSid, holdUrl).catch((e: any) => {
     return { error: String(e?.message || e) };
   });
+
   const callerRedirected = !!(redirectResult as any)?.sid;
+
+  // ✅ HARD STOP if we couldn't redirect the caller
+  if (!callerRedirected) {
+    await kvSetJSON(relaySessionKey(sessionId), {
+      sessionId,
+      roomId: roomId || null,
+      callerCallSid: callSid,
+      toPhone: phone,
+      message,
+      status: "caller_redirect_failed",
+      error: (redirectResult as any)?.error || "redirectTwilioCall returned null",
+      updatedAt: new Date().toISOString(),
+    }).catch(() => null);
+
+    return json(
+      {
+        ok: false,
+        message:
+          "Could not put the caller on hold (redirectTwilioCall failed). Not dialing the recipient to avoid desync.",
+        phone,
+        sessionId,
+        steps: { callerRedirected: false, calleeDialed: false },
+        urls: { holdUrl },
+        twilio: { redirect: redirectResult },
+      },
+      502
+    );
+  }
 
   // 2) Dial recipient and run relay flow
   const sid = process.env.TWILIO_ACCOUNT_SID;
@@ -240,7 +272,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ✅ Save calleeSid, and reverse-map calleeSid -> sessionId for status callback recovery
+  // Save calleeSid, and reverse-map calleeSid -> sessionId for status callback recovery
   await kvSetJSON(relaySessionKey(sessionId), {
     sessionId,
     roomId: roomId || null,
