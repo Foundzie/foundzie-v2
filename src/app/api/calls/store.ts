@@ -1,17 +1,35 @@
-// src/app/api/calls/store.ts
 import "server-only";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 
 export type CallDirection = "outbound";
+
+export type CallMode = "voice" | "message" | "relay" | "unknown";
+export type CallStatus = "created" | "started" | "completed" | "failed" | "unknown";
 
 export interface CallLog {
   id: string;
   createdAt: string;
   userId: string | null;
   userName: string | null;
+
+  /** The number dialed (or primary phone involved) */
   phone: string;
+
+  /** Optional: recipient/callee phone (for relay workflows) */
+  calleePhone?: string | null;
+
+  /** Optional: roomId used for session continuity */
+  roomId?: string | null;
+
+  /** Optional: Twilio call sid if we have it */
+  callSid?: string | null;
+
   note: string;
   direction: CallDirection;
+
+  /** Optional metadata */
+  mode?: CallMode;
+  status?: CallStatus;
 }
 
 const CALLS_KEY = "foundzie:calls:v2";
@@ -25,9 +43,7 @@ async function saveAll(items: CallLog[]): Promise<void> {
   await kvSetJSON(CALLS_KEY, items);
 }
 
-export async function addCallLog(
-  entry: Omit<CallLog, "createdAt">
-): Promise<CallLog> {
+export async function addCallLog(entry: Omit<CallLog, "createdAt">): Promise<CallLog> {
   const log: CallLog = {
     ...entry,
     createdAt: new Date().toISOString(),

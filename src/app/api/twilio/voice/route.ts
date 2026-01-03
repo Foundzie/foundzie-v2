@@ -39,7 +39,7 @@ function buildMessageTwiml(message: string, roomId?: string) {
   const base = getBaseUrl();
   const safe = escapeForXml((message || "").trim().slice(0, 900));
 
-  // ✅ Speak message, then immediately resume the realtime stream (do NOT hang up)
+  // Speak message, then resume the realtime stream (do NOT hang up)
   const resumeUrl = `${base}/api/twilio/voice${
     roomId ? `?roomId=${encodeURIComponent(roomId)}` : ""
   }`;
@@ -72,12 +72,27 @@ function buildGatherFallbackVerbs(marker: string) {
   `.trim();
 }
 
-function buildStreamOnlyTwiml(opts: {
+type StreamTwimlOpts = {
   marker: string;
   roomId?: string;
   callSid?: string;
   from?: string;
-}) {
+
+  /** role=caller | callee */
+  role?: "caller" | "callee";
+
+  /**
+   * Task prompt for the bridge:
+   * - callee: “Deliver this message: …”
+   * - booking: “Book a table…”
+   */
+  task?: string;
+
+  /** personal | business (affects whether the AI can mention foundzie.com) */
+  calleeType?: "personal" | "business";
+};
+
+function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
   const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
   const base = getBaseUrl();
 
@@ -85,11 +100,35 @@ function buildStreamOnlyTwiml(opts: {
   const safeCallSid = escapeForXml((opts.callSid || "").trim());
   const safeFrom = escapeForXml((opts.from || "").trim());
 
-  // IMPORTANT: This endpoint expects real call status webhooks.
-  // Stream status callbacks (if any) may not match. So we do NOT rely on them.
+  const role = (opts.role || "caller").trim() as "caller" | "callee";
+  const safeRole = escapeForXml(role);
+
+  // Keep task short to avoid Twilio param bloat
+  const task = (opts.task || "").trim().slice(0, 900);
+  const safeTask = escapeForXml(task);
+
+  const calleeType = (opts.calleeType || "personal").trim() as
+    | "personal"
+    | "business";
+  const safeCalleeType = escapeForXml(calleeType);
+
+  // Call status callback (real call lifecycle)
   const statusCb = `${base}/api/twilio/status`;
 
   if (!wss) {
+    // If we are a CALLEE call, do not loop forever into Gather.
+    // Hang up cleanly so caller can be resumed by status callback.
+    if (role === "callee") {
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">
+    Sorry — voice streaming is temporarily unavailable. Goodbye.
+  </Say>
+  <Hangup/>
+</Response>`;
+    }
+
+    // Caller mode fallback (existing behavior)
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   ${buildGatherFallbackVerbs(`${opts.marker} wss=EMPTY`)}
@@ -98,26 +137,33 @@ function buildStreamOnlyTwiml(opts: {
 
   const gatherFallbackUrl = `${base}/api/twilio/gather`;
 
-  // ✅ Key fix:
-  // - Do NOT <Hangup/> after <Connect><Stream>.
-  // - If stream fails or ends, fall back into Gather so the call stays alive + conversational.
+  // Key behavioral split:
+  // - caller: Stream then Redirect to Gather so call stays alive if stream ends
+  // - callee: Stream then Hangup (so Twilio status callback can resume the caller leg)
+  const afterStream =
+    role === "callee"
+      ? `<Hangup/>`
+      : `<Redirect method="POST">${escapeForXml(gatherFallbackUrl)}</Redirect>`;
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <!-- FOUNDZIE_STREAM ${escapeForXml(opts.marker)} -->
+  <!-- FOUNDZIE_STREAM ${escapeForXml(opts.marker)} role=${safeRole} -->
   <Connect>
     <Stream url="${escapeForXml(wss)}"
             statusCallback="${escapeForXml(statusCb)}"
             statusCallbackMethod="POST">
       <Parameter name="source" value="twilio-media-streams" />
       <Parameter name="base" value="${escapeForXml(base)}" />
+      <Parameter name="role" value="${safeRole}" />
+      <Parameter name="calleeType" value="${safeCalleeType}" />
       ${safeRoom ? `<Parameter name="roomId" value="${safeRoom}" />` : ``}
       ${safeCallSid ? `<Parameter name="callSid" value="${safeCallSid}" />` : ``}
       ${safeFrom ? `<Parameter name="from" value="${safeFrom}" />` : ``}
+      ${safeTask ? `<Parameter name="task" value="${safeTask}" />` : ``}
     </Stream>
   </Connect>
 
-  <!-- If the Stream cannot connect or ends, keep the call alive and switch to speech fallback -->
-  <Redirect method="POST">${escapeForXml(gatherFallbackUrl)}</Redirect>
+  ${afterStream}
 </Response>`;
 }
 
@@ -149,12 +195,31 @@ async function persistActiveCall(roomId: string, callSid: string, from: string) 
   }
 }
 
+function parseModeRole(url: URL) {
+  const mode = (url.searchParams.get("mode") || "").trim();
+
+  // compatibility:
+  // - mode=callee -> role callee
+  // - mode=relay  -> role callee (this is the third-party leg)
+  // - default -> role caller
+  const role: "caller" | "callee" =
+    mode === "callee" || mode === "relay" ? "callee" : "caller";
+
+  return { mode, role };
+}
+
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
 
-  const mode = (url.searchParams.get("mode") || "").trim();
+  const { mode, role } = parseModeRole(url);
   const say = (url.searchParams.get("say") || "").trim();
   const roomId = (url.searchParams.get("roomId") || "").trim();
+
+  // NEW: callee prompt + calleeType
+  const task = (url.searchParams.get("task") || "").trim();
+  const calleeTypeRaw = (url.searchParams.get("calleeType") || "").trim();
+  const calleeType: "personal" | "business" =
+    calleeTypeRaw === "business" ? "business" : "personal";
 
   if (mode === "message" && say) {
     return twiml(buildMessageTwiml(say, roomId || undefined));
@@ -166,12 +231,15 @@ export async function GET(req: NextRequest) {
     "sha-unknown";
 
   const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
-  const marker = `mode=STREAM sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=GET`;
+  const marker = `mode=${mode || "STREAM"} sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=GET`;
 
   return twiml(
     buildStreamOnlyTwiml({
       marker,
       roomId: roomId || undefined,
+      role,
+      task: role === "callee" ? task : undefined,
+      calleeType,
     })
   );
 }
@@ -179,9 +247,14 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const url = new URL(req.url);
 
-  const mode = (url.searchParams.get("mode") || "").trim();
+  const { mode, role } = parseModeRole(url);
   const say = (url.searchParams.get("say") || "").trim();
   const roomIdFromQuery = (url.searchParams.get("roomId") || "").trim();
+
+  const task = (url.searchParams.get("task") || "").trim();
+  const calleeTypeRaw = (url.searchParams.get("calleeType") || "").trim();
+  const calleeType: "personal" | "business" =
+    calleeTypeRaw === "business" ? "business" : "personal";
 
   if (mode === "message" && say) {
     return twiml(buildMessageTwiml(say, roomIdFromQuery || undefined));
@@ -193,7 +266,7 @@ export async function POST(req: NextRequest) {
     "sha-unknown";
 
   const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
-  const marker = `mode=STREAM sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=POST`;
+  const marker = `mode=${mode || "STREAM"} sha=${sha} wss=${wss ? "SET" : "EMPTY"} method=POST`;
 
   const form = await req.formData().catch(() => null);
   const callSidRaw = form ? form.get("CallSid") : null;
@@ -206,7 +279,10 @@ export async function POST(req: NextRequest) {
     roomIdFromQuery ||
     (callSid ? `call:${callSid}` : from ? `phone:${from}` : "");
 
-  await persistActiveCall(roomId, callSid, from);
+  // Only map active caller leg
+  if (role === "caller") {
+    await persistActiveCall(roomId, callSid, from);
+  }
 
   return twiml(
     buildStreamOnlyTwiml({
@@ -214,6 +290,9 @@ export async function POST(req: NextRequest) {
       roomId: roomId || undefined,
       callSid,
       from,
+      role,
+      task: role === "callee" ? task : undefined,
+      calleeType,
     })
   );
 }

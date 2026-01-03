@@ -13,10 +13,6 @@ function getFromNumber(): string {
   return (process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_NUMBER || "").trim();
 }
 
-function getDefaultVoiceUrl(): string {
-  return (process.env.TWILIO_VOICE_URL || "https://foundzie-v2.vercel.app/api/twilio/voice").trim();
-}
-
 /** Stable server-side base URL */
 function getBaseUrl(): string {
   const explicit =
@@ -33,10 +29,20 @@ function getBaseUrl(): string {
   return "http://localhost:3000";
 }
 
+/**
+ * Default TwiML URL for outbound calls.
+ * Prefer TWILIO_VOICE_URL, else derive from getBaseUrl().
+ */
+function getDefaultVoiceUrl(): string {
+  const explicit = (process.env.TWILIO_VOICE_URL || "").trim();
+  if (explicit) return explicit;
+
+  return `${getBaseUrl()}/api/twilio/voice`;
+}
+
 function getStatusCallbackUrl(): string {
-  // Optional override if you want
-  const explicit = process.env.TWILIO_STATUS_CALLBACK_URL;
-  if (explicit && explicit.trim()) return explicit.trim();
+  const explicit = (process.env.TWILIO_STATUS_CALLBACK_URL || "").trim();
+  if (explicit) return explicit;
 
   return `${getBaseUrl()}/api/twilio/status`;
 }
@@ -76,7 +82,7 @@ export async function createTwilioCall(to: string, url: string) {
       url,
       method: "POST",
 
-      // ✅ This is the key diagnostic hook
+      // Diagnostic hook (super useful)
       statusCallback,
       statusCallbackMethod: "POST",
       statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],

@@ -1,3 +1,4 @@
+// bridge/server.js
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 
@@ -263,6 +264,7 @@ wss.on("connection", (twilioWs, req) => {
     greetingRetryTimer = clearTimer(greetingRetryTimer);
 
     clearInterval(pingInterval);
+    clearInterval(openAiPingInterval);
 
     console.log("[bridge] shutdown:", reason || "unknown", {
       inboundMediaFrames,
@@ -449,12 +451,19 @@ wss.on("connection", (twilioWs, req) => {
     }, 2600);
   }
 
-  // Keepalive ping (Twilio only)
+  // Keepalive ping (Twilio)
   const pingInterval = setInterval(() => {
     try {
       if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
     } catch {}
   }, 15000);
+
+  // Optional keepalive ping (OpenAI)
+  const openAiPingInterval = setInterval(() => {
+    try {
+      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.ping();
+    } catch {}
+  }, 20000);
 
   async function runToolCall(name, args) {
     if (name !== "call_third_party") {
@@ -628,7 +637,6 @@ wss.on("connection", (twilioWs, req) => {
   }
 
   function forceSchemaFallback(ws) {
-    // If new failed, try legacy (once). If legacy failed, try new (once).
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
 
     if (schemaChosen === "new" && !schemaTriedLegacy) {
@@ -643,7 +651,6 @@ wss.on("connection", (twilioWs, req) => {
       return sendSessionUpdate(ws).ok;
     }
 
-    // auto mode and we haven't chosen yet
     if (!schemaChosen) {
       if (schemaTriedNew && !schemaTriedLegacy) {
         console.log("[openai] schema fallback -> legacy session.update");
@@ -673,7 +680,6 @@ wss.on("connection", (twilioWs, req) => {
         schema: sessionSchema,
       });
 
-      // Try sending session update immediately
       sendSessionUpdate(ws);
     });
 
@@ -696,7 +702,6 @@ wss.on("connection", (twilioWs, req) => {
           responseInFlight = true;
         }
 
-        // If session.update schema was rejected, try fallback once
         const message = String(msg?.error?.message || "");
         const looksLikeSchemaIssue =
           message.includes("voice") ||
