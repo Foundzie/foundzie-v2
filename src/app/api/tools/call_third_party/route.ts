@@ -1,3 +1,4 @@
+// src/app/api/tools/call_third_party/route.ts
 import "server-only";
 import { NextRequest, NextResponse } from "next/server";
 import twilio from "twilio";
@@ -29,7 +30,6 @@ function normalizeE164(input: string): string {
   if (raw.startsWith("+")) return raw;
 
   const digits = raw.replace(/[^\d]/g, "");
-
   if (digits.startsWith("00") && digits.length >= 11) return `+${digits.slice(2)}`;
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
   if (digits.length === 10) return `+1${digits}`;
@@ -80,15 +80,9 @@ function makeSessionId() {
 
 /**
  * POST /api/tools/call_third_party
- * Body: { phone, message, roomId?, callSid? }
+ * Body: { phone, message, roomId?, callSid?, calleeType? }
  *
- * ✅ RELAY MODE (NO CONFERENCE):
- * - Redirect caller to hold loop
- * - Dial recipient, deliver message, optionally capture reply
- * - Status callback brings caller back
- *
- * IMPORTANT FIX:
- * - If we FAIL to redirect the caller to hold, we STOP and do NOT dial the callee.
+ * ✅ RELAY MODE (NO CONFERENCE)
  */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as any;
@@ -99,6 +93,11 @@ export async function POST(req: NextRequest) {
   let roomId = String(body.roomId || "").trim();
   let callSid = String(body.callSid || "").trim();
 
+  // NEW: calleeType propagated into session + relay URL
+  const calleeTypeRaw = String(body.calleeType || "").trim();
+  const calleeType: "personal" | "business" =
+    calleeTypeRaw === "business" ? "business" : "personal";
+
   if (roomId === "current") roomId = "";
   if (callSid === "current") callSid = "";
 
@@ -106,7 +105,6 @@ export async function POST(req: NextRequest) {
     return json({ ok: false, message: "Missing phone or message." }, 400);
   }
 
-  // Resolve active callSid for caller leg
   if (!callSid) {
     const resolved = await resolveActiveCallSid(roomId);
     callSid = resolved.callSid || "";
@@ -123,7 +121,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Cooldown (dedupe repeated tool calls)
+  // Cooldown
   const COOLDOWN_SECONDS = Number(process.env.TOOL_CALL_COOLDOWN_SECONDS || 8);
   const fp = fingerprintForCall(phone, message);
   const cdKey = cooldownKey("call_third_party", fp);
@@ -160,6 +158,7 @@ export async function POST(req: NextRequest) {
     callerCallSid: callSid,
     toPhone: phone,
     message,
+    calleeType, // ✅ store it
     status: "created",
     createdAt: new Date().toISOString(),
   }).catch(() => null);
@@ -172,7 +171,6 @@ export async function POST(req: NextRequest) {
 
   const callerRedirected = !!(redirectResult as any)?.sid;
 
-  // ✅ HARD STOP if we couldn't redirect the caller
   if (!callerRedirected) {
     await kvSetJSON(relaySessionKey(sessionId), {
       sessionId,
@@ -180,6 +178,7 @@ export async function POST(req: NextRequest) {
       callerCallSid: callSid,
       toPhone: phone,
       message,
+      calleeType,
       status: "caller_redirect_failed",
       error: (redirectResult as any)?.error || "redirectTwilioCall returned null",
       updatedAt: new Date().toISOString(),
@@ -200,7 +199,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 2) Dial recipient and run relay flow
+  // 2) Dial recipient
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
   const from = process.env.TWILIO_PHONE_NUMBER;
@@ -220,6 +219,7 @@ export async function POST(req: NextRequest) {
 
   const relayUrl =
     `${base}/api/twilio/relay?sid=${encodeURIComponent(sessionId)}` +
+    `&calleeType=${encodeURIComponent(calleeType)}` + // ✅ pass it
     `&roomId=${encodeURIComponent(roomId || "")}`;
 
   const client = twilio(sid, token);
@@ -242,12 +242,12 @@ export async function POST(req: NextRequest) {
       callerCallSid: callSid,
       toPhone: phone,
       message,
+      calleeType,
       status: "callee_create_failed",
       error: String(e?.message || e),
       updatedAt: new Date().toISOString(),
     }).catch(() => null);
 
-    // Pull caller back immediately
     const failMsg =
       "I tried calling them, but the call didn’t go through. Want me to try again or text them instead?";
     await redirectTwilioCall(
@@ -272,13 +272,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Save calleeSid, and reverse-map calleeSid -> sessionId for status callback recovery
   await kvSetJSON(relaySessionKey(sessionId), {
     sessionId,
     roomId: roomId || null,
     callerCallSid: callSid,
     toPhone: phone,
     message,
+    calleeType,
     status: "callee_dialed",
     calleeSid: callee?.sid ?? null,
     updatedAt: new Date().toISOString(),
@@ -296,6 +296,7 @@ export async function POST(req: NextRequest) {
     phone,
     roomId: roomId || null,
     callSid,
+    calleeType,
     sessionId,
     cooldownSeconds: COOLDOWN_SECONDS,
     steps: {

@@ -26,12 +26,35 @@ function relayByCalleeKey(calleeSid: string) {
 
 function humanizeOutcome(status: string, errorCode: any) {
   const s = (status || "").toLowerCase();
-  if (s === "completed") return "I delivered your message.";
+  if (s === "completed") return "The call completed.";
   if (s === "busy") return "They were busy.";
   if (s === "no-answer") return "They didn’t answer.";
   if (s === "failed") return `The call failed${errorCode ? ` (code ${errorCode})` : ""}.`;
   if (s === "canceled") return "The call was canceled.";
   return `The call ended (${status}).`;
+}
+
+function summarizeRelaySession(session: any) {
+  const s = String(session?.status || "").trim();
+
+  const reply = String(session?.recipientReply || "").trim();
+  const confirm = String(session?.recipientConfirm || "").trim();
+
+  if (s === "delivered_with_reply") {
+    return reply ? `Done — I delivered your message. They replied: ${reply}` : `Done — I delivered your message.`;
+  }
+
+  if (s === "delivered_no_reply") {
+    if (confirm) return `Done — I delivered your message. They said: ${confirm}`;
+    return `Done — I delivered your message. They didn’t send a reply.`;
+  }
+
+  if (s.startsWith("delivered_")) {
+    return `Done — I delivered your message. They didn’t send a reply.`;
+  }
+
+  // fallback
+  return "";
 }
 
 export async function POST(req: Request) {
@@ -48,19 +71,16 @@ export async function POST(req: Request) {
   const callSid = String(payload.CallSid || payload.callsid || "");
   const callStatus = String(payload.CallStatus || payload.callstatus || "");
   const errorCode = payload.ErrorCode ?? payload.errorcode ?? null;
-  const to = String(payload.To || "");
-  const from = String(payload.From || "");
 
   console.log("[twilio status]", {
     callSid,
     status: callStatus,
     errorCode,
-    to,
-    from,
+    to: String(payload.To || ""),
+    from: String(payload.From || ""),
   });
 
-  // ✅ If this CallSid is the outbound callee leg, bring caller back off hold.
-  // We only act on terminal-ish states.
+  // Terminal-ish states
   const terminal = ["completed", "busy", "no-answer", "failed", "canceled"];
   if (callSid && terminal.includes(callStatus.toLowerCase())) {
     const reverse = await kvGetJSON<any>(relayByCalleeKey(callSid)).catch(() => null);
@@ -71,13 +91,15 @@ export async function POST(req: Request) {
       const callerCallSid = String(session?.callerCallSid || "").trim();
       const roomId = String(session?.roomId || "").trim();
 
-      // Avoid double-finalizing
       const alreadyFinal =
         String(session?.status || "").includes("final_") ||
         String(session?.status || "").includes("delivered_");
 
       if (!alreadyFinal) {
-        const outcome = humanizeOutcome(callStatus, errorCode);
+        // Prefer relay session summary if possible
+        const relaySummary = summarizeRelaySession(session);
+        const fallbackOutcome = humanizeOutcome(callStatus, errorCode);
+        const say = relaySummary || `Done. ${fallbackOutcome} Do you want me to do anything else?`;
 
         await kvSetJSON(relaySessionKey(sessionId), {
           ...session,
@@ -89,8 +111,6 @@ export async function POST(req: Request) {
 
         if (callerCallSid) {
           const base = getBaseUrl();
-          const say = `Done. ${outcome} Do you want me to do anything else?`;
-
           await redirectTwilioCall(
             callerCallSid,
             `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(say)}${
