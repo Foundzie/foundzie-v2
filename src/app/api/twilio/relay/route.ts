@@ -66,11 +66,27 @@ function isNo(text: string) {
 }
 
 function maybeBrandLine(calleeType: "personal" | "business") {
-  // ✅ Only business calls get the “Foundzie.com” mention
   if (calleeType === "business") {
     return `<Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">If you ever need us, you can find Foundzie at Foundzie dot com.</Say>`;
   }
   return ``;
+}
+
+async function safeKvSet(key: string, value: any, label: string) {
+  try {
+    await kvSetJSON(key, value);
+  } catch (e) {
+    console.error(`[relay] KV WRITE FAILED (${label})`, { key, error: String(e) });
+  }
+}
+
+async function safeKvGet(key: string, label: string) {
+  try {
+    return await kvGetJSON<any>(key);
+  } catch (e) {
+    console.error(`[relay] KV READ FAILED (${label})`, { key, error: String(e) });
+    return null;
+  }
 }
 
 /**
@@ -85,36 +101,77 @@ export async function GET(req: NextRequest) {
   const calleeType: "personal" | "business" = calleeTypeRaw === "business" ? "business" : "personal";
 
   const base = getBaseUrl();
-  const session = sid ? await kvGetJSON<any>(relaySessionKey(sid)).catch(() => null) : null;
 
+  const session = sid ? await safeKvGet(relaySessionKey(sid), "relay_session_read") : null;
   const msg = String(session?.message || "").trim();
   const fromName = (process.env.FOUNDZIE_CALLER_NAME || "Kashif").trim();
 
-  if (stage === "start") {
-    const action = `${base}/api/twilio/relay?sid=${encodeURIComponent(sid)}&stage=confirm&calleeType=${encodeURIComponent(
-      calleeType
-    )}`;
+  console.log("[relay] GET", {
+    sid,
+    stage,
+    calleeType,
+    hasSession: !!session,
+    msgLen: msg.length,
+    callerCallSid: session?.callerCallSid ? String(session.callerCallSid) : null,
+  });
 
-    // ✅ Mark message as delivered (attempted) right away (deterministic)
-    if (sid && session) {
-      await kvSetJSON(relaySessionKey(sid), {
+  if (stage === "start") {
+    // HARD FAIL: do not proceed without session + message
+    if (!sid || !session || !msg) {
+      // best-effort: if we DO have a session, bring caller back with failure
+      const callerCallSid = String(session?.callerCallSid || "").trim();
+      const roomId = String(session?.roomId || "").trim();
+      if (callerCallSid) {
+        const callerSay =
+          "I tried to deliver the message, but the server could not load the message details. Please try again.";
+        await redirectTwilioCall(
+          callerCallSid,
+          `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(callerSay)}${
+            roomId ? `&roomId=${encodeURIComponent(roomId)}` : ""
+          }`
+        ).catch(() => null);
+      }
+
+      if (sid && session) {
+        await safeKvSet(
+          relaySessionKey(sid),
+          { ...session, status: "relay_missing_message", updatedAt: new Date().toISOString() },
+          "relay_missing_message_update"
+        );
+      }
+
+      return twiml(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Sorry — I’m missing the message details for this call. Goodbye.</Say>
+  <Hangup/>
+</Response>`);
+    }
+
+    const action =
+      `${base}/api/twilio/relay?sid=${encodeURIComponent(sid)}&stage=confirm&calleeType=${encodeURIComponent(
+        calleeType
+      )}`;
+
+    // Mark as delivered attempt (asked for reply)
+    await safeKvSet(
+      relaySessionKey(sid),
+      {
         ...session,
         calleeType: session?.calleeType || calleeType,
         status: "delivered_asked_for_reply",
         updatedAt: new Date().toISOString(),
-      }).catch(() => null);
-    }
+      },
+      "delivered_asked_for_reply"
+    );
 
     return twiml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <!-- FOUNDZIE_RELAY_START sid=${escapeForXml(sid)} calleeType=${escapeForXml(calleeType)} -->
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Hi — this is Foundzie calling on behalf of ${escapeForXml(
-      fromName
-    )}.</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Hi — this is Foundzie calling on behalf of ${escapeForXml(fromName)}.</Say>
   <Pause length="1"/>
   <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Here’s the message:</Say>
   <Pause length="1"/>
-  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(msg || "You have a message.")}</Say>
+  <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">${escapeForXml(msg)}</Say>
   <Pause length="1"/>
   <Gather input="speech" action="${escapeForXml(action)}" method="POST" timeout="7" speechTimeout="auto">
     <Say voice="${escapeForXml(FALLBACK_TTS_VOICE)}">Would you like to send a reply back?</Say>
@@ -149,7 +206,16 @@ export async function POST(req: NextRequest) {
   const speechRaw = form ? form.get("SpeechResult") : null;
   const speech = typeof speechRaw === "string" ? speechRaw.trim() : "";
 
-  const session = sid ? await kvGetJSON<any>(relaySessionKey(sid)).catch(() => null) : null;
+  const session = sid ? await safeKvGet(relaySessionKey(sid), "relay_session_read_post") : null;
+
+  console.log("[relay] POST", {
+    sid,
+    stage,
+    calleeType,
+    hasSession: !!session,
+    speechLen: speech.length,
+    speechSample: speech.slice(0, 80),
+  });
 
   if (!sid || !session) {
     return twiml(`<?xml version="1.0" encoding="UTF-8"?>
@@ -164,17 +230,22 @@ export async function POST(req: NextRequest) {
 
   if (stage === "confirm") {
     if (isYes(speech)) {
-      const action = `${base}/api/twilio/relay?sid=${encodeURIComponent(sid)}&stage=reply&calleeType=${encodeURIComponent(
-        calleeType
-      )}`;
+      const action =
+        `${base}/api/twilio/relay?sid=${encodeURIComponent(sid)}&stage=reply&calleeType=${encodeURIComponent(
+          calleeType
+        )}`;
 
-      await kvSetJSON(relaySessionKey(sid), {
-        ...session,
-        calleeType: session?.calleeType || calleeType,
-        status: "delivered_confirmed_reply_intent",
-        recipientConfirm: speech || null,
-        updatedAt: new Date().toISOString(),
-      }).catch(() => null);
+      await safeKvSet(
+        relaySessionKey(sid),
+        {
+          ...session,
+          calleeType: session?.calleeType || calleeType,
+          status: "delivered_confirmed_reply_intent",
+          recipientConfirm: speech || null,
+          updatedAt: new Date().toISOString(),
+        },
+        "confirm_yes_update"
+      );
 
       return twiml(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -191,15 +262,18 @@ export async function POST(req: NextRequest) {
 
     const noReplyReason = isNo(speech) ? "They chose not to reply." : "They didn’t clearly confirm a reply.";
 
-    await kvSetJSON(relaySessionKey(sid), {
-      ...session,
-      calleeType: session?.calleeType || calleeType,
-      status: "delivered_no_reply",
-      recipientConfirm: speech || null,
-      updatedAt: new Date().toISOString(),
-    }).catch(() => null);
+    await safeKvSet(
+      relaySessionKey(sid),
+      {
+        ...session,
+        calleeType: session?.calleeType || calleeType,
+        status: "delivered_no_reply",
+        recipientConfirm: speech || null,
+        updatedAt: new Date().toISOString(),
+      },
+      "confirm_no_update"
+    );
 
-    // ✅ Bring caller back immediately with deterministic outcome
     if (callerCallSid) {
       const callerSay = `Done — I delivered your message. ${noReplyReason}`;
       await redirectTwilioCall(
@@ -222,13 +296,17 @@ export async function POST(req: NextRequest) {
   if (stage === "reply") {
     const replyText = (speech || "").slice(0, 360);
 
-    await kvSetJSON(relaySessionKey(sid), {
-      ...session,
-      calleeType: session?.calleeType || calleeType,
-      status: "delivered_with_reply",
-      recipientReply: replyText || null,
-      updatedAt: new Date().toISOString(),
-    }).catch(() => null);
+    await safeKvSet(
+      relaySessionKey(sid),
+      {
+        ...session,
+        calleeType: session?.calleeType || calleeType,
+        status: "delivered_with_reply",
+        recipientReply: replyText || null,
+        updatedAt: new Date().toISOString(),
+      },
+      "reply_update"
+    );
 
     if (callerCallSid) {
       const callerSay = replyText

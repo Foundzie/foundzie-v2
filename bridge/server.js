@@ -8,13 +8,10 @@ import { WebSocketServer, WebSocket } from "ws";
  * - Sends audio to OpenAI Realtime
  * - Sends audio back to Twilio
  *
- * Supports BOTH Realtime session schemas:
- * - Legacy: session.voice
- * - Newer: session.audio.output.voice
- *
- * Defaults:
- * - REALTIME_MODEL=gpt-realtime
- * - REALTIME_VOICE=marin
+ * IMPORTANT:
+ * Your logs show OpenAI rejects: session.audio (unknown_parameter).
+ * So this bridge now uses the LEGACY session schema ONLY:
+ *   session.voice = REALTIME_VOICE
  */
 
 const PORT = Number(process.env.PORT || 8080);
@@ -26,7 +23,6 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
-// ✅ Default to gpt-realtime + marin (overridable via Fly secrets)
 const REALTIME_MODEL = (process.env.REALTIME_MODEL || "gpt-realtime").trim();
 const REALTIME_VOICE = (process.env.REALTIME_VOICE || "marin").trim();
 
@@ -242,14 +238,6 @@ wss.on("connection", (twilioWs, req) => {
 
   let closed = false;
 
-  // Session schema fallback:
-  // - try "new" schema first (audio.output.voice)
-  // - if OpenAI errors, fallback to "legacy" schema (voice)
-  let sessionSchema = (process.env.REALTIME_SESSION_SCHEMA || "auto").trim(); // auto|new|legacy
-  let schemaChosen = null; // "new" | "legacy"
-  let schemaTriedNew = false;
-  let schemaTriedLegacy = false;
-
   function clearTimer(t) {
     if (t) clearTimeout(t);
     return null;
@@ -274,7 +262,6 @@ wss.on("connection", (twilioWs, req) => {
       roomId: custom.roomId || null,
       model: REALTIME_MODEL,
       voice: REALTIME_VOICE,
-      schema: schemaChosen || sessionSchema,
     });
 
     try {
@@ -498,6 +485,7 @@ wss.on("connection", (twilioWs, req) => {
       ...(args || {}),
       roomId: (args?.roomId || custom.roomId || "").toString() || "current",
       callSid: (args?.callSid || custom.callSid || "").toString() || "current",
+      calleeType: (args?.calleeType || "personal").toString(),
     };
 
     console.log("[tool] calling backend", { url, payload });
@@ -530,9 +518,16 @@ wss.on("connection", (twilioWs, req) => {
       item: { type: "function_call_output", call_id, output: JSON.stringify(resultObj || {}) },
     });
 
+    // IMPORTANT: push a short follow-up so caller hears confirmation while being redirected to hold
+    createUserMessage(
+      resultObj?.ok
+        ? "Tool succeeded. Briefly confirm you are placing the call now."
+        : "Tool failed. Apologize briefly and ask one question to fix it."
+    );
+
     const ok = createResponse(
       "Continue naturally in ENGLISH. " +
-        "If the tool succeeded, confirm briefly and warmly in one sentence. " +
+        "If the tool succeeded, confirm briefly and warmly in ONE sentence. " +
         "If it failed or was blocked, apologize briefly and ask ONE question to fix it."
     );
 
@@ -549,14 +544,17 @@ wss.on("connection", (twilioWs, req) => {
     pendingResponseTimer = clearTimer(pendingResponseTimer);
   }
 
-  // ---------- session.update (dual-schema) ----------
+  // ---------- session.update (LEGACY ONLY) ----------
 
-  function buildSessionUpdatePayload(schema /* "new" | "legacy" */) {
-    const baseSession = {
+  function buildLegacySessionUpdatePayload() {
+    return {
       modalities: ["audio", "text"],
       input_audio_format: "g711_ulaw",
       output_audio_format: "g711_ulaw",
       turn_detection: { type: "server_vad", silence_duration_ms: VAD_SILENCE_MS },
+
+      // LEGACY: voice field ONLY (no session.audio!)
+      voice: REALTIME_VOICE,
 
       instructions:
         "You are Foundzie, a warm, friendly personal concierge on a REAL phone call. " +
@@ -580,6 +578,7 @@ wss.on("connection", (twilioWs, req) => {
               message: { type: "string" },
               roomId: { type: "string" },
               callSid: { type: "string" },
+              calleeType: { type: "string", enum: ["personal", "business"] },
             },
             required: ["phone", "message"],
           },
@@ -587,84 +586,11 @@ wss.on("connection", (twilioWs, req) => {
       ],
       tool_choice: "auto",
     };
-
-    if (schema === "new") {
-      // Newer schema: session.audio.output.voice
-      return {
-        ...baseSession,
-        audio: {
-          output: { voice: REALTIME_VOICE },
-        },
-      };
-    }
-
-    // Legacy schema: session.voice
-    return {
-      ...baseSession,
-      voice: REALTIME_VOICE,
-    };
   }
 
   function sendSessionUpdate(ws) {
-    // schema selection:
-    // - forced by env REALTIME_SESSION_SCHEMA=new|legacy
-    // - else auto: try new first, fallback legacy on error
-    let schemaToUse = "new";
-    if (sessionSchema === "legacy") schemaToUse = "legacy";
-    if (sessionSchema === "new") schemaToUse = "new";
-
-    if (sessionSchema === "auto") {
-      if (schemaChosen) schemaToUse = schemaChosen;
-      else if (!schemaTriedNew) schemaToUse = "new";
-      else schemaToUse = "legacy";
-    }
-
-    if (schemaToUse === "new") schemaTriedNew = true;
-    if (schemaToUse === "legacy") schemaTriedLegacy = true;
-
-    const payload = buildSessionUpdatePayload(schemaToUse);
-
-    const ok = wsSend(ws, {
-      type: "session.update",
-      session: payload,
-    });
-
-    if (ok) {
-      schemaChosen = schemaChosen || schemaToUse;
-    }
-
-    return { ok, schemaToUse };
-  }
-
-  function forceSchemaFallback(ws) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-
-    if (schemaChosen === "new" && !schemaTriedLegacy) {
-      console.log("[openai] schema fallback -> legacy session.update");
-      schemaChosen = "legacy";
-      return sendSessionUpdate(ws).ok;
-    }
-
-    if (schemaChosen === "legacy" && !schemaTriedNew) {
-      console.log("[openai] schema fallback -> new session.update");
-      schemaChosen = "new";
-      return sendSessionUpdate(ws).ok;
-    }
-
-    if (!schemaChosen) {
-      if (schemaTriedNew && !schemaTriedLegacy) {
-        console.log("[openai] schema fallback -> legacy session.update");
-        schemaChosen = "legacy";
-        return sendSessionUpdate(ws).ok;
-      }
-      if (schemaTriedLegacy && !schemaTriedNew) {
-        console.log("[openai] schema fallback -> new session.update");
-        schemaChosen = "new";
-        return sendSessionUpdate(ws).ok;
-      }
-    }
-
-    return false;
+    const payload = buildLegacySessionUpdatePayload();
+    return wsSend(ws, { type: "session.update", session: payload });
   }
 
   function attachOpenAiHandlers(ws) {
@@ -677,7 +603,7 @@ wss.on("connection", (twilioWs, req) => {
       console.log("[openai] ws open -> session.update", {
         model: REALTIME_MODEL,
         voice: REALTIME_VOICE,
-        schema: sessionSchema,
+        schema: "legacy-only",
       });
 
       sendSessionUpdate(ws);
@@ -702,28 +628,14 @@ wss.on("connection", (twilioWs, req) => {
           responseInFlight = true;
         }
 
-        const message = String(msg?.error?.message || "");
-        const looksLikeSchemaIssue =
-          message.includes("voice") ||
-          message.includes("audio") ||
-          message.includes("session") ||
-          message.includes("unknown") ||
-          message.includes("invalid");
-
         console.error("[openai] error:", JSON.stringify(msg, null, 2));
-
-        if (!openaiReady && looksLikeSchemaIssue) {
-          const did = forceSchemaFallback(ws);
-          if (did) return;
-        }
-
         return;
       }
 
       if (msg.type === "session.updated") {
         openaiReady = true;
         diag.lastOpenAiSessionUpdatedAt = nowIso();
-        console.log("[openai] session.updated -> ready", { schemaChosen: schemaChosen || "unknown" });
+        console.log("[openai] session.updated -> ready", { schemaChosen: "legacy-only" });
         tryGreet();
         return;
       }

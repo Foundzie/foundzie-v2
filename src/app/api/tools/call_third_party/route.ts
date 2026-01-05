@@ -56,12 +56,20 @@ function fingerprintForCall(phone: string, message: string) {
 async function resolveActiveCallSid(roomId?: string) {
   const rid = (roomId || "").trim();
   if (rid && rid !== "current") {
-    const hit = await kvGetJSON<any>(activeCallKey(rid)).catch(() => null);
-    if (hit?.callSid) return { callSid: String(hit.callSid), from: String(hit.from || "") };
+    try {
+      const hit = await kvGetJSON<any>(activeCallKey(rid));
+      if (hit?.callSid) return { callSid: String(hit.callSid), from: String(hit.from || "") };
+    } catch (e) {
+      console.error("[call_third_party] kv read failed (activeCallKey)", { roomId: rid, error: String(e) });
+    }
   }
 
-  const last = await kvGetJSON<any>(LAST_ACTIVE_KEY).catch(() => null);
-  if (last?.callSid) return { callSid: String(last.callSid), from: String(last.from || "") };
+  try {
+    const last = await kvGetJSON<any>(LAST_ACTIVE_KEY);
+    if (last?.callSid) return { callSid: String(last.callSid), from: String(last.from || "") };
+  } catch (e) {
+    console.error("[call_third_party] kv read failed (LAST_ACTIVE_KEY)", { error: String(e) });
+  }
 
   return { callSid: "", from: "" };
 }
@@ -76,6 +84,24 @@ function relayByCalleeKey(calleeSid: string) {
 
 function makeSessionId() {
   return `relay-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function kvSetOrThrow(key: string, value: any, label: string) {
+  try {
+    await kvSetJSON(key, value);
+  } catch (e) {
+    console.error(`[call_third_party] KV WRITE FAILED (${label})`, { key, error: String(e) });
+    throw e;
+  }
+}
+
+async function kvGetOrNull(key: string, label: string) {
+  try {
+    return await kvGetJSON<any>(key);
+  } catch (e) {
+    console.error(`[call_third_party] KV READ FAILED (${label})`, { key, error: String(e) });
+    return null;
+  }
 }
 
 /**
@@ -93,10 +119,8 @@ export async function POST(req: NextRequest) {
   let roomId = String(body.roomId || "").trim();
   let callSid = String(body.callSid || "").trim();
 
-  // NEW: calleeType propagated into session + relay URL
   const calleeTypeRaw = String(body.calleeType || "").trim();
-  const calleeType: "personal" | "business" =
-    calleeTypeRaw === "business" ? "business" : "personal";
+  const calleeType: "personal" | "business" = calleeTypeRaw === "business" ? "business" : "personal";
 
   if (roomId === "current") roomId = "";
   if (callSid === "current") callSid = "";
@@ -126,7 +150,7 @@ export async function POST(req: NextRequest) {
   const fp = fingerprintForCall(phone, message);
   const cdKey = cooldownKey("call_third_party", fp);
 
-  const existing = await kvGetJSON<any>(cdKey).catch(() => null);
+  const existing = await kvGetOrNull(cdKey, "cooldown_read");
   const lastAt = existing?.at ? Date.parse(String(existing.at)) : 0;
   const now = Date.now();
 
@@ -147,42 +171,78 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  await kvSetJSON(cdKey, { at: new Date().toISOString() }).catch(() => null);
+  // IMPORTANT: do not swallow KV errors anymore
+  try {
+    await kvSetOrThrow(cdKey, { at: new Date().toISOString() }, "cooldown_write");
+  } catch {
+    return json({ ok: false, error: "kv_write_failed", where: "cooldown" }, 500);
+  }
 
   const base = getBaseUrl();
   const sessionId = makeSessionId();
 
-  await kvSetJSON(relaySessionKey(sessionId), {
+  // 0) Save relay session FIRST (hard requirement)
+  const sessionPayload = {
     sessionId,
     roomId: roomId || null,
     callerCallSid: callSid,
     toPhone: phone,
     message,
-    calleeType, // ✅ store it
+    calleeType,
     status: "created",
     createdAt: new Date().toISOString(),
-  }).catch(() => null);
+  };
+
+  try {
+    await kvSetOrThrow(relaySessionKey(sessionId), sessionPayload, "relay_session_create");
+  } catch {
+    return json(
+      {
+        ok: false,
+        error: "kv_write_failed",
+        where: "relay_session_create",
+        sessionId,
+      },
+      500
+    );
+  }
+
+  console.log("[call_third_party] relay session saved", {
+    sessionId,
+    callSid,
+    roomId: roomId || null,
+    calleeType,
+    toPhone: phone,
+    msgLen: message.length,
+  });
 
   // 1) Put caller on hold
   const holdUrl = `${base}/api/twilio/hold?sid=${encodeURIComponent(sessionId)}`;
-  const redirectResult = await redirectTwilioCall(callSid, holdUrl).catch((e: any) => {
-    return { error: String(e?.message || e) };
-  });
 
-  const callerRedirected = !!(redirectResult as any)?.sid;
+  let redirectResult: any = null;
+  try {
+    redirectResult = await redirectTwilioCall(callSid, holdUrl);
+  } catch (e: any) {
+    redirectResult = { error: String(e?.message || e) };
+  }
 
+  const callerRedirected = !!redirectResult?.sid;
   if (!callerRedirected) {
-    await kvSetJSON(relaySessionKey(sessionId), {
-      sessionId,
-      roomId: roomId || null,
-      callerCallSid: callSid,
-      toPhone: phone,
-      message,
-      calleeType,
-      status: "caller_redirect_failed",
-      error: (redirectResult as any)?.error || "redirectTwilioCall returned null",
-      updatedAt: new Date().toISOString(),
-    }).catch(() => null);
+    // update session with hard KV (best effort, but do log if fails)
+    try {
+      await kvSetOrThrow(
+        relaySessionKey(sessionId),
+        {
+          ...sessionPayload,
+          status: "caller_redirect_failed",
+          error: redirectResult?.error || "redirectTwilioCall returned null",
+          updatedAt: new Date().toISOString(),
+        },
+        "relay_session_update_redirect_failed"
+      );
+    } catch {
+      // already logged by kvSetOrThrow
+    }
 
     return json(
       {
@@ -205,6 +265,16 @@ export async function POST(req: NextRequest) {
   const from = process.env.TWILIO_PHONE_NUMBER;
 
   if (!sid || !token || !from) {
+    // bring caller back (best effort)
+    const failMsg =
+      "Twilio is not fully configured on the server, so I cannot place the outbound call right now.";
+    await redirectTwilioCall(
+      callSid,
+      `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(failMsg)}${
+        roomId ? `&roomId=${encodeURIComponent(roomId)}` : ""
+      }`
+    ).catch(() => null);
+
     return json(
       {
         ok: false,
@@ -219,8 +289,7 @@ export async function POST(req: NextRequest) {
 
   const relayUrl =
     `${base}/api/twilio/relay?sid=${encodeURIComponent(sessionId)}` +
-    `&calleeType=${encodeURIComponent(calleeType)}` + // ✅ pass it
-    `&roomId=${encodeURIComponent(roomId || "")}`;
+    `&calleeType=${encodeURIComponent(calleeType)}`;
 
   const client = twilio(sid, token);
 
@@ -236,17 +305,22 @@ export async function POST(req: NextRequest) {
       statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
     });
   } catch (e: any) {
-    await kvSetJSON(relaySessionKey(sessionId), {
-      sessionId,
-      roomId: roomId || null,
-      callerCallSid: callSid,
-      toPhone: phone,
-      message,
-      calleeType,
-      status: "callee_create_failed",
-      error: String(e?.message || e),
-      updatedAt: new Date().toISOString(),
-    }).catch(() => null);
+    console.error("[call_third_party] twilio outbound create FAILED", { sessionId, error: String(e?.message || e) });
+
+    try {
+      await kvSetOrThrow(
+        relaySessionKey(sessionId),
+        {
+          ...sessionPayload,
+          status: "callee_create_failed",
+          error: String(e?.message || e),
+          updatedAt: new Date().toISOString(),
+        },
+        "relay_session_update_callee_create_failed"
+      );
+    } catch {
+      // logged
+    }
 
     const failMsg =
       "I tried calling them, but the call didn’t go through. Want me to try again or text them instead?";
@@ -272,23 +346,34 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  await kvSetJSON(relaySessionKey(sessionId), {
-    sessionId,
-    roomId: roomId || null,
-    callerCallSid: callSid,
-    toPhone: phone,
-    message,
-    calleeType,
-    status: "callee_dialed",
-    calleeSid: callee?.sid ?? null,
-    updatedAt: new Date().toISOString(),
-  }).catch(() => null);
+  // Save dialed state (hard log on failure)
+  const calleeSid = callee?.sid ? String(callee.sid) : null;
 
-  if (callee?.sid) {
-    await kvSetJSON(relayByCalleeKey(String(callee.sid)), {
-      sessionId,
-      createdAt: new Date().toISOString(),
-    }).catch(() => null);
+  try {
+    await kvSetOrThrow(
+      relaySessionKey(sessionId),
+      {
+        ...sessionPayload,
+        status: "callee_dialed",
+        calleeSid,
+        updatedAt: new Date().toISOString(),
+      },
+      "relay_session_update_callee_dialed"
+    );
+  } catch {
+    // logged
+  }
+
+  if (calleeSid) {
+    try {
+      await kvSetOrThrow(
+        relayByCalleeKey(calleeSid),
+        { sessionId, createdAt: new Date().toISOString() },
+        "relay_by_callee_write"
+      );
+    } catch {
+      // logged
+    }
   }
 
   return json({
@@ -301,15 +386,15 @@ export async function POST(req: NextRequest) {
     cooldownSeconds: COOLDOWN_SECONDS,
     steps: {
       callerRedirected,
-      calleeDialed: !!callee?.sid,
+      calleeDialed: !!calleeSid,
     },
     urls: {
       holdUrl,
       relayUrl,
     },
     twilio: {
-      redirect: (redirectResult as any)?.sid ? { sid: (redirectResult as any).sid } : redirectResult,
-      calleeSid: callee?.sid ?? null,
+      redirect: redirectResult?.sid ? { sid: redirectResult.sid } : redirectResult,
+      calleeSid,
       calleeStatus: callee?.status ?? null,
     },
   });
