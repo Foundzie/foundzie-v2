@@ -71,7 +71,6 @@ function wsSend(ws, obj) {
  * Upstash REST API:
  * - GET foo -> REST_URL/get/foo
  * - JSON/binary via POST body -> REST_URL/set/foo with body appended as value
- * Docs: Upstash Redis REST API. (SET/GET semantics + JSON POST). See Upstash docs. :contentReference[oaicite:1]{index=1}
  */
 async function upstashSetJSON(key, obj, ttlSeconds) {
   if (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_TOKEN) return { ok: false, skipped: true };
@@ -227,6 +226,9 @@ wss.on("connection", (twilioWs, req) => {
   const toolArgBuffers = new Map(); // call_id -> string
   const toolCooldownMap = new Map(); // fp -> lastTimeMs
   const seenToolKeys = new Set(); // exact args, short TTL
+
+  // ✅ NEW: tool call dedupe (prevents empty args “first run” + double execution)
+  const handledToolCalls = new Set(); // call_id -> true
 
   // M16 callee tracking
   let calleeFlowStarted = false;
@@ -560,7 +562,6 @@ wss.on("connection", (twilioWs, req) => {
     const task = (custom.task || "").trim();
     const safeTask = task.slice(0, 700);
 
-    // Speak task + ask for reply
     const ok = createResponse(
       `Speak naturally in English. You are calling the recipient. ` +
         `Deliver this task ONCE: "${safeTask}". ` +
@@ -602,7 +603,6 @@ wss.on("connection", (twilioWs, req) => {
 
   function tryParseReplyFromAssistantText(text) {
     const t = String(text || "");
-    // Soft heuristics: look for “reply: X” or “they said X”
     const m1 = t.match(/reply\s*[:\-]\s*([^\n.]{1,80})/i);
     if (m1 && m1[1]) return m1[1].trim();
 
@@ -638,7 +638,6 @@ wss.on("connection", (twilioWs, req) => {
 
       if (msg.type === "error") {
         console.error("[openai] error:", JSON.stringify(msg, null, 2));
-        // Keep connection alive; your reconnect logic handles closed socket
         return;
       }
 
@@ -646,11 +645,9 @@ wss.on("connection", (twilioWs, req) => {
         openaiReady = true;
         console.log("[openai] session.updated -> ready", { schemaChosen: "legacy-only", role: custom.role });
 
-        // Role-specific kickoff
         if (custom.role === "callee") {
           maybeStartCalleeFlow();
         } else {
-          // Caller greeting
           if (!greeted && streamSid) {
             greeted = true;
             console.log("[bridge] greeting triggered");
@@ -698,7 +695,6 @@ wss.on("connection", (twilioWs, req) => {
       ) {
         responseInFlight = false;
 
-        // M16: if we already captured a reply and assistant finished speaking, we can end call
         if (custom.role === "callee" && calleeReplyCaptured) {
           const reply = tryParseReplyFromAssistantText(calleeAssistantText);
           await writeM16Outcome("callee_complete", {
@@ -706,12 +702,10 @@ wss.on("connection", (twilioWs, req) => {
             doneAt: nowIso(),
           });
 
-          // End stream (TwiML will Hangup after <Stream>)
           shutdown("m16_callee_complete");
           return;
         }
 
-        // Caller leg: your existing silent-output recovery
         if (respOutboundAudioFrames === 0 && respOutboundTextPieces === 0) {
           console.log("[openai] response.done with NO output -> gated forceSpeak");
           safeForceSpeak("response_done_no_output");
@@ -741,9 +735,7 @@ wss.on("connection", (twilioWs, req) => {
 
           wsSend(openaiWs, { type: "input_audio_buffer.commit" });
 
-          // Role-aware response prompt:
           if (custom.role === "callee") {
-            // First recipient reply completes the job:
             calleeReplyCaptured = true;
 
             const ok = createResponse(
@@ -756,7 +748,6 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          // Caller leg normal
           const ok = createResponse(
             "Reply briefly and warmly in ENGLISH (1–2 sentences). Ask ONE question if needed."
           );
@@ -766,7 +757,7 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // Tool calling: delta args
+      // Tool calling: delta args (buffer only)
       if (msg.type === "response.function_call_arguments.delta") {
         const call_id = msg.call_id || msg.callId || msg.id;
         const delta = msg.delta || "";
@@ -776,11 +767,16 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // Tool calling: done
+      // ✅ Tool calling: done (EXECUTE ONLY HERE + DEDUPE + IGNORE EMPTY ARGS)
       if (msg.type === "response.function_call_arguments.done") {
         const call_id = msg.call_id || msg.callId || msg.id;
         const name = msg.name || msg.tool_name || msg.function?.name;
         if (!call_id || !name) return;
+
+        if (handledToolCalls.has(call_id)) {
+          console.log("[tool] duplicate done ignored", { callId: call_id, name });
+          return;
+        }
 
         const buf = toolArgBuffers.get(call_id) || "";
         toolArgBuffers.delete(call_id);
@@ -792,6 +788,16 @@ wss.on("connection", (twilioWs, req) => {
           args = {};
         }
 
+        // Critical: ignore the empty/partial call that causes “asked twice”
+        const phone = String(args?.phone || "").trim();
+        const message = String(args?.message || "").trim();
+        if (!phone || !message) {
+          console.log("[tool] done with empty args ignored", { name, callId: call_id, args });
+          return;
+        }
+
+        handledToolCalls.add(call_id);
+
         console.log("[tool] received", { name, callId: call_id, args, at: nowIso() });
 
         const result = await runToolCall(name, args);
@@ -799,23 +805,21 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // Alternate tool shape
+      // ✅ IMPORTANT: do NOT execute tools from response.output_item.added
+      // Some Realtime versions emit an early function_call item with {} arguments.
+      // Executing here is what causes the “missing args; skipping execution” first run.
+      // We intentionally ignore this shape and rely on function_call_arguments.done above.
       if (msg.type === "response.output_item.added" && msg.item?.type === "function_call") {
         const call_id = msg.item.call_id || msg.item.id;
         const name = msg.item.name;
         const argsRaw = msg.item.arguments || "{}";
-
-        let args = {};
-        try {
-          args = JSON.parse(argsRaw);
-        } catch {
-          args = {};
+        if (DEBUG_OPENAI_EVENTS) {
+          console.log("[tool] output_item.added seen (ignored)", {
+            name,
+            callId: call_id,
+            argsPreview: String(argsRaw).slice(0, 120),
+          });
         }
-
-        console.log("[tool] received", { name, callId: call_id, args, at: nowIso() });
-
-        const result = await runToolCall(name, args);
-        sendToolResultToOpenAI(call_id, result);
         return;
       }
     });
