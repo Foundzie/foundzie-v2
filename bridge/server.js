@@ -2,18 +2,6 @@
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 
-/**
- * Foundzie Twilio <Connect><Stream> bridge (Fly.io)
- * - Receives Twilio Media Streams (g711_ulaw)
- * - Sends audio to OpenAI Realtime
- * - Sends audio back to Twilio
- *
- * IMPORTANT:
- * Your logs show OpenAI rejects: session.audio (unknown_parameter).
- * So this bridge now uses the LEGACY session schema ONLY:
- *   session.voice = REALTIME_VOICE
- */
-
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
 
@@ -51,6 +39,11 @@ const DEBUG_OPENAI_TEXT = (process.env.DEBUG_OPENAI_TEXT || "").trim() === "1";
 const RESPONSE_CREATE_MIN_GAP_MS = Number(process.env.RESPONSE_CREATE_MIN_GAP_MS || 350);
 const FORCE_SPEAK_MAX_PER_CALL = Number(process.env.FORCE_SPEAK_MAX_PER_CALL || 3);
 
+// Upstash Redis REST (for writing M16 outcome from Fly)
+const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim().replace(/\/+$/, "");
+const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
+const M16_OUTCOME_TTL_SECONDS = Number(process.env.M16_OUTCOME_TTL_SECONDS || 60 * 60 * 6); // 6h
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -75,8 +68,34 @@ function wsSend(ws, obj) {
 }
 
 /**
- * Realtime audio delta shapes vary by version.
+ * Upstash REST API:
+ * - GET foo -> REST_URL/get/foo
+ * - JSON/binary via POST body -> REST_URL/set/foo with body appended as value
+ * Docs: Upstash Redis REST API. (SET/GET semantics + JSON POST). See Upstash docs. :contentReference[oaicite:1]{index=1}
  */
+async function upstashSetJSON(key, obj, ttlSeconds) {
+  if (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_TOKEN) return { ok: false, skipped: true };
+
+  const safeKey = encodeURIComponent(String(key || ""));
+  const url = `${UPSTASH_REDIS_REST_URL}/set/${safeKey}?EX=${encodeURIComponent(
+    String(ttlSeconds || M16_OUTCOME_TTL_SECONDS)
+  )}`;
+
+  const body = JSON.stringify(obj ?? {});
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+      "content-type": "application/json",
+    },
+    body,
+  });
+
+  const text = await r.text().catch(() => "");
+  return { ok: r.ok, status: r.status, raw: text.slice(0, 500) };
+}
+
+// --- Realtime audio delta shapes vary by version.
 function extractAudioDelta(msg) {
   if (!msg || typeof msg !== "object") return null;
 
@@ -131,41 +150,12 @@ function extractTextDelta(msg) {
   return null;
 }
 
-// --- diagnostics ---
-const diag = {
-  startedAt: nowIso(),
-  model: REALTIME_MODEL,
-  voice: REALTIME_VOICE,
-
-  lastTwilioStartAt: null,
-  lastTwilioMediaAt: null,
-
-  lastOpenAiOpenAt: null,
-  lastOpenAiSessionUpdatedAt: null,
-  lastOpenAiErrorAt: null,
-  lastOpenAiError: null,
-
-  lastOutboundAudioAt: null,
-  lastInboundAudioAt: null,
-
-  lastOutboundTextAt: null,
-  lastOutboundTextSample: null,
-
-  lastResponseDoneAt: null,
-  lastResponseDoneSample: null,
-  responseDoneNoOutputCount: 0,
-
-  counters: {
-    twilioMediaFrames: 0,
-    twilioConnections: 0,
-    openaiConnections: 0,
-    openaiAudioDeltas: 0,
-    openaiTextDeltas: 0,
-    openaiResponseCreates: 0,
-    openaiResponseDones: 0,
-    openaiActiveResponseErrors: 0,
-  },
-};
+function normalizePhoneForFp(phone) {
+  const raw = String(phone || "").trim();
+  if (!raw) return "";
+  const digits = raw.replace(/[^\d]/g, "");
+  return digits.slice(-11);
+}
 
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
@@ -173,19 +163,11 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ ok: true, ts: nowIso() }));
     return;
   }
-
-  if (req.url === "/diag") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, ts: nowIso(), ...diag }, null, 2));
-    return;
-  }
-
   if (req.url === "/") {
     res.writeHead(200, { "content-type": "text/plain" });
     res.end("Foundzie Bridge is running");
     return;
   }
-
   res.writeHead(404);
   res.end("not found");
 });
@@ -194,13 +176,23 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server, path: "/twilio/stream" });
 
 wss.on("connection", (twilioWs, req) => {
-  diag.counters.twilioConnections += 1;
   console.log("[twilio] ws connected", { url: req?.url });
 
   let streamSid = null;
 
-  // From Twilio start.customParameters
-  let custom = { base: "", roomId: "", callSid: "", from: "", source: "" };
+  // From Twilio start.customParameters (expand for M16)
+  let custom = {
+    base: "",
+    roomId: "",
+    callSid: "",
+    from: "",
+    source: "",
+    role: "caller", // caller | callee
+    calleeType: "personal", // personal | business
+    task: "",
+    sessionId: "",
+    callerCallSid: "",
+  };
 
   // OpenAI socket + state
   let openaiWs = null;
@@ -212,7 +204,7 @@ wss.on("connection", (twilioWs, req) => {
   let responseInFlight = false;
   let lastResponseCreateAtMs = 0;
 
-  // Per-response output counters (used to detect silent response)
+  // Per-response output counters
   let respOutboundAudioFrames = 0;
   let respOutboundTextPieces = 0;
 
@@ -235,6 +227,12 @@ wss.on("connection", (twilioWs, req) => {
   const toolArgBuffers = new Map(); // call_id -> string
   const toolCooldownMap = new Map(); // fp -> lastTimeMs
   const seenToolKeys = new Set(); // exact args, short TTL
+
+  // M16 callee tracking
+  let calleeFlowStarted = false;
+  let calleeReplyCaptured = false;
+  let calleeAssistantText = ""; // we’ll parse assistant’s text to store outcome
+  let calleeOutcomeWritten = false;
 
   let closed = false;
 
@@ -260,6 +258,8 @@ wss.on("connection", (twilioWs, req) => {
       streamSid,
       callSid: custom.callSid || null,
       roomId: custom.roomId || null,
+      role: custom.role || null,
+      sessionId: custom.sessionId || null,
       model: REALTIME_MODEL,
       voice: REALTIME_VOICE,
     });
@@ -283,13 +283,6 @@ wss.on("connection", (twilioWs, req) => {
 
   function toolKey(name, args) {
     return `${name}::${JSON.stringify(args || {})}`;
-  }
-
-  function normalizePhoneForFp(phone) {
-    const raw = String(phone || "").trim();
-    if (!raw) return "";
-    const digits = raw.replace(/[^\d]/g, "");
-    return digits.slice(-11);
   }
 
   function fingerprintToolCall(name, args = {}) {
@@ -319,7 +312,6 @@ wss.on("connection", (twilioWs, req) => {
   }
 
   // ---------- Response gating helpers ----------
-
   function canCreateResponseNow() {
     if (!openaiReady || !openaiWs) return false;
     if (responseInFlight) return false;
@@ -333,24 +325,6 @@ wss.on("connection", (twilioWs, req) => {
     lastResponseCreateAtMs = Date.now();
     respOutboundAudioFrames = 0;
     respOutboundTextPieces = 0;
-    diag.counters.openaiResponseCreates += 1;
-  }
-
-  function markResponseDone(msg) {
-    responseInFlight = false;
-    diag.counters.openaiResponseDones += 1;
-    diag.lastResponseDoneAt = nowIso();
-    diag.lastResponseDoneSample = msg;
-
-    if (respOutboundAudioFrames === 0 && respOutboundTextPieces === 0) {
-      diag.responseDoneNoOutputCount += 1;
-    }
-
-    if (queuedForceSpeakReason) {
-      const reason = queuedForceSpeakReason;
-      queuedForceSpeakReason = null;
-      safeForceSpeak(reason);
-    }
   }
 
   function createResponse(instructions) {
@@ -376,6 +350,18 @@ wss.on("connection", (twilioWs, req) => {
     });
   }
 
+  function armAudioWatchdog(label) {
+    audioWatchdogTimer = clearTimer(audioWatchdogTimer);
+    audioWatchdogTimer = setTimeout(() => {
+      if (closed) return;
+      if (!openaiReady) return;
+      if (respOutboundAudioFrames > 0) return;
+
+      console.log("[bridge] audio watchdog fired:", label);
+      safeForceSpeak(`audio_watchdog:${label}`);
+    }, 1700);
+  }
+
   function safeForceSpeak(reason) {
     if (!openaiReady || !openaiWs) return;
     if (forceSpeakCount >= FORCE_SPEAK_MAX_PER_CALL) {
@@ -391,70 +377,30 @@ wss.on("connection", (twilioWs, req) => {
     forceSpeakCount += 1;
     console.log("[bridge] forceSpeakNow:", reason, { count: forceSpeakCount });
 
-    createUserMessage("Call connected. Speak a short greeting now.");
-    createResponse("Greet the caller in ONE short sentence, then ask: “How can I help?”");
+    // Role-aware force speak
+    if (custom.role === "callee") {
+      createUserMessage("Call connected. Deliver the task now and request a short reply.");
+      createResponse(
+        `You are calling the recipient. Speak naturally in English. Deliver the task now: "${custom.task}". ` +
+          `Then ask for a short reply. Keep it to 1–2 sentences.`
+      );
+    } else {
+      createUserMessage("Call connected. Speak a short greeting now.");
+      createResponse("Greet the caller in ONE short sentence, then ask: “How can I help?”");
+    }
+
     armAudioWatchdog("force_speak");
   }
 
-  function armAudioWatchdog(label) {
-    audioWatchdogTimer = clearTimer(audioWatchdogTimer);
-    audioWatchdogTimer = setTimeout(() => {
-      if (closed) return;
-      if (!openaiReady) return;
-      if (respOutboundAudioFrames > 0) return;
-
-      console.log("[bridge] audio watchdog fired:", label);
-      safeForceSpeak(`audio_watchdog:${label}`);
-    }, 1700);
-  }
-
-  function tryGreet() {
-    if (greeted) return;
-    if (!openaiReady) return;
-    if (!streamSid) return;
-
-    greeted = true;
-    console.log("[bridge] greeting triggered");
-
-    const ok = createResponse(
-      "Speak warmly and naturally in ENGLISH. One short sentence greeting, then ask: “How can I help?”"
-    );
-
-    if (!ok) {
-      safeForceSpeak("greet_create_blocked");
-      return;
-    }
-
-    armAudioWatchdog("greet");
-
-    greetingRetryTimer = clearTimer(greetingRetryTimer);
-    greetingRetryTimer = setTimeout(() => {
-      if (closed) return;
-      if (!openaiReady) return;
-      if (respOutboundAudioFrames > 0) return;
-
-      console.log("[bridge] greeting retry: still no outbound audio deltas observed");
-      safeForceSpeak("greeting_retry_no_audio");
-    }, 2600);
-  }
-
-  // Keepalive ping (Twilio)
-  const pingInterval = setInterval(() => {
-    try {
-      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
-    } catch {}
-  }, 15000);
-
-  // Optional keepalive ping (OpenAI)
-  const openAiPingInterval = setInterval(() => {
-    try {
-      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.ping();
-    } catch {}
-  }, 20000);
-
+  // ---------- Tools (caller leg only; callee leg should NOT call tools) ----------
   async function runToolCall(name, args) {
     if (name !== "call_third_party") {
       return { ok: false, message: `Unknown tool: ${name}` };
+    }
+
+    // Callee leg must not call tools (avoid recursion)
+    if (custom.role === "callee") {
+      return { ok: false, blocked: "role_callee_tools_disabled" };
     }
 
     const phone = String(args?.phone || "").trim();
@@ -518,7 +464,6 @@ wss.on("connection", (twilioWs, req) => {
       item: { type: "function_call_output", call_id, output: JSON.stringify(resultObj || {}) },
     });
 
-    // IMPORTANT: push a short follow-up so caller hears confirmation while being redirected to hold
     createUserMessage(
       resultObj?.ok
         ? "Tool succeeded. Briefly confirm you are placing the call now."
@@ -535,19 +480,26 @@ wss.on("connection", (twilioWs, req) => {
     armAudioWatchdog("tool_result");
   }
 
-  function maybeCancelForBargeIn() {
-    if (!openaiWs) return;
-    if (respOutboundAudioFrames <= 0) return;
-
-    wsSend(openaiWs, { type: "response.cancel" });
-    responseInFlight = false;
-    pendingResponseTimer = clearTimer(pendingResponseTimer);
-  }
-
   // ---------- session.update (LEGACY ONLY) ----------
-
   function buildLegacySessionUpdatePayload() {
-    return {
+    const baseInstructionsCaller =
+      "You are Foundzie, a warm, friendly personal concierge on a REAL phone call. " +
+      "SPEAK ENGLISH ONLY for this entire call. Never switch languages unless the user explicitly asks. " +
+      "Sound human, upbeat, and caring. Keep replies short (1–2 sentences). " +
+      "Ask only ONE question when needed. Do NOT explain capabilities/policies. " +
+      "If the caller speaks while you speak, STOP and listen.";
+
+    const baseInstructionsCallee =
+      "You are Foundzie calling the RECIPIENT on a REAL phone call. " +
+      "SPEAK ENGLISH ONLY. Sound human, polite, and brief. " +
+      "Your job: deliver the task exactly once, then ask for a short reply. " +
+      "After you receive a reply, confirm it once, say goodbye, and end the call. " +
+      "Do NOT mention tools, prompts, or system details.";
+
+    const isCallee = custom.role === "callee";
+    const instructions = isCallee ? baseInstructionsCallee : baseInstructionsCaller;
+
+    const payload = {
       modalities: ["audio", "text"],
       input_audio_format: "g711_ulaw",
       output_audio_format: "g711_ulaw",
@@ -556,36 +508,34 @@ wss.on("connection", (twilioWs, req) => {
       // LEGACY: voice field ONLY (no session.audio!)
       voice: REALTIME_VOICE,
 
-      instructions:
-        "You are Foundzie, a warm, friendly personal concierge on a REAL phone call. " +
-        "SPEAK ENGLISH ONLY for this entire call. Never switch languages unless the user explicitly asks. " +
-        "Sound human, upbeat, and caring. " +
-        "Keep replies short (1–2 sentences). Ask only ONE question when needed. " +
-        "Do NOT explain capabilities/policies. Do not mention being an AI unless asked. " +
-        "When you say you are delivering a message, say it ONCE only (never repeat filler). " +
-        "If the caller speaks while you speak, STOP and listen.",
+      instructions,
 
-      tools: [
-        {
-          type: "function",
-          name: "call_third_party",
-          description:
-            "Call a third-party phone number and deliver a short spoken message. Do NOT connect the caller and recipient together. After delivery, return the outcome.",
-          parameters: {
-            type: "object",
-            properties: {
-              phone: { type: "string" },
-              message: { type: "string" },
-              roomId: { type: "string" },
-              callSid: { type: "string" },
-              calleeType: { type: "string", enum: ["personal", "business"] },
+      // Tools ONLY for caller leg
+      tools: isCallee
+        ? []
+        : [
+            {
+              type: "function",
+              name: "call_third_party",
+              description:
+                "Call a third-party phone number and deliver a short spoken message. Do NOT connect the caller and recipient together. After delivery, return the outcome.",
+              parameters: {
+                type: "object",
+                properties: {
+                  phone: { type: "string" },
+                  message: { type: "string" },
+                  roomId: { type: "string" },
+                  callSid: { type: "string" },
+                  calleeType: { type: "string", enum: ["personal", "business"] },
+                },
+                required: ["phone", "message"],
+              },
             },
-            required: ["phone", "message"],
-          },
-        },
-      ],
-      tool_choice: "auto",
+          ],
+      tool_choice: isCallee ? "none" : "auto",
     };
+
+    return payload;
   }
 
   function sendSessionUpdate(ws) {
@@ -593,17 +543,85 @@ wss.on("connection", (twilioWs, req) => {
     return wsSend(ws, { type: "session.update", session: payload });
   }
 
+  function maybeStartCalleeFlow() {
+    if (custom.role !== "callee") return;
+    if (calleeFlowStarted) return;
+    if (!openaiReady) return;
+    if (!streamSid) return;
+
+    calleeFlowStarted = true;
+    console.log("[m16] callee flow start", {
+      sessionId: custom.sessionId || null,
+      callerCallSid: custom.callerCallSid || null,
+      taskLen: (custom.task || "").length,
+      calleeType: custom.calleeType || null,
+    });
+
+    const task = (custom.task || "").trim();
+    const safeTask = task.slice(0, 700);
+
+    // Speak task + ask for reply
+    const ok = createResponse(
+      `Speak naturally in English. You are calling the recipient. ` +
+        `Deliver this task ONCE: "${safeTask}". ` +
+        `Then ask: "Do you have a quick reply?" Keep it short (1–2 sentences).`
+    );
+
+    if (!ok) safeForceSpeak("callee_start_blocked");
+    armAudioWatchdog("callee_start");
+  }
+
+  async function writeM16Outcome(kind, data) {
+    const sessionId = (custom.sessionId || "").trim();
+    if (!sessionId) return;
+
+    const key = `foundzie:m16:callee:${sessionId}:v1`;
+    const payload = {
+      sessionId,
+      kind,
+      role: "callee",
+      callSid: custom.callSid || null,
+      roomId: custom.roomId || null,
+      from: custom.from || null,
+      callerCallSid: custom.callerCallSid || null,
+      calleeType: custom.calleeType || null,
+      task: (custom.task || "").slice(0, 900) || null,
+      assistantText: calleeAssistantText.slice(0, 2500) || null,
+      ...data,
+      updatedAt: nowIso(),
+    };
+
+    const r = await upstashSetJSON(key, payload, M16_OUTCOME_TTL_SECONDS).catch((e) => ({
+      ok: false,
+      error: String(e?.message || e),
+    }));
+
+    calleeOutcomeWritten = !!r?.ok;
+    console.log("[m16] outcome write", { ok: !!r?.ok, status: r?.status, key, sessionId });
+  }
+
+  function tryParseReplyFromAssistantText(text) {
+    const t = String(text || "");
+    // Soft heuristics: look for “reply: X” or “they said X”
+    const m1 = t.match(/reply\s*[:\-]\s*([^\n.]{1,80})/i);
+    if (m1 && m1[1]) return m1[1].trim();
+
+    const m2 = t.match(/they (?:said|replied)\s*[:\-]?\s*([^\n.]{1,80})/i);
+    if (m2 && m2[1]) return m2[1].trim();
+
+    return "";
+  }
+
   function attachOpenAiHandlers(ws) {
     ws.on("open", () => {
-      diag.counters.openaiConnections += 1;
       openaiConnecting = false;
       openaiReady = false;
-      diag.lastOpenAiOpenAt = nowIso();
 
       console.log("[openai] ws open -> session.update", {
         model: REALTIME_MODEL,
         voice: REALTIME_VOICE,
         schema: "legacy-only",
+        role: custom.role || "caller",
       });
 
       sendSessionUpdate(ws);
@@ -619,24 +637,30 @@ wss.on("connection", (twilioWs, req) => {
       }
 
       if (msg.type === "error") {
-        diag.lastOpenAiErrorAt = nowIso();
-        diag.lastOpenAiError = msg;
-
-        const code = msg?.error?.code || msg?.error?.type || "";
-        if (code === "conversation_already_has_active_response") {
-          diag.counters.openaiActiveResponseErrors += 1;
-          responseInFlight = true;
-        }
-
         console.error("[openai] error:", JSON.stringify(msg, null, 2));
+        // Keep connection alive; your reconnect logic handles closed socket
         return;
       }
 
       if (msg.type === "session.updated") {
         openaiReady = true;
-        diag.lastOpenAiSessionUpdatedAt = nowIso();
-        console.log("[openai] session.updated -> ready", { schemaChosen: "legacy-only" });
-        tryGreet();
+        console.log("[openai] session.updated -> ready", { schemaChosen: "legacy-only", role: custom.role });
+
+        // Role-specific kickoff
+        if (custom.role === "callee") {
+          maybeStartCalleeFlow();
+        } else {
+          // Caller greeting
+          if (!greeted && streamSid) {
+            greeted = true;
+            console.log("[bridge] greeting triggered");
+            const ok = createResponse(
+              "Speak warmly and naturally in ENGLISH. One short sentence greeting, then ask: “How can I help?”"
+            );
+            if (!ok) safeForceSpeak("greet_create_blocked");
+            armAudioWatchdog("greet");
+          }
+        }
         return;
       }
 
@@ -645,25 +669,20 @@ wss.on("connection", (twilioWs, req) => {
       if (audioDelta && streamSid) {
         respOutboundAudioFrames += 1;
         outboundAudioFramesTotal += 1;
-        diag.counters.openaiAudioDeltas += 1;
-
-        if (outboundAudioFramesTotal === 1) {
-          diag.lastOutboundAudioAt = nowIso();
-          console.log("[audio] first outbound audio delta -> Twilio", { at: diag.lastOutboundAudioAt });
-        }
-
         wsSend(twilioWs, { event: "media", streamSid, media: { payload: audioDelta } });
         return;
       }
 
-      // Text deltas
+      // Text deltas (capture for M16 outcome parsing)
       const textDelta = extractTextDelta(msg);
       if (textDelta) {
         respOutboundTextPieces += 1;
-        diag.counters.openaiTextDeltas += 1;
-        diag.lastOutboundTextAt = nowIso();
-        diag.lastOutboundTextSample = String(textDelta).slice(0, 180);
-        if (DEBUG_OPENAI_TEXT) console.log("[text] delta:", String(textDelta).slice(0, 200));
+        const piece = String(textDelta);
+        if (custom.role === "callee") {
+          calleeAssistantText += piece;
+          if (calleeAssistantText.length > 4000) calleeAssistantText = calleeAssistantText.slice(-4000);
+        }
+        if (DEBUG_OPENAI_TEXT) console.log("[text] delta:", piece.slice(0, 200));
       }
 
       // Response lifecycle
@@ -677,8 +696,22 @@ wss.on("connection", (twilioWs, req) => {
         msg.type === "response.completed" ||
         msg.type === "response.stopped"
       ) {
-        markResponseDone(msg);
+        responseInFlight = false;
 
+        // M16: if we already captured a reply and assistant finished speaking, we can end call
+        if (custom.role === "callee" && calleeReplyCaptured) {
+          const reply = tryParseReplyFromAssistantText(calleeAssistantText);
+          await writeM16Outcome("callee_complete", {
+            reply: reply || null,
+            doneAt: nowIso(),
+          });
+
+          // End stream (TwiML will Hangup after <Stream>)
+          shutdown("m16_callee_complete");
+          return;
+        }
+
+        // Caller leg: your existing silent-output recovery
         if (respOutboundAudioFrames === 0 && respOutboundTextPieces === 0) {
           console.log("[openai] response.done with NO output -> gated forceSpeak");
           safeForceSpeak("response_done_no_output");
@@ -686,12 +719,11 @@ wss.on("connection", (twilioWs, req) => {
 
         mediaFramesSinceLastResponse = 0;
         pendingResponseTimer = clearTimer(pendingResponseTimer);
-        return;
-      }
-
-      // Barge-in
-      if (msg.type === "input_audio_buffer.speech_started") {
-        if (responseInFlight) maybeCancelForBargeIn();
+        if (queuedForceSpeakReason) {
+          const reason = queuedForceSpeakReason;
+          queuedForceSpeakReason = null;
+          safeForceSpeak(reason);
+        }
         return;
       }
 
@@ -709,6 +741,22 @@ wss.on("connection", (twilioWs, req) => {
 
           wsSend(openaiWs, { type: "input_audio_buffer.commit" });
 
+          // Role-aware response prompt:
+          if (custom.role === "callee") {
+            // First recipient reply completes the job:
+            calleeReplyCaptured = true;
+
+            const ok = createResponse(
+              `You just heard the recipient's reply. ` +
+                `Respond with: "Thanks — I’ll pass that along. Goodbye." ` +
+                `Also include a short text-only marker like "Reply: <their reply>" in your TEXT output. ` +
+                `Keep spoken audio to one short sentence.`
+            );
+            if (ok) armAudioWatchdog("callee_post_reply");
+            return;
+          }
+
+          // Caller leg normal
           const ok = createResponse(
             "Reply briefly and warmly in ENGLISH (1–2 sentences). Ask ONE question if needed."
           );
@@ -797,8 +845,6 @@ wss.on("connection", (twilioWs, req) => {
     });
 
     ws.on("error", (e) => {
-      diag.lastOpenAiErrorAt = nowIso();
-      diag.lastOpenAiError = String(e?.message || e);
       console.error("[openai] ws error:", e);
     });
   }
@@ -822,6 +868,20 @@ wss.on("connection", (twilioWs, req) => {
   // Start OpenAI
   connectOpenAi();
 
+  // Keepalive ping (Twilio)
+  const pingInterval = setInterval(() => {
+    try {
+      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
+    } catch {}
+  }, 15000);
+
+  // Optional keepalive ping (OpenAI)
+  const openAiPingInterval = setInterval(() => {
+    try {
+      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.ping();
+    } catch {}
+  }, 20000);
+
   // Twilio inbound
   twilioWs.on("message", (data) => {
     const msg = safeJsonParse(data.toString());
@@ -839,18 +899,37 @@ wss.on("connection", (twilioWs, req) => {
         callSid: String(cp.callSid || cp.callsid || "").trim(),
         from: String(cp.from || cp.FROM || "").trim(),
         source: String(cp.source || "").trim(),
-      };
 
-      diag.lastTwilioStartAt = nowIso();
+        role: String(cp.role || "caller").trim() || "caller",
+        calleeType: String(cp.calleeType || "personal").trim() || "personal",
+        task: String(cp.task || "").trim(),
+        sessionId: String(cp.sessionId || cp.sid || "").trim(),
+        callerCallSid: String(cp.callerCallSid || "").trim(),
+      };
 
       console.log("[twilio] start", {
         streamSid,
         callSid: custom.callSid || null,
         roomId: custom.roomId || null,
         from: custom.from || null,
+        role: custom.role || null,
+        sessionId: custom.sessionId || null,
       });
 
-      tryGreet();
+      // If OpenAI is already ready, kick off correct flow
+      if (openaiReady) {
+        if (custom.role === "callee") maybeStartCalleeFlow();
+        else if (!greeted) {
+          greeted = true;
+          console.log("[bridge] greeting triggered");
+          const ok = createResponse(
+            "Speak warmly and naturally in ENGLISH. One short sentence greeting, then ask: “How can I help?”"
+          );
+          if (!ok) safeForceSpeak("greet_create_blocked");
+          armAudioWatchdog("greet");
+        }
+      }
+
       return;
     }
 
@@ -859,14 +938,6 @@ wss.on("connection", (twilioWs, req) => {
       if (!payload) return;
 
       inboundMediaFrames += 1;
-      diag.counters.twilioMediaFrames += 1;
-      diag.lastTwilioMediaAt = nowIso();
-
-      if (inboundMediaFrames === 1) {
-        diag.lastInboundAudioAt = nowIso();
-        console.log("[audio] first inbound Twilio media frame", { at: diag.lastInboundAudioAt });
-      }
-
       if (!openaiReady) return;
 
       mediaFramesSinceLastResponse += 1;
