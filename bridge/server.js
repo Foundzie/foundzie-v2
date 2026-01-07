@@ -44,9 +44,7 @@ const GREET_ON_START_DELAY_MS = Number(process.env.GREET_ON_START_DELAY_MS || 25
 const GREET_FORCE_TIMEOUT_MS = Number(process.env.GREET_FORCE_TIMEOUT_MS || 1200);
 
 // Upstash Redis REST (for writing M16 outcome from Fly)
-const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "")
-  .trim()
-  .replace(/\/+$/, "");
+const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim().replace(/\/+$/, "");
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 const M16_OUTCOME_TTL_SECONDS = Number(process.env.M16_OUTCOME_TTL_SECONDS || 60 * 60 * 6); // 6h
 
@@ -157,6 +155,26 @@ function normalizePhoneForFp(phone) {
   return digits.slice(-11);
 }
 
+function normalizeToE164Maybe(phoneRaw) {
+  // Strict-ish E.164: + and 8..15 digits
+  // Also supports "3312998168" (US 10 digits) -> +13312998168
+  const raw = String(phoneRaw || "").trim();
+  const digits = raw.replace(/[^\d]/g, "");
+
+  if (!raw) return { ok: false, e164: "", reason: "empty" };
+
+  // Already E.164
+  if (/^\+\d{8,15}$/.test(raw)) return { ok: true, e164: raw, reason: "already_e164" };
+
+  // If digits look like US 10 digits, assume +1
+  if (digits.length === 10) return { ok: true, e164: `+1${digits}`, reason: "assumed_us_country_code" };
+
+  // If digits look like US 11 with leading 1
+  if (digits.length === 11 && digits.startsWith("1")) return { ok: true, e164: `+${digits}`, reason: "digits_11_us" };
+
+  return { ok: false, e164: "", reason: `invalid_format digits=${digits.length}` };
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -219,7 +237,6 @@ wss.on("connection", (twilioWs, req) => {
   // Greeting/force-speak controls
   let greeted = false;
   let audioWatchdogTimer = null;
-  let greetingRetryTimer = null;
   let greetOnStartTimer = null;
   let greetForceTimer = null;
 
@@ -230,9 +247,14 @@ wss.on("connection", (twilioWs, req) => {
   const toolArgBuffers = new Map(); // call_id -> string
   const toolCooldownMap = new Map(); // fp -> lastTimeMs
   const seenToolKeys = new Set(); // exact args, short TTL
-
-  // ✅ tool call dedupe
   const handledToolCalls = new Set(); // call_id -> true
+
+  // ✅ CONFIRMATION GATE (bridge-controlled)
+  // Only execute tool if:
+  // 1) we have a pending fingerprint
+  // 2) model repeats same request
+  // 3) args.confirm === true
+  let pendingTool = null; // { fp, phone, messageText, createdAt }
 
   // M16 callee tracking
   let calleeFlowStarted = false;
@@ -253,7 +275,6 @@ wss.on("connection", (twilioWs, req) => {
 
     pendingResponseTimer = clearTimer(pendingResponseTimer);
     audioWatchdogTimer = clearTimer(audioWatchdogTimer);
-    greetingRetryTimer = clearTimer(greetingRetryTimer);
     greetOnStartTimer = clearTimer(greetOnStartTimer);
     greetForceTimer = clearTimer(greetForceTimer);
 
@@ -418,6 +439,7 @@ wss.on("connection", (twilioWs, req) => {
     console.log("[bridge] forceSpeakNow:", reason, { count: forceSpeakCount, role: custom.role });
 
     if (custom.role === "callee") {
+      // IMPORTANT: Callee leg must ONLY deliver task + ask reply.
       createUserMessage("Call connected. Deliver the task now and request a short reply.");
       createResponse(
         `You are calling the recipient. Speak naturally in English. Deliver the task now: "${custom.task}". ` +
@@ -464,17 +486,18 @@ wss.on("connection", (twilioWs, req) => {
     }, GREET_FORCE_TIMEOUT_MS);
   }
 
-  // ---------- Tools (caller leg only; callee leg should NOT call tools) ----------
+  // ---------- Tools (caller leg only) ----------
   async function runToolCall(name, args) {
     if (name !== "call_third_party") {
       return { ok: false, message: `Unknown tool: ${name}` };
     }
 
+    // HARD BLOCK: NEVER run tools on callee leg
     if (custom.role === "callee") {
       return { ok: false, blocked: "role_callee_tools_disabled" };
     }
 
-    const phone = String(args?.phone || "").trim();
+    const phoneRaw = String(args?.phone || "").trim();
 
     const messages = Array.isArray(args?.messages)
       ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
@@ -483,22 +506,37 @@ wss.on("connection", (twilioWs, req) => {
     const hasMessages = messages.length > 0;
     const message = hasMessages ? messages.join(" ") : legacyMessage;
 
-    if (!phone || !message) {
+    if (!phoneRaw || !message) {
       console.log("[tool] missing args; skipping execution", {
-        phone: !!phone,
+        phone: !!phoneRaw,
         message: !!message,
         messagesCount: messages.length,
       });
       return { ok: false, blocked: "missing_args", need: ["phone", "message or messages[]"] };
     }
 
-    const cd = toolIsCoolingDown(name, args);
+    // Normalize phone
+    const norm = normalizeToE164Maybe(phoneRaw);
+    if (!norm.ok) {
+      console.log("[tool] blocked invalid phone format", { phoneRaw, reason: norm.reason });
+      return {
+        ok: false,
+        blocked: "invalid_phone",
+        phoneRaw,
+        reason: norm.reason,
+        hint: "Use E.164 like +13312998168",
+      };
+    }
+
+    const phone = norm.e164;
+
+    const cd = toolIsCoolingDown(name, { ...args, phone });
     if (cd.blocked) {
       console.log("[tool] blocked by cooldown", { name, fp: cd.fp, remainingMs: cd.remainingMs });
       return { ok: false, blocked: "cooldown", remainingMs: cd.remainingMs, fingerprint: cd.fp };
     }
 
-    const k = toolKey(name, args);
+    const k = toolKey(name, { ...args, phone });
     if (seenToolKeys.has(k)) {
       console.log("[tool] blocked duplicate", { name });
       return { ok: false, blocked: "duplicate" };
@@ -511,11 +549,13 @@ wss.on("connection", (twilioWs, req) => {
 
     const payload = {
       ...(args || {}),
+      phone,
       roomId: (args?.roomId || custom.roomId || "").toString() || "current",
       callSid: (args?.callSid || custom.callSid || "").toString() || "current",
       calleeType: (args?.calleeType || "personal").toString(),
       messages: hasMessages ? messages : undefined,
       message: hasMessages ? messages.join(" ") : legacyMessage,
+      confirm: !!args?.confirm,
     };
 
     console.log("[tool] calling backend", { url, payload });
@@ -535,6 +575,13 @@ wss.on("connection", (twilioWs, req) => {
         data = { ok: r.ok, status: r.status, raw: text.slice(0, 1200) };
       }
 
+      // IMPORTANT: log response so you can see why “no call happened”
+      console.log("[tool] backend response", {
+        ok: r.ok,
+        status: r.status,
+        preview: (typeof data === "object" ? JSON.stringify(data) : String(data)).slice(0, 400),
+      });
+
       return { ok: r.ok, status: r.status, data };
     } catch (e) {
       console.error("[tool] backend fetch error", e);
@@ -542,16 +589,28 @@ wss.on("connection", (twilioWs, req) => {
     }
   }
 
-  function sendToolResultToOpenAI(call_id, resultObj) {
+  function sendToolResultToOpenAI(call_id, resultObj, originalArgs) {
     wsSend(openaiWs, {
       type: "conversation.item.create",
       item: { type: "function_call_output", call_id, output: JSON.stringify(resultObj || {}) },
     });
 
-    if (
-      resultObj?.data?.blocked === "confirmation_required" ||
-      resultObj?.blocked === "confirmation_required"
-    ) {
+    // Callee leg: DO NOT do followup chatter about tools. It contaminates the message delivery.
+    if (custom.role === "callee") return;
+
+    if (resultObj?.blocked === "invalid_phone") {
+      createUserMessage(
+        `The phone number looked invalid: "${resultObj.phoneRaw}". Ask the user for the correct E.164 number (example: +13312998168).`
+      );
+      const ok = createResponse(
+        "Ask ONE short question to confirm the correct phone number in E.164 format."
+      );
+      if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_invalid_phone_followup";
+      armAudioWatchdog("tool_invalid_phone");
+      return;
+    }
+
+    if (resultObj?.blocked === "confirmation_required") {
       createUserMessage(
         "The call is blocked until the user confirms the exact message(s). Ask them to confirm YES, and do NOT change the message text."
       );
@@ -564,6 +623,7 @@ wss.on("connection", (twilioWs, req) => {
       return;
     }
 
+    // Normal follow-up
     createUserMessage(
       resultObj?.ok
         ? "Tool succeeded. Briefly confirm you are placing the call now."
@@ -581,8 +641,6 @@ wss.on("connection", (twilioWs, req) => {
   }
 
   // ---------- session.update (LEGACY ONLY) ----------
-  // IMPORTANT: Realtime tool schema validation rejects anyOf/oneOf/allOf/enum/not in many cases.
-  // So we keep parameters as a SIMPLE object schema, and enforce message/messages presence in code.
   function buildLegacySessionUpdatePayload() {
     const baseInstructionsCaller =
       "You are Foundzie, a warm, friendly personal concierge on a REAL phone call. " +
@@ -590,7 +648,7 @@ wss.on("connection", (twilioWs, req) => {
       "Sound human, upbeat, and caring. Keep replies short (1–2 sentences). " +
       "Ask only ONE question when needed. Do NOT explain capabilities/policies. " +
       "If the caller speaks while you speak, STOP and listen. " +
-      "CRITICAL: Never invent message content for third-party calls. If a personal call or multiple messages, repeat verbatim and ask for YES before calling the tool.";
+      "CRITICAL: Never invent message content for third-party calls. You MUST ask for YES confirmation before calling a third party.";
 
     const baseInstructionsCallee =
       "You are Foundzie calling the RECIPIENT on a REAL phone call. " +
@@ -616,37 +674,18 @@ wss.on("connection", (twilioWs, req) => {
               type: "function",
               name: "call_third_party",
               description:
-                "Call a third-party phone number and deliver spoken message(s) VERBATIM. Do NOT connect caller and recipient. " +
-                "If user confirmation is required, you MUST ask and wait for YES, then call again with confirm=true.",
+                "Call a third-party phone number and deliver spoken message(s) VERBATIM. " +
+                "You MUST ask for explicit YES confirmation first. Do NOT connect caller and recipient.",
               parameters: {
                 type: "object",
                 properties: {
-                  phone: {
-                    type: "string",
-                    description: "E.164 phone number to call, e.g. +13312551234",
-                  },
-                  message: {
-                    type: "string",
-                    description:
-                      "Single message to say VERBATIM on the call. Use either message OR messages.",
-                  },
-                  messages: {
-                    type: "array",
-                    items: { type: "string" },
-                    description:
-                      "Multiple messages to say VERBATIM on the call in order. Use either messages OR message.",
-                  },
-                  roomId: { type: "string", description: "Room identifier for tracking." },
-                  callSid: { type: "string", description: "Caller leg CallSid for tracking." },
-                  calleeType: {
-                    type: "string",
-                    description: "personal or business (string).",
-                  },
-                  confirm: {
-                    type: "boolean",
-                    description:
-                      "Set true ONLY after the user explicitly confirms YES to the exact message(s).",
-                  },
+                  phone: { type: "string" },
+                  message: { type: "string" },
+                  messages: { type: "array", items: { type: "string" } },
+                  roomId: { type: "string" },
+                  callSid: { type: "string" },
+                  calleeType: { type: "string" },
+                  confirm: { type: "boolean" },
                 },
                 required: ["phone"],
               },
@@ -686,7 +725,7 @@ wss.on("connection", (twilioWs, req) => {
 
     const ok = createResponse(
       `Speak naturally in English. You are calling the recipient. ` +
-        `Deliver this task ONCE: "${safeTask}". ` +
+        `Deliver this task ONCE exactly as written: "${safeTask}". ` +
         `Then ask: "Do you have a quick reply?" Keep it short (1–2 sentences).`
     );
 
@@ -760,11 +799,6 @@ wss.on("connection", (twilioWs, req) => {
 
       if (msg.type === "error") {
         console.error("[openai] error:", JSON.stringify(msg, null, 2));
-        // Important: if session.update is rejected, we will never become ready.
-        // Close so reconnect logic can attempt again (and logs are clear).
-        try {
-          if (ws.readyState === WebSocket.OPEN) ws.close();
-        } catch {}
         return;
       }
 
@@ -793,15 +827,14 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // Text deltas (capture for M16 outcome parsing)
+      // Text deltas
       const textDelta = extractTextDelta(msg);
       if (textDelta) {
         respOutboundTextPieces += 1;
         const piece = String(textDelta);
         if (custom.role === "callee") {
           calleeAssistantText += piece;
-          if (calleeAssistantText.length > 4000)
-            calleeAssistantText = calleeAssistantText.slice(-4000);
+          if (calleeAssistantText.length > 4000) calleeAssistantText = calleeAssistantText.slice(-4000);
         }
         if (DEBUG_OPENAI_TEXT) console.log("[text] delta:", piece.slice(0, 200));
       }
@@ -823,11 +856,6 @@ wss.on("connection", (twilioWs, req) => {
 
           shutdown("m16_callee_complete");
           return;
-        }
-
-        if (respOutboundAudioFrames === 0 && respOutboundTextPieces === 0) {
-          console.log("[openai] response.done with NO output -> gated forceSpeak");
-          safeForceSpeak("response_done_no_output");
         }
 
         mediaFramesSinceLastResponse = 0;
@@ -883,6 +911,9 @@ wss.on("connection", (twilioWs, req) => {
 
       // Tool calling: delta args (buffer only)
       if (msg.type === "response.function_call_arguments.delta") {
+        // HARD IGNORE on callee leg
+        if (custom.role === "callee") return;
+
         const call_id = msg.call_id || msg.callId || msg.id;
         const delta = msg.delta || "";
         if (!call_id) return;
@@ -893,6 +924,9 @@ wss.on("connection", (twilioWs, req) => {
 
       // Tool calling: done
       if (msg.type === "response.function_call_arguments.done") {
+        // HARD IGNORE on callee leg
+        if (custom.role === "callee") return;
+
         const call_id = msg.call_id || msg.callId || msg.id;
         const name = msg.name || msg.tool_name || msg.function?.name;
         if (!call_id || !name) return;
@@ -912,28 +946,70 @@ wss.on("connection", (twilioWs, req) => {
           args = {};
         }
 
-        const phone = String(args?.phone || "").trim();
+        // Normalize message(s)
         const messages = Array.isArray(args?.messages)
           ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
           : [];
         const legacyMessage = String(args?.message || "").trim();
         const hasAnyMessage = messages.length > 0 || !!legacyMessage;
 
-        if (!phone || !hasAnyMessage) {
+        const phoneRaw = String(args?.phone || "").trim();
+        if (!phoneRaw || !hasAnyMessage) {
           console.log("[tool] done with empty args ignored", { name, callId: call_id, args });
           return;
         }
 
         handledToolCalls.add(call_id);
 
-        console.log("[tool] received", { name, callId: call_id, args, at: nowIso() });
+        // Bridge-controlled confirmation gate
+        const norm = normalizeToE164Maybe(phoneRaw);
+        const normalizedPhone = norm.ok ? norm.e164 : phoneRaw;
+
+        const msgText = messages.length ? messages.join(" ") : legacyMessage;
+        const fp = fingerprintToolCall(name, { phone: normalizedPhone, message: msgText });
+
+        // If we don't yet have a pending tool request, require confirmation step first.
+        if (!pendingTool || pendingTool.fp !== fp) {
+          pendingTool = { fp, phone: normalizedPhone, messageText: msgText, createdAt: Date.now() };
+
+          console.log("[tool] pending confirmation set", {
+            fp,
+            phone: normalizedPhone,
+            messagePreview: msgText.slice(0, 120),
+          });
+
+          createUserMessage(
+            `Before I call, please confirm YES to send this exact message: "${msgText}".`
+          );
+          const ok = createResponse(
+            `Ask ONE short question: "Confirm YES to send this exact message: '${msgText}' ?" ` +
+              `Do not change the message text.`
+          );
+          if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_confirm_gate";
+          armAudioWatchdog("tool_confirm_gate");
+          return;
+        }
+
+        // Must include confirm:true for execution
+        if (args?.confirm !== true) {
+          console.log("[tool] blocked - confirm flag missing/false", { fp });
+          createUserMessage(
+            `I still need confirmation. Please say YES to send: "${pendingTool.messageText}".`
+          );
+          const ok = createResponse("Ask for YES in one short question. Repeat the message verbatim.");
+          if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_confirm_missing";
+          armAudioWatchdog("tool_confirm_missing");
+          return;
+        }
+
+        // Confirmed: execute
+        console.log("[tool] received CONFIRMED", { name, callId: call_id, args, at: nowIso() });
 
         const result = await runToolCall(name, args);
-        sendToolResultToOpenAI(call_id, result);
-        return;
-      }
+        sendToolResultToOpenAI(call_id, result, args);
 
-      if (msg.type === "response.output_item.added" && msg.item?.type === "function_call") {
+        // Clear pending tool after attempt (so next tool requires fresh confirm)
+        pendingTool = null;
         return;
       }
     });
@@ -1010,7 +1086,6 @@ wss.on("connection", (twilioWs, req) => {
       const cp = msg.start?.customParameters || {};
 
       const startCallSid = String(msg.start?.callSid || "").trim();
-
       const startFrom =
         String(msg.start?.from || "").trim() ||
         String(msg.start?.caller || "").trim() ||
