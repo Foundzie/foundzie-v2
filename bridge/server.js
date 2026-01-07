@@ -44,9 +44,14 @@ const GREET_ON_START_DELAY_MS = Number(process.env.GREET_ON_START_DELAY_MS || 25
 const GREET_FORCE_TIMEOUT_MS = Number(process.env.GREET_FORCE_TIMEOUT_MS || 1200);
 
 // Upstash Redis REST (for writing M16 outcome from Fly)
-const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim().replace(/\/+$/, "");
+const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "")
+  .trim()
+  .replace(/\/+$/, "");
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 const M16_OUTCOME_TTL_SECONDS = Number(process.env.M16_OUTCOME_TTL_SECONDS || 60 * 60 * 6); // 6h
+
+// NEW: how long we allow "user spoke after confirm" to count as confirmation
+const CONFIRM_SPOKE_WINDOW_MS = Number(process.env.CONFIRM_SPOKE_WINDOW_MS || 90_000);
 
 function nowIso() {
   return new Date().toISOString();
@@ -250,11 +255,20 @@ wss.on("connection", (twilioWs, req) => {
   const handledToolCalls = new Set(); // call_id -> true
 
   // ✅ CONFIRMATION GATE (bridge-controlled)
-  // Only execute tool if:
-  // 1) we have a pending fingerprint
-  // 2) model repeats same request
-  // 3) args.confirm === true
-  let pendingTool = null; // { fp, phone, messageText, createdAt }
+  // pendingTool tracks one "call_third_party" request awaiting confirmation.
+  // NEW: we do not rely solely on args.confirm; we also accept "user spoke after confirm question"
+  // plus exact same fp repeated by the model.
+  let pendingTool = null;
+  // shape:
+  // {
+  //   fp,
+  //   phone,
+  //   messageText,
+  //   createdAtMs,
+  //   askedAtMs,
+  //   awaitingUserSpoke,
+  //   userSpokeAtMs
+  // }
 
   // M16 callee tracking
   let calleeFlowStarted = false;
@@ -589,7 +603,7 @@ wss.on("connection", (twilioWs, req) => {
     }
   }
 
-  function sendToolResultToOpenAI(call_id, resultObj, originalArgs) {
+  function sendToolResultToOpenAI(call_id, resultObj) {
     wsSend(openaiWs, {
       type: "conversation.item.create",
       item: { type: "function_call_output", call_id, output: JSON.stringify(resultObj || {}) },
@@ -602,9 +616,7 @@ wss.on("connection", (twilioWs, req) => {
       createUserMessage(
         `The phone number looked invalid: "${resultObj.phoneRaw}". Ask the user for the correct E.164 number (example: +13312998168).`
       );
-      const ok = createResponse(
-        "Ask ONE short question to confirm the correct phone number in E.164 format."
-      );
+      const ok = createResponse("Ask ONE short question to confirm the correct phone number in E.164 format.");
       if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_invalid_phone_followup";
       armAudioWatchdog("tool_invalid_phone");
       return;
@@ -871,6 +883,16 @@ wss.on("connection", (twilioWs, req) => {
 
       // Speech stopped -> respond (debounced)
       if (msg.type === "input_audio_buffer.speech_stopped") {
+        // NEW: if we asked for confirmation and the user spoke, mark it
+        if (custom.role === "caller" && pendingTool?.awaitingUserSpoke) {
+          pendingTool.awaitingUserSpoke = false;
+          pendingTool.userSpokeAtMs = Date.now();
+          console.log("[tool] user spoke after confirm prompt", {
+            fp: pendingTool.fp,
+            userSpokeAt: new Date(pendingTool.userSpokeAtMs).toISOString(),
+          });
+        }
+
         if (responseInFlight) return;
 
         const minFramesRequired = custom.role === "callee" ? 1 : MIN_MEDIA_FRAMES;
@@ -900,9 +922,7 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          const ok = createResponse(
-            "Reply briefly and warmly in ENGLISH (1–2 sentences). Ask ONE question if needed."
-          );
+          const ok = createResponse("Reply briefly and warmly in ENGLISH (1–2 sentences). Ask ONE question if needed.");
           if (ok) armAudioWatchdog("post_speech");
         }, SPEECH_STOP_DEBOUNCE_MS);
 
@@ -961,16 +981,24 @@ wss.on("connection", (twilioWs, req) => {
 
         handledToolCalls.add(call_id);
 
-        // Bridge-controlled confirmation gate
+        // Bridge-controlled fingerprint
         const norm = normalizeToE164Maybe(phoneRaw);
         const normalizedPhone = norm.ok ? norm.e164 : phoneRaw;
 
         const msgText = messages.length ? messages.join(" ") : legacyMessage;
         const fp = fingerprintToolCall(name, { phone: normalizedPhone, message: msgText });
 
-        // If we don't yet have a pending tool request, require confirmation step first.
+        // Step 1: first time we see this fp → ask for confirmation
         if (!pendingTool || pendingTool.fp !== fp) {
-          pendingTool = { fp, phone: normalizedPhone, messageText: msgText, createdAt: Date.now() };
+          pendingTool = {
+            fp,
+            phone: normalizedPhone,
+            messageText: msgText,
+            createdAtMs: Date.now(),
+            askedAtMs: Date.now(),
+            awaitingUserSpoke: true,
+            userSpokeAtMs: 0,
+          };
 
           console.log("[tool] pending confirmation set", {
             fp,
@@ -978,9 +1006,7 @@ wss.on("connection", (twilioWs, req) => {
             messagePreview: msgText.slice(0, 120),
           });
 
-          createUserMessage(
-            `Before I call, please confirm YES to send this exact message: "${msgText}".`
-          );
+          createUserMessage(`Before I call, please confirm YES to send this exact message: "${msgText}".`);
           const ok = createResponse(
             `Ask ONE short question: "Confirm YES to send this exact message: '${msgText}' ?" ` +
               `Do not change the message text.`
@@ -990,15 +1016,36 @@ wss.on("connection", (twilioWs, req) => {
           return;
         }
 
-        // Must include confirm:true for execution
+        // Step 2: same fp again → execute if confirmed
+        const now = Date.now();
+
+        const userSpokeRecently =
+          pendingTool.userSpokeAtMs &&
+          now - pendingTool.userSpokeAtMs >= 0 &&
+          now - pendingTool.userSpokeAtMs <= CONFIRM_SPOKE_WINDOW_MS;
+
+        const explicitConfirm = args?.confirm === true;
+
+        // NEW: auto-confirm if user spoke after confirm prompt and fp matches
+        if (!explicitConfirm && userSpokeRecently) {
+          console.log("[tool] AUTO-CONFIRM (user spoke after prompt; model confirm missing)", {
+            fp,
+            userSpokeAtMs: pendingTool.userSpokeAtMs,
+            windowMs: CONFIRM_SPOKE_WINDOW_MS,
+          });
+          args = { ...(args || {}), confirm: true };
+        }
+
+        // If still not confirmed, ask again (do NOT execute)
         if (args?.confirm !== true) {
           console.log("[tool] blocked - confirm flag missing/false", { fp });
-          createUserMessage(
-            `I still need confirmation. Please say YES to send: "${pendingTool.messageText}".`
-          );
+          createUserMessage(`I still need confirmation. Please say YES to send: "${pendingTool.messageText}".`);
           const ok = createResponse("Ask for YES in one short question. Repeat the message verbatim.");
           if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_confirm_missing";
           armAudioWatchdog("tool_confirm_missing");
+          // keep pendingTool so we can auto-confirm on next attempt
+          pendingTool.awaitingUserSpoke = true;
+          pendingTool.askedAtMs = now;
           return;
         }
 
@@ -1006,7 +1053,7 @@ wss.on("connection", (twilioWs, req) => {
         console.log("[tool] received CONFIRMED", { name, callId: call_id, args, at: nowIso() });
 
         const result = await runToolCall(name, args);
-        sendToolResultToOpenAI(call_id, result, args);
+        sendToolResultToOpenAI(call_id, result);
 
         // Clear pending tool after attempt (so next tool requires fresh confirm)
         pendingTool = null;
