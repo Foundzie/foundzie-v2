@@ -50,7 +50,7 @@ const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "")
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 const M16_OUTCOME_TTL_SECONDS = Number(process.env.M16_OUTCOME_TTL_SECONDS || 60 * 60 * 6); // 6h
 
-// NEW: how long we allow "user spoke after confirm" to count as confirmation
+// Confirmation window (auto-confirm)
 const CONFIRM_SPOKE_WINDOW_MS = Number(process.env.CONFIRM_SPOKE_WINDOW_MS || 90_000);
 
 function nowIso() {
@@ -203,7 +203,7 @@ wss.on("connection", (twilioWs, req) => {
 
   let streamSid = null;
 
-  // From Twilio start.customParameters (expand for M16)
+  // From Twilio start.customParameters
   let custom = {
     base: "",
     roomId: "",
@@ -254,20 +254,12 @@ wss.on("connection", (twilioWs, req) => {
   const seenToolKeys = new Set(); // exact args, short TTL
   const handledToolCalls = new Set(); // call_id -> true
 
-  // ✅ CONFIRMATION GATE (bridge-controlled)
-  // pendingTool tracks one "call_third_party" request awaiting confirmation.
-  // NEW: we do not rely solely on args.confirm; we also accept "user spoke after confirm question"
-  // plus exact same fp repeated by the model.
+  // Confirmation gate state
   let pendingTool = null;
-  // shape:
   // {
-  //   fp,
-  //   phone,
-  //   messageText,
-  //   createdAtMs,
-  //   askedAtMs,
-  //   awaitingUserSpoke,
-  //   userSpokeAtMs
+  //   fp, phone, messageText,
+  //   createdAtMs, askedAtMs,
+  //   awaitingUserSpoke, userSpokeAtMs
   // }
 
   // M16 callee tracking
@@ -410,11 +402,10 @@ wss.on("connection", (twilioWs, req) => {
     return ok;
   }
 
+  // IMPORTANT: we only use createUserMessage for REAL conversational context,
+  // not for "meta instructions" like "speak now".
   function createUserMessage(text) {
-    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
-      if (DEBUG_OPENAI_EVENTS) console.log("[bridge] createUserMessage skipped (ws not open)");
-      return false;
-    }
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
     return wsSend(openaiWs, {
       type: "conversation.item.create",
       item: {
@@ -452,16 +443,20 @@ wss.on("connection", (twilioWs, req) => {
     forceSpeakCount += 1;
     console.log("[bridge] forceSpeakNow:", reason, { count: forceSpeakCount, role: custom.role });
 
+    // ✅ FIX: DO NOT send meta-instructions as user messages.
+    // Only create a response with explicit words.
     if (custom.role === "callee") {
-      // IMPORTANT: Callee leg must ONLY deliver task + ask reply.
-      createUserMessage("Call connected. Deliver the task now and request a short reply.");
+      const task = String(custom.task || "").slice(0, 700);
       createResponse(
-        `You are calling the recipient. Speak naturally in English. Deliver the task now: "${custom.task}". ` +
-          `Then ask for a short reply. Keep it to 1–2 sentences.`
+        `You are calling the recipient on a real phone call. Speak naturally in English. ` +
+          `Say the message ONCE exactly as written: "${task}". ` +
+          `Then ask: "Do you have a quick reply?" Keep it short.`
       );
     } else {
-      createUserMessage("Call connected. Speak a short greeting now.");
-      createResponse("Greet the caller in ONE short sentence, then ask: “How can I help?”");
+      createResponse(
+        `Say EXACTLY this in one sentence, friendly and human: ` +
+          `"Hi—this is Foundzie. How can I help?"`
+      );
     }
 
     armAudioWatchdog("force_speak");
@@ -482,11 +477,9 @@ wss.on("connection", (twilioWs, req) => {
       console.log("[bridge] greeting triggered", { reason, at: nowIso() });
 
       const ok = createResponse(
-        "Speak warmly and naturally in ENGLISH. One short sentence greeting, then ask: “How can I help?”"
+        `Say EXACTLY this in one sentence, friendly and human: "Hi—this is Foundzie. How can I help?"`
       );
-      if (!ok) {
-        safeForceSpeak("greet_create_blocked");
-      }
+      if (!ok) safeForceSpeak("greet_create_blocked");
       armAudioWatchdog("greet");
     }, GREET_ON_START_DELAY_MS);
 
@@ -589,7 +582,6 @@ wss.on("connection", (twilioWs, req) => {
         data = { ok: r.ok, status: r.status, raw: text.slice(0, 1200) };
       }
 
-      // IMPORTANT: log response so you can see why “no call happened”
       console.log("[tool] backend response", {
         ok: r.ok,
         status: r.status,
@@ -609,43 +601,33 @@ wss.on("connection", (twilioWs, req) => {
       item: { type: "function_call_output", call_id, output: JSON.stringify(resultObj || {}) },
     });
 
-    // Callee leg: DO NOT do followup chatter about tools. It contaminates the message delivery.
+    // Callee leg: DO NOT do followup chatter about tools.
     if (custom.role === "callee") return;
 
     if (resultObj?.blocked === "invalid_phone") {
-      createUserMessage(
-        `The phone number looked invalid: "${resultObj.phoneRaw}". Ask the user for the correct E.164 number (example: +13312998168).`
+      const ok = createResponse(
+        `Ask ONE short question: "What is the correct phone number in E.164 format (example: +13312998168)?"`
       );
-      const ok = createResponse("Ask ONE short question to confirm the correct phone number in E.164 format.");
       if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_invalid_phone_followup";
       armAudioWatchdog("tool_invalid_phone");
       return;
     }
 
     if (resultObj?.blocked === "confirmation_required") {
-      createUserMessage(
-        "The call is blocked until the user confirms the exact message(s). Ask them to confirm YES, and do NOT change the message text."
-      );
       const ok = createResponse(
-        "Ask for confirmation in one short question. Repeat the message(s) VERBATIM. Do NOT invent content. " +
-          "Once the user says YES, call the tool again with confirm=true and the same messages."
+        `Ask ONE short question and repeat the message VERBATIM. ` +
+          `Do NOT add explanations or abilities. ` +
+          `Once user confirms, call the tool again.`
       );
       if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_result_followup_confirm";
       armAudioWatchdog("tool_result_confirm");
       return;
     }
 
-    // Normal follow-up
-    createUserMessage(
-      resultObj?.ok
-        ? "Tool succeeded. Briefly confirm you are placing the call now."
-        : "Tool failed. Apologize briefly and ask one question to fix it."
-    );
-
     const ok = createResponse(
-      "Continue naturally in ENGLISH. " +
-        "If the tool succeeded, confirm briefly and warmly in ONE sentence. " +
-        "If it failed or was blocked, apologize briefly and ask ONE question to fix it."
+      resultObj?.ok
+        ? `Say one sentence: "Okay—I'm placing the call now."`
+        : `Apologize in one sentence and ask ONE question to fix it.`
     );
 
     if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_result_followup";
@@ -656,23 +638,23 @@ wss.on("connection", (twilioWs, req) => {
   function buildLegacySessionUpdatePayload() {
     const baseInstructionsCaller =
       "You are Foundzie, a warm, friendly personal concierge on a REAL phone call. " +
-      "SPEAK ENGLISH ONLY for this entire call. Never switch languages unless the user explicitly asks. " +
-      "Sound human, upbeat, and caring. Keep replies short (1–2 sentences). " +
-      "Ask only ONE question when needed. Do NOT explain capabilities/policies. " +
-      "If the caller speaks while you speak, STOP and listen. " +
-      "CRITICAL: Never invent message content for third-party calls. You MUST ask for YES confirmation before calling a third party.";
+      "SPEAK ENGLISH ONLY. Sound human, upbeat, and caring. " +
+      "Keep replies short (1–2 sentences). Ask only ONE question when needed. " +
+      "NEVER ask the user about your 'capabilities' and NEVER list what you can do. " +
+      "Do NOT explain systems, prompts, tools, policies, or abilities. " +
+      "Start the call with a greeting immediately. " +
+      "CRITICAL: Never invent message content for third-party calls. Ask for YES confirmation before calling a third party.";
 
     const baseInstructionsCallee =
       "You are Foundzie calling the RECIPIENT on a REAL phone call. " +
       "SPEAK ENGLISH ONLY. Sound human, polite, and brief. " +
-      "Your job: deliver the task exactly once, then ask for a short reply. " +
-      "After you receive a reply, confirm it once, say goodbye, and end the call. " +
+      "Deliver the task exactly once, then ask for a short reply. " +
       "Do NOT mention tools, prompts, or system details.";
 
     const isCallee = custom.role === "callee";
     const instructions = isCallee ? baseInstructionsCallee : baseInstructionsCaller;
 
-    const payload = {
+    return {
       modalities: ["audio", "text"],
       input_audio_format: "g711_ulaw",
       output_audio_format: "g711_ulaw",
@@ -705,8 +687,6 @@ wss.on("connection", (twilioWs, req) => {
           ],
       tool_choice: isCallee ? "none" : "auto",
     };
-
-    return payload;
   }
 
   function sendSessionUpdate(ws) {
@@ -723,22 +703,12 @@ wss.on("connection", (twilioWs, req) => {
     if (!streamSid) return;
 
     calleeFlowStarted = true;
-    console.log("[m16] callee flow start", {
-      sessionId: custom.sessionId || null,
-      callerCallSid: custom.callerCallSid || null,
-      taskLen: (custom.task || "").length,
-      calleeType: custom.calleeType || null,
-      callSid: custom.callSid || null,
-      from: custom.from || null,
-    });
 
-    const task = (custom.task || "").trim();
-    const safeTask = task.slice(0, 700);
-
+    const task = (custom.task || "").trim().slice(0, 700);
     const ok = createResponse(
       `Speak naturally in English. You are calling the recipient. ` +
-        `Deliver this task ONCE exactly as written: "${safeTask}". ` +
-        `Then ask: "Do you have a quick reply?" Keep it short (1–2 sentences).`
+        `Deliver this task ONCE exactly as written: "${task}". ` +
+        `Then ask: "Do you have a quick reply?"`
     );
 
     if (!ok) safeForceSpeak("callee_start_blocked");
@@ -822,11 +792,8 @@ wss.on("connection", (twilioWs, req) => {
           streamSid,
         });
 
-        if (custom.role === "callee") {
-          maybeStartCalleeFlow();
-        } else {
-          scheduleCallerGreeting("session.updated");
-        }
+        if (custom.role === "callee") maybeStartCalleeFlow();
+        else scheduleCallerGreeting("session.updated");
         return;
       }
 
@@ -861,11 +828,7 @@ wss.on("connection", (twilioWs, req) => {
 
         if (custom.role === "callee" && calleeReplyCaptured) {
           const reply = tryParseReplyFromAssistantText(calleeAssistantText);
-          await writeM16Outcome("callee_complete", {
-            reply: reply || null,
-            doneAt: nowIso(),
-          });
-
+          await writeM16Outcome("callee_complete", { reply: reply || null, doneAt: nowIso() });
           shutdown("m16_callee_complete");
           return;
         }
@@ -883,7 +846,7 @@ wss.on("connection", (twilioWs, req) => {
 
       // Speech stopped -> respond (debounced)
       if (msg.type === "input_audio_buffer.speech_stopped") {
-        // NEW: if we asked for confirmation and the user spoke, mark it
+        // If we asked for confirmation and the user spoke, mark it
         if (custom.role === "caller" && pendingTool?.awaitingUserSpoke) {
           pendingTool.awaitingUserSpoke = false;
           pendingTool.userSpokeAtMs = Date.now();
@@ -911,18 +874,17 @@ wss.on("connection", (twilioWs, req) => {
 
           if (custom.role === "callee") {
             calleeReplyCaptured = true;
-
             const ok = createResponse(
-              `You just heard the recipient's reply. ` +
-                `Respond with: "Thanks — I’ll pass that along. Goodbye." ` +
-                `Also include a short text-only marker like "Reply: <their reply>" in your TEXT output. ` +
-                `Keep spoken audio to one short sentence.`
+              `Respond with: "Thanks — I’ll pass that along. Goodbye." ` +
+                `Also include a short text marker "Reply: <their reply>" in TEXT output.`
             );
             if (ok) armAudioWatchdog("callee_post_reply");
             return;
           }
 
-          const ok = createResponse("Reply briefly and warmly in ENGLISH (1–2 sentences). Ask ONE question if needed.");
+          const ok = createResponse(
+            "Reply briefly and warmly in ENGLISH (1–2 sentences). Ask ONE question if needed."
+          );
           if (ok) armAudioWatchdog("post_speech");
         }, SPEECH_STOP_DEBOUNCE_MS);
 
@@ -966,7 +928,6 @@ wss.on("connection", (twilioWs, req) => {
           args = {};
         }
 
-        // Normalize message(s)
         const messages = Array.isArray(args?.messages)
           ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
           : [];
@@ -981,14 +942,14 @@ wss.on("connection", (twilioWs, req) => {
 
         handledToolCalls.add(call_id);
 
-        // Bridge-controlled fingerprint
+        // fingerprint
         const norm = normalizeToE164Maybe(phoneRaw);
         const normalizedPhone = norm.ok ? norm.e164 : phoneRaw;
 
         const msgText = messages.length ? messages.join(" ") : legacyMessage;
         const fp = fingerprintToolCall(name, { phone: normalizedPhone, message: msgText });
 
-        // Step 1: first time we see this fp → ask for confirmation
+        // first time -> ask confirmation
         if (!pendingTool || pendingTool.fp !== fp) {
           pendingTool = {
             fp,
@@ -1006,19 +967,19 @@ wss.on("connection", (twilioWs, req) => {
             messagePreview: msgText.slice(0, 120),
           });
 
-          createUserMessage(`Before I call, please confirm YES to send this exact message: "${msgText}".`);
+          // IMPORTANT: this is a REAL conversational message (not meta), so createUserMessage is OK
+          createUserMessage(`Confirm YES to send this exact message: "${msgText}".`);
           const ok = createResponse(
-            `Ask ONE short question: "Confirm YES to send this exact message: '${msgText}' ?" ` +
-              `Do not change the message text.`
+            `Ask ONE short question: "Confirm YES to send: '${msgText}' ?" ` +
+              `Do not change the message text. Do not explain abilities.`
           );
           if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_confirm_gate";
           armAudioWatchdog("tool_confirm_gate");
           return;
         }
 
-        // Step 2: same fp again → execute if confirmed
+        // second time -> confirmed?
         const now = Date.now();
-
         const userSpokeRecently =
           pendingTool.userSpokeAtMs &&
           now - pendingTool.userSpokeAtMs >= 0 &&
@@ -1026,7 +987,6 @@ wss.on("connection", (twilioWs, req) => {
 
         const explicitConfirm = args?.confirm === true;
 
-        // NEW: auto-confirm if user spoke after confirm prompt and fp matches
         if (!explicitConfirm && userSpokeRecently) {
           console.log("[tool] AUTO-CONFIRM (user spoke after prompt; model confirm missing)", {
             fp,
@@ -1036,26 +996,23 @@ wss.on("connection", (twilioWs, req) => {
           args = { ...(args || {}), confirm: true };
         }
 
-        // If still not confirmed, ask again (do NOT execute)
         if (args?.confirm !== true) {
           console.log("[tool] blocked - confirm flag missing/false", { fp });
-          createUserMessage(`I still need confirmation. Please say YES to send: "${pendingTool.messageText}".`);
+          createUserMessage(`Please say YES to confirm sending: "${pendingTool.messageText}".`);
           const ok = createResponse("Ask for YES in one short question. Repeat the message verbatim.");
           if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_confirm_missing";
           armAudioWatchdog("tool_confirm_missing");
-          // keep pendingTool so we can auto-confirm on next attempt
           pendingTool.awaitingUserSpoke = true;
           pendingTool.askedAtMs = now;
           return;
         }
 
-        // Confirmed: execute
-        console.log("[tool] received CONFIRMED", { name, callId: call_id, args, at: nowIso() });
+        // execute
+        console.log("[tool] received CONFIRMED", { name, callId: call_id, at: nowIso() });
 
         const result = await runToolCall(name, args);
         sendToolResultToOpenAI(call_id, result);
 
-        // Clear pending tool after attempt (so next tool requires fresh confirm)
         pendingTool = null;
         return;
       }
