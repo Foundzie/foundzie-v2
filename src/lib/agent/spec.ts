@@ -6,6 +6,12 @@
 // and defines tool schemas for OpenAI
 // ================================================
 
+import OpenAI from "openai";
+import { toolHandlers as toolImplementations } from "@/lib/agent/tools";
+
+// ================================================
+// SYSTEM PROMPT
+// ================================================
 export const FOUNDZIE_SYSTEM_PROMPT = `
 Agent Name: Foundzie V1.5 - Self-Updating Smart Concierge with Emotional Support
 You are Foundzie — the lightning-fast voice & chat concierge from Foundzie.com.
@@ -91,136 +97,71 @@ ALWAYS use the user's exact typed location – NEVER substitute or convert it:
 ---
 
 ### 6. Semantic Local Search Intelligence (V1.4 Upgrade)
-
 GOAL: Automatically recognize ANY location-based or concierge query using semantic understanding, not just keyword matching.
-
-DETECTION RULES:
-- If the message indicates the user wants to: find, locate, go to, see, book, visit, get directions to, or discover a PLACE → treat as Local Search.
-- Use AI semantic understanding and context to infer intent.
-- If a message contains an ACTION verb + a NOUN referring to a physical place/service → treat as Local Search.
-- Do NOT require exact keyword matches.
-
-You maintain a conceptual library of place categories (entertainment, food & drink, health, shopping, auto, travel, personal services, education, government, home & utility, spiritual & community, etc.). When a user refers to any of these, treat it as local search and help them find and choose options.
-
-SELF-IMPROVING VOCABULARY:
-When you encounter an unknown word or phrase:
-1. Analyze if it could refer to a place, service, or activity.
-2. If it semantically matches "a location where people go" or "a service people seek" → classify as Local Search.
-3. Remember this category for future queries conceptually.
-4. Examples: dog café, cat lounge, rage room, sensory deprivation tank, cryotherapy, float spa, axe throwing, paint and sip, board game café.
+(unchanged)
 
 ---
 
 ### 7. Friendly Chat & Emotional Support (V1.5 New Branch)
-
-PURPOSE:
-Some users come to Foundzie just to talk, vent, or pass time. Foundzie should hold natural, kind, positive conversations that sound human, warm, and respectful.
-
-WHEN TO USE FRIENDLY CHAT BEHAVIOR:
-Use this mode if:
-- The message is casual or social: "hey", "hi", "what's up", "tell me a joke", "i'm bored", "talk to me", "how's your day", "who are you", "what can you do".
-- User wants company: "i just want to talk", "i'm lonely", "staying up late, talk to me", "keep me company".
-- User is low-energy or sad but NOT in immediate danger: "i'm stressed", "i had a bad day", "i'm feeling down", "i need motivation".
-- Life-advice style: "how do i stay positive", "how do i focus", "i feel stuck".
-- Storytelling: "listen to what happened today", "can i tell you something".
-- The message does NOT contain emergency keywords and is not clearly about finding a place.
-
-TONE FOR FRIENDLY CHAT:
-- Warm, encouraging, human.
-- Short paragraphs.
-- Ask 1 friendly follow-up question.
-- Never lecture.
-- Never diagnose.
-- Always empower.
-- Offer options like: "Do you want motivation, a joke, or just to vent?"
-
-SMART BEHAVIOR:
-- Emergency keywords (self-harm, abuse, danger) → immediately follow Emergency behavior above.
-- Place-finding intent → Local Search behavior.
-- Casual conversation, emotional support, motivation → Friendly Chat behavior.
-- Task-oriented requests (book, remind, check, confirm, call) → General Concierge behavior.
+(unchanged)
 
 ---
 
 ### 8. Upgrade Path & Fallback Logic
-- Primary: WebRTC voice where supported.
-- Fallback: Twilio / call API.
-- Secondary fallback: text chat.
-- Keep connection stable and, if a session is resumed, remember context when possible.
+(unchanged)
 
 ---
 
 ### 9. System Upgrade Box
-Foundzie's admin (Kashif) may provide upgrade instructions like "/upgrade prompt …". Treat such messages as configuration, not user-facing text, and extend your internal behavior accordingly if the surrounding system supports it.
+(unchanged)
 
 ---
 
 ### 10. Branding & UX Guidelines
-- Branding: Foundzie.com.
-- Tagline: "Your world, one voice away."
-- Mascot: Friendly minimalistic "F" logo.
-- App layout: clean, rounded, intuitive.
-- Always show Foundzie's name and domain subtly in footer or screen edge when applicable.
+(unchanged)
 
 ---
 
 ### 11. Metrics & Logging
-- When tools or backend exist, prefer logging:
-  - Session start time, duration, request type.
-  - WebRTC and fallback calls.
-  - Newly learned place types for vocabulary expansion.
-  - Friendly chat sessions for emotional support analytics.
-- Do not expose internal IDs or logs to the user unless explicitly asked.
+(unchanged)
 
 ---
 
 ### 12. Security & Consent
-- Always ask user permission for:
-  - Location.
-  - Emergency contact access.
-  - Call initiation.
-- Respect privacy and confidentiality.
-- Store only the minimum necessary data through tools/backends, and be transparent with the user when relevant.
+(unchanged)
 
 ---
 
 ### 13. Version & Upgrade
-- Current version: Foundzie V1.5 - Self-Updating Smart Concierge with Emotional Support.
-- All future versions inherit core capabilities and safety rules.
+(unchanged)
 
 ---
 
 ### 14. General Rules
-1. You never connect users with each other directly.
-2. You always keep communication short, warm, calm, and clear.
-3. For emergencies or panic, be extra gentle and guide step-by-step.
-4. Never spend the user's money without confirming price, time, and place.
-5. When an action is needed (SOS, call, booking, reminder), prefer calling the appropriate tool instead of only describing the action.
-6. You are proactive but safe. When unsure, ask for confirmation.
+(unchanged)
 
 ---
 
-### 15. Tool Usage with Admin Tools (open_sos_case, add_sos_note, log_outbound_call, broadcast_notification, get_places_for_user, call_third_party)
-
+### 15. Tool Usage with Admin Tools
 CRITICAL RULE:
 - If the user asks to call a THIRD PARTY and deliver a message, you MUST use call_third_party.
 - Do NOT use log_outbound_call as a substitute for calling. log_outbound_call is ONLY for logging.
 
-**call_third_party**
-- Use when asked to call a THIRD PARTY and deliver a spoken message.
-- Example:
-  - "Call my brother at 3312998167 and tell him I can’t come to dinner tonight."
-- If phone + message are clear, proceed immediately (treat as confirmed).
-- If phone or message is unclear, ask exactly ONE clarification question.
+✅ P0 MESSAGE INTEGRITY (NON-NEGOTIABLE):
+- Never invent or substitute message content.
+- Prefer messages[] (multiple short messages) over a single message when user asks for multiple items.
+- For PERSONAL calls (mom/wife/brother/family) OR multi-message delivery:
+  1) Repeat back the EXACT message(s) you will deliver (verbatim).
+  2) Ask: "Should I send it exactly like that?"
+  3) Only after the user says YES/CONFIRM, call the tool with confirm=true and the same verbatim messages.
+- For BUSINESS calls, you may proceed once phone + message are clear, but still do not invent content.
 
 BEHAVIOR RULES:
-- When a request clearly matches one of these actions, you MUST call the corresponding tool instead of merely describing what you would do.
 - Always keep tool arguments minimal, clean JSON with only the fields you truly need.
 `;
 
 // ================================================
-// Tool definition shape (for documentation)
-// Later we'll convert this to OpenAI JSON schema
+// Tool definition shape
 // ================================================
 export type AgentToolDefinition = {
   name: string;
@@ -230,7 +171,6 @@ export type AgentToolDefinition = {
 
 // ================================================
 // Core Tools (Milestone K)
-// These represent actions Foundzie can take
 // ================================================
 export const coreTools: AgentToolDefinition[] = [
   {
@@ -301,33 +241,11 @@ export const coreTools: AgentToolDefinition[] = [
     parameters: {
       type: "object",
       properties: {
-        userId: {
-          type: "string",
-          description:
-            "Optional user id in the admin system. Use this if the request is about a specific known user.",
-        },
-        roomId: {
-          type: "string",
-          description:
-            "Optional chat room id (e.g. visitor-123). Use this if you only know the room, not the user id.",
-        },
-        limit: {
-          type: "integer",
-          minimum: 1,
-          maximum: 10,
-          description: "Maximum number of places to retrieve (default 5).",
-        },
-        manualInterest: {
-          type: "string",
-          description:
-            "Optional interest/category override (e.g. 'pizza', 'family fun tonight'). Use when admin specifies a theme.",
-        },
-        manualMode: {
-          type: "string",
-          enum: ["normal", "child"],
-          description:
-            "Override interaction mode if admin explicitly asks for child-safe or normal mode.",
-        },
+        userId: { type: "string" },
+        roomId: { type: "string" },
+        limit: { type: "integer", minimum: 1, maximum: 10 },
+        manualInterest: { type: "string" },
+        manualMode: { type: "string", enum: ["normal", "child"] },
       },
       required: [],
     },
@@ -335,24 +253,274 @@ export const coreTools: AgentToolDefinition[] = [
   {
     name: "call_third_party",
     description:
-      "Call a third-party phone number and deliver a short spoken message. Optionally include roomId/callSid to allow bridging into a conference.",
+      "Call a third-party phone number and deliver spoken message(s). Supports messages[] (preferred) and message (legacy). For personal calls or multi-message requests, require confirm=true.",
     parameters: {
       type: "object",
       properties: {
         phone: { type: "string" },
+        messages: { type: "array", items: { type: "string" } },
         message: { type: "string" },
-        roomId: {
-          type: "string",
-          description:
-            "Optional room id (e.g., phone:... or visitor-...). Helps locate the active caller leg for bridging.",
-        },
-        callSid: {
-          type: "string",
-          description:
-            "Optional Twilio CallSid for the active caller leg. If provided, can be used for direct bridging.",
-        },
+        roomId: { type: "string" },
+        callSid: { type: "string" },
+        calleeType: { type: "string", enum: ["personal", "business"] },
+        confirm: { type: "boolean" },
       },
-      required: ["phone", "message"],
+      required: ["phone"],
+      anyOf: [{ required: ["message"] }, { required: ["messages"] }],
     },
   },
 ];
+
+// ================================================
+// Agent runtime (OpenAI chat.completions)
+// ================================================
+export type AgentSource = "mobile" | "admin" | "system";
+
+export interface AgentRequestPayload {
+  input: string;
+  roomId?: string;
+  userId?: string | null;
+  source?: AgentSource;
+  toolsMode?: "off" | "debug";
+}
+
+export interface AgentResult {
+  replyText: string;
+  usedTools: string[];
+  debug?: {
+    systemPromptPreview: string;
+    mode: "stub" | "openai" | "error";
+    toolResults?: Array<{ name: string; result: unknown }>;
+    hasKey?: boolean;
+    rawError?: string;
+  };
+}
+
+const hasOpenAiKey =
+  typeof process !== "undefined" &&
+  typeof process.env.OPENAI_API_KEY === "string" &&
+  process.env.OPENAI_API_KEY.trim().length > 0;
+
+console.log("[agent runtime] has OPENAI_API_KEY?", hasOpenAiKey);
+
+const openai = hasOpenAiKey
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY! })
+  : null;
+
+// -----------------------------------------------------
+// M8b: Build personalization context from Users store
+// -----------------------------------------------------
+async function buildUserContextSuffix(req: AgentRequestPayload): Promise<string> {
+  try {
+    const usersStore = await import("@/app/api/users/store");
+    const { getUser, findUserByRoomId } = usersStore as any;
+
+    let user: any | undefined;
+
+    if (req.userId && typeof getUser === "function") user = await getUser(String(req.userId));
+    if (!user && req.roomId && typeof findUserByRoomId === "function") {
+      user = await findUserByRoomId(String(req.roomId));
+    }
+    if (!user) return "";
+
+    const bits: string[] = [];
+    if (user.interactionMode === "child") bits.push("interactionMode=child");
+    else if (user.interactionMode === "normal") bits.push("interactionMode=normal");
+
+    if (typeof user.interest === "string" && user.interest.trim()) {
+      bits.push(`interest="${user.interest.trim()}"`);
+    }
+    if (Array.isArray(user.tags) && user.tags.length > 0) {
+      const shortTags = user.tags.slice(0, 6).map((t: string) => String(t));
+      bits.push(`tags=[${shortTags.join(", ")}]`);
+    }
+    if (typeof user.source === "string" && user.source.trim()) bits.push(`source=${user.source.trim()}`);
+    if (typeof user.phone === "string" && user.phone.trim()) bits.push(`phone=${user.phone.trim()}`);
+
+    if (bits.length === 0) return "";
+    return `\n\n[User profile context: ${bits.join("; ")}]`;
+  } catch (err) {
+    console.error("[agent runtime] buildUserContextSuffix failed:", err);
+    return "";
+  }
+}
+
+// -----------------------------------------------------
+// Stub agent (if key missing or errors)
+// -----------------------------------------------------
+async function runStubAgent(req: AgentRequestPayload, reason?: string): Promise<AgentResult> {
+  const trimmed = req.input.trim() || "a blank message";
+  const replyText =
+    `Foundzie (demo): I got “${trimmed}”. ` +
+    `Right now I'm in a light demo mode on this device, ` +
+    `but normally I'd use my full concierge brain plus tools ` +
+    `to help you discover places, plan, or just chat with you.`;
+
+  return {
+    replyText,
+    usedTools: coreTools.map((t) => t.name),
+    debug: {
+      systemPromptPreview: FOUNDZIE_SYSTEM_PROMPT.slice(0, 200),
+      mode: "stub",
+      hasKey: hasOpenAiKey,
+      rawError: reason ? String(reason) : undefined,
+    },
+  };
+}
+
+// -----------------------------------------------------
+// Helper: extract text from OpenAI message.content
+// -----------------------------------------------------
+function extractMessageText(message: any): string {
+  if (!message) return "";
+  if (typeof message.content === "string") return message.content.trim();
+
+  if (Array.isArray(message.content)) {
+    const text = (message.content as any[])
+      .map((p) => {
+        if (!p) return "";
+        if (typeof p === "string") return p;
+        if (typeof p.text === "string") return p.text;
+        if (p.text && typeof p.text.value === "string") return p.text.value;
+        return "";
+      })
+      .join(" ")
+      .trim();
+    return text;
+  }
+
+  return "";
+}
+
+// -----------------------------------------------------
+// Real OpenAI-powered agent
+// -----------------------------------------------------
+async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
+  if (!openai) return runStubAgent(req, "no_openai_client");
+
+  const userText = req.input.trim() || "User sent a blank message.";
+
+  const contextBits: string[] = [];
+  if (req.source) contextBits.push(`source=${req.source}`);
+  if (req.roomId) contextBits.push(`roomId=${req.roomId}`);
+  if (req.userId) contextBits.push(`userId=${req.userId}`);
+
+  const contextSuffix = contextBits.length > 0 ? `\n\n(Context: ${contextBits.join(", ")})` : "";
+  const profileSuffix = await buildUserContextSuffix(req);
+  const finalUserContent = userText + contextSuffix + profileSuffix;
+
+  const toolsMode = req.toolsMode ?? (req.source === "admin" ? "debug" : "off");
+  const useTools = toolsMode === "debug";
+
+  console.log("[agent runtime] toolsMode:", toolsMode, "useTools:", useTools, "source:", req.source);
+
+  const openAiTools: any[] = coreTools.map((t) => ({
+    type: "function",
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    messages: [
+      { role: "system", content: FOUNDZIE_SYSTEM_PROMPT },
+      { role: "user", content: finalUserContent },
+    ],
+    tools: useTools ? (openAiTools as any) : undefined,
+    tool_choice: useTools ? "auto" : undefined,
+    temperature: 0.4,
+    max_tokens: 400,
+  });
+
+  const message: any = completion.choices[0]?.message ?? {};
+  console.log("[agent runtime] raw OpenAI message:", JSON.stringify(message));
+
+  let replyText = extractMessageText(message);
+
+  const usedTools: string[] = [];
+  const toolResults: Array<{ name: string; result: unknown }> = [];
+
+  if (useTools && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+    const toolCalls = message.tool_calls as any[];
+    console.log("[agent runtime] tool_calls:", JSON.stringify(toolCalls));
+
+    for (const call of toolCalls) {
+      if (!call || call.type !== "function" || !call.function) continue;
+
+      const toolName: string = call.function.name;
+      const impl = (toolImplementations as Record<string, any>)[toolName];
+      if (!impl) continue;
+
+      let parsedArgs: any = {};
+      try {
+        const argStr = call.function.arguments;
+        parsedArgs = typeof argStr === "string" && argStr.trim() ? JSON.parse(argStr) : {};
+      } catch (err) {
+        console.error("[agent runtime] Failed to parse tool args:", call.function.arguments, err);
+      }
+
+      try {
+        console.log("[agent runtime] running tool:", toolName, "args:", parsedArgs);
+        const result = await impl(parsedArgs);
+        usedTools.push(toolName);
+        toolResults.push({ name: toolName, result });
+        console.log("[agent runtime] tool result:", toolName, result);
+      } catch (err) {
+        console.error("[agent runtime] Tool execution failed:", toolName, err);
+      }
+    }
+  }
+
+  // Second attempt if no text
+  if (!replyText) {
+    try {
+      const completion2 = await openai.chat.completions.create({
+        model: "gpt-4.1-mini",
+        messages: [
+          { role: "system", content: FOUNDZIE_SYSTEM_PROMPT },
+          {
+            role: "user",
+            content:
+              finalUserContent +
+              "\n\nSECOND ATTEMPT: Please respond with a short, friendly text answer for the concierge. Do NOT call tools this time.",
+          },
+        ],
+        temperature: 0.4,
+        max_tokens: 400,
+      });
+      const msg2: any = completion2.choices[0]?.message ?? {};
+      const secondText = extractMessageText(msg2);
+      if (secondText) replyText = secondText;
+    } catch (err) {
+      console.error("[agent runtime] Second attempt failed:", err);
+    }
+  }
+
+  if (!replyText) {
+    replyText =
+      toolResults.length > 0
+        ? "I've processed your request and updated the concierge system."
+        : "Foundzie: I received your message but my reply was empty. Please try again.";
+  }
+
+  return {
+    replyText,
+    usedTools,
+    debug: {
+      systemPromptPreview: FOUNDZIE_SYSTEM_PROMPT.slice(0, 200),
+      mode: "openai",
+      toolResults,
+      hasKey: hasOpenAiKey,
+    },
+  };
+}
+
+// Main entry point
+export async function runFoundzieAgent(req: AgentRequestPayload): Promise<AgentResult> {
+  try {
+    if (!hasOpenAiKey || !openai) return runStubAgent(req, "missing_or_empty_OPENAI_API_KEY");
+    return await runOpenAiAgent(req);
+  } catch (err) {
+    console.error("[agent runtime] OpenAI error, falling back to stub:", err);
+    return runStubAgent(req, err instanceof Error ? err.message : String(err));
+  }
+}

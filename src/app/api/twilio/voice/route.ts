@@ -1,3 +1,4 @@
+// src/app/api/twilio/voice/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { kvSetJSON } from "@/lib/kv/redis";
 
@@ -155,9 +156,7 @@ function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
   const afterStream =
     opts.role === "callee"
       ? `<Hangup/>`
-      : `<Redirect method="POST">${escapeForXml(
-          gatherFallbackUrl
-        )}</Redirect>`;
+      : `<Redirect method="POST">${escapeForXml(gatherFallbackUrl)}</Redirect>`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -174,6 +173,8 @@ function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
       <Parameter name="calleeType" value="${safeCalleeType}" />
 
       ${safeRoom ? `<Parameter name="roomId" value="${safeRoom}" />` : ``}
+
+      <!-- IMPORTANT: callSid/from may be blank on GET; bridge must fall back to start.callSid -->
       ${safeCallSid ? `<Parameter name="callSid" value="${safeCallSid}" />` : ``}
       ${safeFrom ? `<Parameter name="from" value="${safeFrom}" />` : ``}
 
@@ -263,7 +264,7 @@ export async function GET(req: NextRequest) {
   const task = (url.searchParams.get("task") || "").trim();
   const calleeType = parseCalleeType(url);
 
-  // M16 orchestration params (harmless if absent)
+  // M16 orchestration params
   const sessionId = (url.searchParams.get("sessionId") || "").trim();
   const callerCallSid = (url.searchParams.get("callerCallSid") || "").trim();
 
@@ -298,7 +299,7 @@ export async function POST(req: NextRequest) {
   const task = (url.searchParams.get("task") || "").trim();
   const calleeType = parseCalleeType(url);
 
-  // M16 orchestration params (harmless if absent)
+  // M16 orchestration params
   const sessionId = (url.searchParams.get("sessionId") || "").trim();
   const callerCallSid = (url.searchParams.get("callerCallSid") || "").trim();
 

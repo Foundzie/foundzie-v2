@@ -67,11 +67,6 @@ function wsSend(ws, obj) {
   }
 }
 
-/**
- * Upstash REST API:
- * - GET foo -> REST_URL/get/foo
- * - JSON/binary via POST body -> REST_URL/set/foo with body appended as value
- */
 async function upstashSetJSON(key, obj, ttlSeconds) {
   if (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_TOKEN) return { ok: false, skipped: true };
 
@@ -227,13 +222,13 @@ wss.on("connection", (twilioWs, req) => {
   const toolCooldownMap = new Map(); // fp -> lastTimeMs
   const seenToolKeys = new Set(); // exact args, short TTL
 
-  // ✅ NEW: tool call dedupe (prevents empty args “first run” + double execution)
+  // ✅ tool call dedupe
   const handledToolCalls = new Set(); // call_id -> true
 
   // M16 callee tracking
   let calleeFlowStarted = false;
   let calleeReplyCaptured = false;
-  let calleeAssistantText = ""; // we’ll parse assistant’s text to store outcome
+  let calleeAssistantText = "";
   let calleeOutcomeWritten = false;
 
   let closed = false;
@@ -292,8 +287,10 @@ wss.on("connection", (twilioWs, req) => {
 
     if (name === "call_third_party") {
       const p = normalizePhoneForFp(args.phone);
-      const m = String(args.message || "").trim().slice(0, 32);
-      return `${name}:p=${p}:m=${m}`.replace(/[^a-zA-Z0-9:_=.-]/g, "_");
+      const msgs = Array.isArray(args.messages) ? args.messages : [];
+      const legacy = String(args.message || "").trim();
+      const joined = (msgs.length ? msgs.join(" ") : legacy).slice(0, 64);
+      return `${name}:p=${p}:m=${joined}`.replace(/[^a-zA-Z0-9:_=.-]/g, "_");
     }
 
     const short = JSON.stringify(args).slice(0, 80);
@@ -379,7 +376,6 @@ wss.on("connection", (twilioWs, req) => {
     forceSpeakCount += 1;
     console.log("[bridge] forceSpeakNow:", reason, { count: forceSpeakCount });
 
-    // Role-aware force speak
     if (custom.role === "callee") {
       createUserMessage("Call connected. Deliver the task now and request a short reply.");
       createResponse(
@@ -400,16 +396,26 @@ wss.on("connection", (twilioWs, req) => {
       return { ok: false, message: `Unknown tool: ${name}` };
     }
 
-    // Callee leg must not call tools (avoid recursion)
     if (custom.role === "callee") {
       return { ok: false, blocked: "role_callee_tools_disabled" };
     }
 
     const phone = String(args?.phone || "").trim();
-    const message = String(args?.message || "").trim();
+
+    const messages = Array.isArray(args?.messages)
+      ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
+      : [];
+    const legacyMessage = String(args?.message || "").trim();
+    const hasMessages = messages.length > 0;
+    const message = hasMessages ? messages.join(" ") : legacyMessage;
+
     if (!phone || !message) {
-      console.log("[tool] missing args; skipping execution", { phone: !!phone, message: !!message });
-      return { ok: false, blocked: "missing_args", need: ["phone", "message"] };
+      console.log("[tool] missing args; skipping execution", {
+        phone: !!phone,
+        message: !!message,
+        messagesCount: messages.length,
+      });
+      return { ok: false, blocked: "missing_args", need: ["phone", "message or messages[]"] };
     }
 
     const cd = toolIsCoolingDown(name, args);
@@ -434,6 +440,8 @@ wss.on("connection", (twilioWs, req) => {
       roomId: (args?.roomId || custom.roomId || "").toString() || "current",
       callSid: (args?.callSid || custom.callSid || "").toString() || "current",
       calleeType: (args?.calleeType || "personal").toString(),
+      messages: hasMessages ? messages : undefined,
+      message: hasMessages ? messages.join(" ") : legacyMessage,
     };
 
     console.log("[tool] calling backend", { url, payload });
@@ -466,6 +474,22 @@ wss.on("connection", (twilioWs, req) => {
       item: { type: "function_call_output", call_id, output: JSON.stringify(resultObj || {}) },
     });
 
+    if (
+      resultObj?.data?.blocked === "confirmation_required" ||
+      resultObj?.blocked === "confirmation_required"
+    ) {
+      createUserMessage(
+        "The call is blocked until the user confirms the exact message(s). Ask them to confirm YES, and do NOT change the message text."
+      );
+      const ok = createResponse(
+        "Ask for confirmation in one short question. Repeat the message(s) VERBATIM. Do NOT invent content. " +
+          "Once the user says YES, call the tool again with confirm=true and the same messages."
+      );
+      if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_result_followup_confirm";
+      armAudioWatchdog("tool_result_confirm");
+      return;
+    }
+
     createUserMessage(
       resultObj?.ok
         ? "Tool succeeded. Briefly confirm you are placing the call now."
@@ -489,7 +513,8 @@ wss.on("connection", (twilioWs, req) => {
       "SPEAK ENGLISH ONLY for this entire call. Never switch languages unless the user explicitly asks. " +
       "Sound human, upbeat, and caring. Keep replies short (1–2 sentences). " +
       "Ask only ONE question when needed. Do NOT explain capabilities/policies. " +
-      "If the caller speaks while you speak, STOP and listen.";
+      "If the caller speaks while you speak, STOP and listen. " +
+      "CRITICAL: Never invent message content for third-party calls. If a personal call or multiple messages, repeat verbatim and ask for YES before calling the tool.";
 
     const baseInstructionsCallee =
       "You are Foundzie calling the RECIPIENT on a REAL phone call. " +
@@ -506,13 +531,8 @@ wss.on("connection", (twilioWs, req) => {
       input_audio_format: "g711_ulaw",
       output_audio_format: "g711_ulaw",
       turn_detection: { type: "server_vad", silence_duration_ms: VAD_SILENCE_MS },
-
-      // LEGACY: voice field ONLY (no session.audio!)
       voice: REALTIME_VOICE,
-
       instructions,
-
-      // Tools ONLY for caller leg
       tools: isCallee
         ? []
         : [
@@ -520,17 +540,21 @@ wss.on("connection", (twilioWs, req) => {
               type: "function",
               name: "call_third_party",
               description:
-                "Call a third-party phone number and deliver a short spoken message. Do NOT connect the caller and recipient together. After delivery, return the outcome.",
+                "Call a third-party phone number and deliver spoken message(s) VERBATIM. Do NOT connect caller and recipient. " +
+                "For personal calls or multi-message delivery, you MUST have explicit user confirmation and pass confirm=true.",
               parameters: {
                 type: "object",
                 properties: {
                   phone: { type: "string" },
+                  messages: { type: "array", items: { type: "string" } },
                   message: { type: "string" },
                   roomId: { type: "string" },
                   callSid: { type: "string" },
                   calleeType: { type: "string", enum: ["personal", "business"] },
+                  confirm: { type: "boolean" },
                 },
-                required: ["phone", "message"],
+                required: ["phone"],
+                anyOf: [{ required: ["message"] }, { required: ["messages"] }],
               },
             },
           ],
@@ -557,6 +581,8 @@ wss.on("connection", (twilioWs, req) => {
       callerCallSid: custom.callerCallSid || null,
       taskLen: (custom.task || "").length,
       calleeType: custom.calleeType || null,
+      callSid: custom.callSid || null,
+      from: custom.from || null,
     });
 
     const task = (custom.task || "").trim();
@@ -603,10 +629,10 @@ wss.on("connection", (twilioWs, req) => {
 
   function tryParseReplyFromAssistantText(text) {
     const t = String(text || "");
-    const m1 = t.match(/reply\s*[:\-]\s*([^\n.]{1,80})/i);
+    const m1 = t.match(/reply\s*[:\-]\s*([^\n.]{1,120})/i);
     if (m1 && m1[1]) return m1[1].trim();
 
-    const m2 = t.match(/they (?:said|replied)\s*[:\-]?\s*([^\n.]{1,80})/i);
+    const m2 = t.match(/they (?:said|replied)\s*[:\-]?\s*([^\n.]{1,120})/i);
     if (m2 && m2[1]) return m2[1].trim();
 
     return "";
@@ -682,17 +708,12 @@ wss.on("connection", (twilioWs, req) => {
         if (DEBUG_OPENAI_TEXT) console.log("[text] delta:", piece.slice(0, 200));
       }
 
-      // Response lifecycle
       if (msg.type === "response.created" || msg.type === "response.started") {
         responseInFlight = true;
         return;
       }
 
-      if (
-        msg.type === "response.done" ||
-        msg.type === "response.completed" ||
-        msg.type === "response.stopped"
-      ) {
+      if (msg.type === "response.done" || msg.type === "response.completed" || msg.type === "response.stopped") {
         responseInFlight = false;
 
         if (custom.role === "callee" && calleeReplyCaptured) {
@@ -713,6 +734,7 @@ wss.on("connection", (twilioWs, req) => {
 
         mediaFramesSinceLastResponse = 0;
         pendingResponseTimer = clearTimer(pendingResponseTimer);
+
         if (queuedForceSpeakReason) {
           const reason = queuedForceSpeakReason;
           queuedForceSpeakReason = null;
@@ -724,14 +746,20 @@ wss.on("connection", (twilioWs, req) => {
       // Speech stopped -> respond (debounced)
       if (msg.type === "input_audio_buffer.speech_stopped") {
         if (responseInFlight) return;
-        if (mediaFramesSinceLastResponse < MIN_MEDIA_FRAMES) return;
+
+        // ✅ P0 RELIABILITY: callee replies can be very short (Toyota, Yes, No)
+        // So do NOT require MIN_MEDIA_FRAMES for callee.
+        const minFramesRequired = custom.role === "callee" ? 1 : MIN_MEDIA_FRAMES;
+        if (mediaFramesSinceLastResponse < minFramesRequired) return;
 
         pendingResponseTimer = clearTimer(pendingResponseTimer);
         pendingResponseTimer = setTimeout(() => {
           if (closed) return;
           if (!openaiReady) return;
           if (responseInFlight) return;
-          if (mediaFramesSinceLastResponse < MIN_MEDIA_FRAMES) return;
+
+          const minReq = custom.role === "callee" ? 1 : MIN_MEDIA_FRAMES;
+          if (mediaFramesSinceLastResponse < minReq) return;
 
           wsSend(openaiWs, { type: "input_audio_buffer.commit" });
 
@@ -767,7 +795,7 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // ✅ Tool calling: done (EXECUTE ONLY HERE + DEDUPE + IGNORE EMPTY ARGS)
+      // Tool calling: done
       if (msg.type === "response.function_call_arguments.done") {
         const call_id = msg.call_id || msg.callId || msg.id;
         const name = msg.name || msg.tool_name || msg.function?.name;
@@ -788,10 +816,14 @@ wss.on("connection", (twilioWs, req) => {
           args = {};
         }
 
-        // Critical: ignore the empty/partial call that causes “asked twice”
         const phone = String(args?.phone || "").trim();
-        const message = String(args?.message || "").trim();
-        if (!phone || !message) {
+        const messages = Array.isArray(args?.messages)
+          ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
+          : [];
+        const legacyMessage = String(args?.message || "").trim();
+        const hasAnyMessage = messages.length > 0 || !!legacyMessage;
+
+        if (!phone || !hasAnyMessage) {
           console.log("[tool] done with empty args ignored", { name, callId: call_id, args });
           return;
         }
@@ -805,21 +837,7 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // ✅ IMPORTANT: do NOT execute tools from response.output_item.added
-      // Some Realtime versions emit an early function_call item with {} arguments.
-      // Executing here is what causes the “missing args; skipping execution” first run.
-      // We intentionally ignore this shape and rely on function_call_arguments.done above.
       if (msg.type === "response.output_item.added" && msg.item?.type === "function_call") {
-        const call_id = msg.item.call_id || msg.item.id;
-        const name = msg.item.name;
-        const argsRaw = msg.item.arguments || "{}";
-        if (DEBUG_OPENAI_EVENTS) {
-          console.log("[tool] output_item.added seen (ignored)", {
-            name,
-            callId: call_id,
-            argsPreview: String(argsRaw).slice(0, 120),
-          });
-        }
         return;
       }
     });
@@ -869,17 +887,14 @@ wss.on("connection", (twilioWs, req) => {
     attachOpenAiHandlers(openaiWs);
   }
 
-  // Start OpenAI
   connectOpenAi();
 
-  // Keepalive ping (Twilio)
   const pingInterval = setInterval(() => {
     try {
       if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
     } catch {}
   }, 15000);
 
-  // Optional keepalive ping (OpenAI)
   const openAiPingInterval = setInterval(() => {
     try {
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.ping();
@@ -887,7 +902,7 @@ wss.on("connection", (twilioWs, req) => {
   }, 20000);
 
   // Twilio inbound
-  twilioWs.on("message", (data) => {
+  twilioWs.on("message", async (data) => {
     const msg = safeJsonParse(data.toString());
     if (!msg) return;
 
@@ -897,13 +912,22 @@ wss.on("connection", (twilioWs, req) => {
       streamSid = msg.start?.streamSid || null;
 
       const cp = msg.start?.customParameters || {};
+
+      // ✅ callSid fallback (critical)
+      const startCallSid = String(msg.start?.callSid || "").trim();
+
+      // ✅ from fallback attempts (may still be empty depending on Twilio shape)
+      const startFrom =
+        String(msg.start?.from || "").trim() ||
+        String(msg.start?.caller || "").trim() ||
+        String(msg.start?.callerNumber || "").trim();
+
       custom = {
         base: String(cp.base || cp.BASE || "").trim(),
         roomId: String(cp.roomId || cp.roomid || "").trim(),
-        callSid: String(cp.callSid || cp.callsid || "").trim(),
-        from: String(cp.from || cp.FROM || "").trim(),
+        callSid: String(cp.callSid || cp.callsid || "").trim() || startCallSid,
+        from: String(cp.from || cp.FROM || "").trim() || startFrom,
         source: String(cp.source || "").trim(),
-
         role: String(cp.role || "caller").trim() || "caller",
         calleeType: String(cp.calleeType || "personal").trim() || "personal",
         task: String(cp.task || "").trim(),
@@ -914,13 +938,12 @@ wss.on("connection", (twilioWs, req) => {
       console.log("[twilio] start", {
         streamSid,
         callSid: custom.callSid || null,
-        roomId: custom.roomId || null,
         from: custom.from || null,
+        roomId: custom.roomId || null,
         role: custom.role || null,
         sessionId: custom.sessionId || null,
       });
 
-      // If OpenAI is already ready, kick off correct flow
       if (openaiReady) {
         if (custom.role === "callee") maybeStartCalleeFlow();
         else if (!greeted) {
@@ -950,7 +973,18 @@ wss.on("connection", (twilioWs, req) => {
     }
 
     if (msg.event === "stop") {
-      console.log("[twilio] stop");
+      console.log("[twilio] stop", { role: custom.role, sessionId: custom.sessionId || null });
+
+      // ✅ P0: if callee ends and we never wrote outcome, write *something* now
+      if (custom.role === "callee" && !calleeOutcomeWritten) {
+        const reply = tryParseReplyFromAssistantText(calleeAssistantText);
+        await writeM16Outcome("twilio_stop", {
+          reply: reply || null,
+          stopAt: nowIso(),
+          note: "Stream stopped before response.done; wrote best-effort outcome.",
+        });
+      }
+
       shutdown("twilio_stop");
     }
   });

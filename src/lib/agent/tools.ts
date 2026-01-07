@@ -30,6 +30,49 @@ function getBaseUrl(): string {
   return "http://localhost:3000";
 }
 
+function cleanPhone(input: unknown): string {
+  return typeof input === "string" ? input.trim() : "";
+}
+
+function cleanText(input: unknown, max = 900): string {
+  const t = typeof input === "string" ? input.trim() : "";
+  return t.slice(0, max);
+}
+
+function normalizeMessages(args: { message?: unknown; messages?: unknown }): string[] {
+  const arr: string[] = [];
+
+  const msgs = args.messages;
+  if (Array.isArray(msgs)) {
+    for (const m of msgs) {
+      const t = cleanText(m, 800);
+      if (t) arr.push(t);
+    }
+  }
+
+  const single = cleanText(args.message, 800);
+  if (single) arr.push(single);
+
+  // dedupe while preserving order
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of arr) {
+    if (seen.has(m)) continue;
+    seen.add(m);
+    out.push(m);
+  }
+  return out;
+}
+
+function joinForTask(messages: string[]): string {
+  // Natural spoken pacing + avoids weird run-ons
+  // (We’ll still speak them as separate sentences)
+  return messages
+    .map((m) => m.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
 /* ------------------------------------------------------------------ */
 /* 1) SOS tools                                                        */
 /* ------------------------------------------------------------------ */
@@ -113,26 +156,76 @@ export async function log_outbound_call(args: {
  * ✅ Uses server endpoint /api/tools/call_third_party
  * That endpoint performs:
  * - redirect caller to /api/twilio/hold
- * - dial recipient via /api/twilio/relay (deliver message + capture reply)
+ * - dial recipient via /api/twilio/relay OR /api/twilio/voice?mode=callee_stream
  * - redirect caller back with result
+ *
+ * ✅ MESSAGE INTEGRITY:
+ * - Supports messages[] (preferred) and message (legacy).
+ * - Enforces a confirmation gate for personal calls and/or multi-message requests:
+ *   You MUST pass confirm=true to place the call. (Model should ask user to confirm.)
  */
 export async function call_third_party(args: {
   phone: string;
-  message: string;
+
+  // NEW (preferred):
+  messages?: string[];
+
+  // Legacy:
+  message?: string;
+
   roomId?: string;
   callSid?: string;
-  fromPhone?: string; // optional
+  fromPhone?: string;
+
+  calleeType?: "personal" | "business";
+
+  // NEW safety rail:
+  confirm?: boolean;
 }) {
-  const phone = typeof args.phone === "string" ? args.phone.trim() : "";
-  const message = typeof args.message === "string" ? args.message.trim() : "";
-  const roomId = typeof args.roomId === "string" ? args.roomId.trim() : "";
-  const callSid = typeof args.callSid === "string" ? args.callSid.trim() : "";
+  const phone = cleanPhone(args.phone);
+  const roomId = cleanPhone(args.roomId);
+  const callSid = cleanPhone(args.callSid);
+  const fromPhone = cleanPhone(args.fromPhone);
+
+  const calleeType =
+    args.calleeType === "business" ? "business" : ("personal" as const);
+
+  const messages = normalizeMessages({ message: args.message, messages: args.messages });
 
   if (!phone) throw new Error("call_third_party: missing phone");
-  if (!message) throw new Error("call_third_party: missing message");
+  if (messages.length === 0) throw new Error("call_third_party: missing message(s)");
+
+  const multi = messages.length > 1;
+
+  // ✅ P0 safety: confirmation gate for personal calls OR multi-message delivery
+  // (You can relax later via env toggle.)
+  const strictConfirmEnabled =
+    String(process.env.STRICT_MESSAGE_CONFIRM || "1").trim() !== "0";
+
+  if (strictConfirmEnabled && (calleeType === "personal" || multi)) {
+    const confirmed = args.confirm === true;
+
+    if (!confirmed) {
+      // Return a structured “blocked” result rather than throwing,
+      // so the agent can ask for confirmation cleanly.
+      const payload = {
+        ok: false,
+        blocked: "confirmation_required",
+        calleeType,
+        messages,
+        instruction:
+          "Confirmation required before calling. Ask the user to confirm by saying YES, then call again with confirm=true and the same messages verbatim.",
+      };
+
+      console.log("[agent tool] call_third_party →", payload);
+      return payload;
+    }
+  }
 
   const baseUrl = getBaseUrl();
   const url = `${baseUrl}/api/tools/call_third_party`;
+
+  const messageJoined = joinForTask(messages);
 
   const res = await fetch(url, {
     method: "POST",
@@ -140,11 +233,18 @@ export async function call_third_party(args: {
     cache: "no-store",
     body: JSON.stringify({
       phone,
-      message,
+      // NEW
+      messages,
+
+      // Legacy field retained for compatibility with older paths
+      message: messageJoined,
+
+      calleeType,
+
       roomId: roomId || undefined,
       callSid: callSid || undefined,
-      fromPhone:
-        typeof args.fromPhone === "string" ? args.fromPhone.trim() : undefined,
+      fromPhone: fromPhone || undefined,
+      confirm: args.confirm === true ? true : undefined,
     }),
   });
 
@@ -158,7 +258,7 @@ export async function call_third_party(args: {
       userId: null,
       userName: null,
       phone,
-      note: `Relay call: ${message}`.slice(0, 240),
+      note: `Relay call: ${messageJoined}`.slice(0, 240),
       direction: "outbound",
     });
   } catch {}
@@ -167,13 +267,16 @@ export async function call_third_party(args: {
 
   const payload = {
     ok,
-    mode: "relay" as const,
+    mode: (data?.mode ?? "relay") as string,
     phone,
-    message,
+    calleeType,
+    messages,
+    message: messageJoined,
     sessionId: data?.sessionId ?? null,
     steps: data?.steps ?? null,
     urls: data?.urls ?? null,
     error: ok ? null : data?.message ?? `HTTP ${res.status}`,
+    blocked: ok ? null : data?.blocked ?? null,
   };
 
   console.log("[agent tool] call_third_party →", payload);

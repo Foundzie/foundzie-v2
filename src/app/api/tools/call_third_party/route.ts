@@ -1,3 +1,4 @@
+// src/app/api/tools/call_third_party/route.ts
 import "server-only";
 import { NextRequest, NextResponse } from "next/server";
 import twilio from "twilio";
@@ -37,6 +38,45 @@ function normalizeE164(input: string): string {
   return raw;
 }
 
+function sanitizeMessage(s: unknown, max = 800): string {
+  const t = typeof s === "string" ? s.trim() : "";
+  return t.slice(0, max);
+}
+
+function normalizeMessages(body: any): string[] {
+  const out: string[] = [];
+
+  // Preferred: messages[]
+  if (Array.isArray(body?.messages)) {
+    for (const m of body.messages) {
+      const t = sanitizeMessage(m, 800);
+      if (t) out.push(t);
+    }
+  }
+
+  // Legacy: message
+  const legacy = sanitizeMessage(body?.message, 800);
+  if (legacy) out.push(legacy);
+
+  // Deduplicate
+  const seen = new Set<string>();
+  const uniq: string[] = [];
+  for (const m of out) {
+    if (seen.has(m)) continue;
+    seen.add(m);
+    uniq.push(m);
+  }
+
+  return uniq;
+}
+
+function joinForTask(messages: string[]): string {
+  return messages
+    .map((m) => m.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
 function activeCallKey(roomId: string) {
   return `foundzie:twilio:active-call:${roomId}:v1`;
 }
@@ -46,10 +86,10 @@ function cooldownKey(kind: string, fingerprint: string) {
   return `foundzie:tools:cooldown:${kind}:${fingerprint}:v4`;
 }
 
-function fingerprintForCall(phone: string, message: string) {
+function fingerprintForCall(phone: string, messages: string[]) {
   const p = (phone || "").replace(/[^\d]/g, "").slice(-10);
-  const m = (message || "").slice(0, 28);
-  return `${p}:${m}`.replace(/[^a-zA-Z0-9:_-]/g, "_");
+  const joined = (messages || []).join(" ").slice(0, 64);
+  return `${p}:${joined}`.replace(/[^a-zA-Z0-9:_-]/g, "_");
 }
 
 async function resolveActiveCallSid(roomId?: string) {
@@ -141,21 +181,24 @@ function decideCallMode(body: any): "relay" | "callee_stream" {
  * POST /api/tools/call_third_party
  * Body: {
  *   phone,
- *   message,
+ *   messages?: string[],
+ *   message?: string, // legacy
  *   roomId?,
  *   callSid?,
  *   calleeType?,
+ *   confirm?,  // required for personal calls / multi-message when STRICT_MESSAGE_CONFIRM=1
  *   mode? ("relay" | "callee_stream" | "m14" | "m16"),
  *   stream? boolean,
  * }
  *
- * ✅ NO CONFERENCE invariant (always): caller is held, callee is separate leg.
+ * ✅ NO CONFERENCE invariant: caller is held, callee is separate leg.
  */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as any;
 
   const phone = normalizeE164(String(body.phone || ""));
-  const message = String(body.message || "").trim().slice(0, 800);
+  const messages = normalizeMessages(body);
+  const messageJoined = joinForTask(messages);
 
   let roomId = String(body.roomId || "").trim();
   let callSid = String(body.callSid || "").trim();
@@ -163,11 +206,32 @@ export async function POST(req: NextRequest) {
   const calleeTypeRaw = String(body.calleeType || "").trim();
   const calleeType: "personal" | "business" = calleeTypeRaw === "business" ? "business" : "personal";
 
+  const confirm = body.confirm === true;
+
   if (roomId === "current") roomId = "";
   if (callSid === "current") callSid = "";
 
-  if (!phone || !message) {
-    return json({ ok: false, message: "Missing phone or message." }, 400);
+  if (!phone || messages.length === 0) {
+    return json({ ok: false, message: "Missing phone or message(s)." }, 400);
+  }
+
+  // ✅ P0 message integrity confirmation gate
+  const strictConfirmEnabled = String(process.env.STRICT_MESSAGE_CONFIRM || "1").trim() !== "0";
+  const multi = messages.length > 1;
+  if (strictConfirmEnabled && (calleeType === "personal" || multi)) {
+    if (!confirm) {
+      return json(
+        {
+          ok: false,
+          blocked: "confirmation_required",
+          message: "Confirmation required before placing a personal or multi-message call.",
+          calleeType,
+          messages,
+          instruction: "Repeat the exact message(s) verbatim, ask for YES, then retry with confirm=true.",
+        },
+        409
+      );
+    }
   }
 
   if (!callSid) {
@@ -188,7 +252,7 @@ export async function POST(req: NextRequest) {
 
   // Cooldown (prevents duplicate tool calls)
   const COOLDOWN_SECONDS = Number(process.env.TOOL_CALL_COOLDOWN_SECONDS || 8);
-  const fp = fingerprintForCall(phone, message);
+  const fp = fingerprintForCall(phone, messages);
   const cdKey = cooldownKey("call_third_party", fp);
 
   const existing = await kvGetOrNull(cdKey, "cooldown_read");
@@ -233,10 +297,17 @@ export async function POST(req: NextRequest) {
     roomId: roomId || null,
     callerCallSid: callSid,
     toPhone: phone,
-    message,
+
+    // NEW: store messages verbatim
+    messages,
+
+    // Legacy compatibility field (still stored)
+    message: messageJoined,
+
     calleeType,
     status: "created",
     createdAt,
+    confirm: confirm ? true : false,
   };
 
   try {
@@ -270,7 +341,8 @@ export async function POST(req: NextRequest) {
     roomId: roomId || null,
     calleeType,
     toPhone: phone,
-    msgLen: message.length,
+    messagesCount: messages.length,
+    msgLen: messageJoined.length,
   });
 
   // --- 1) Put caller on hold ---
@@ -362,10 +434,11 @@ export async function POST(req: NextRequest) {
     `&calleeType=${encodeURIComponent(calleeType)}`;
 
   // M16 callee_stream URL (new)
-  const task = `Deliver this message once, then ask for a short reply. Message: ${message}`.slice(
-    0,
-    900
-  );
+  const task =
+    `Deliver these message(s) verbatim, in order. ` +
+    `After delivering them ONCE, ask for a short reply. ` +
+    `Messages: ${messages.map((m, i) => `[${i + 1}] ${m}`).join(" ")}`.slice(0, 900);
+
   const calleeStreamUrl =
     `${base}/api/twilio/voice?mode=callee_stream` +
     `&calleeType=${encodeURIComponent(calleeType)}` +
@@ -385,8 +458,16 @@ export async function POST(req: NextRequest) {
       method: "GET",
       statusCallback: `${base}/api/twilio/status`,
       statusCallbackMethod: "POST",
-      // IMPORTANT: include failure states so caller can be resumed if callee fails
-      statusCallbackEvent: ["initiated", "ringing", "answered", "completed", "busy", "no-answer", "failed", "canceled"],
+      statusCallbackEvent: [
+        "initiated",
+        "ringing",
+        "answered",
+        "completed",
+        "busy",
+        "no-answer",
+        "failed",
+        "canceled",
+      ],
     });
   } catch (e: any) {
     console.error("[call_third_party] twilio outbound create FAILED", {
@@ -483,7 +564,7 @@ export async function POST(req: NextRequest) {
     // logged
   }
 
-  // ✅ IMPORTANT: map calleeSid -> sessionId ONLY for the mode that needs it
+  // ✅ map calleeSid -> sessionId
   if (calleeSid) {
     if (chosenMode === "relay") {
       try {
@@ -492,9 +573,7 @@ export async function POST(req: NextRequest) {
           { sessionId, createdAt: new Date().toISOString() },
           "relay_by_callee_write"
         );
-      } catch {
-        // logged
-      }
+      } catch {}
     }
 
     if (chosenMode === "callee_stream") {
@@ -504,9 +583,7 @@ export async function POST(req: NextRequest) {
           { sessionId, createdAt: new Date().toISOString() },
           "m16_by_callee_write"
         );
-      } catch {
-        // logged
-      }
+      } catch {}
     }
   }
 
@@ -518,6 +595,7 @@ export async function POST(req: NextRequest) {
     callSid,
     calleeType,
     sessionId,
+    messages,
     cooldownSeconds: COOLDOWN_SECONDS,
     steps: {
       callerRedirected,
