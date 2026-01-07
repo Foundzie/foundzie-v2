@@ -39,6 +39,10 @@ const DEBUG_OPENAI_TEXT = (process.env.DEBUG_OPENAI_TEXT || "").trim() === "1";
 const RESPONSE_CREATE_MIN_GAP_MS = Number(process.env.RESPONSE_CREATE_MIN_GAP_MS || 350);
 const FORCE_SPEAK_MAX_PER_CALL = Number(process.env.FORCE_SPEAK_MAX_PER_CALL || 3);
 
+// Greeting reliability
+const GREET_ON_START_DELAY_MS = Number(process.env.GREET_ON_START_DELAY_MS || 250);
+const GREET_FORCE_TIMEOUT_MS = Number(process.env.GREET_FORCE_TIMEOUT_MS || 1200);
+
 // Upstash Redis REST (for writing M16 outcome from Fly)
 const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim().replace(/\/+$/, "");
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
@@ -214,6 +218,9 @@ wss.on("connection", (twilioWs, req) => {
   let greeted = false;
   let audioWatchdogTimer = null;
   let greetingRetryTimer = null;
+  let greetOnStartTimer = null;
+  let greetForceTimer = null;
+
   let forceSpeakCount = 0;
   let queuedForceSpeakReason = null;
 
@@ -245,6 +252,8 @@ wss.on("connection", (twilioWs, req) => {
     pendingResponseTimer = clearTimer(pendingResponseTimer);
     audioWatchdogTimer = clearTimer(audioWatchdogTimer);
     greetingRetryTimer = clearTimer(greetingRetryTimer);
+    greetOnStartTimer = clearTimer(greetOnStartTimer);
+    greetForceTimer = clearTimer(greetForceTimer);
 
     clearInterval(pingInterval);
     clearInterval(openAiPingInterval);
@@ -313,10 +322,26 @@ wss.on("connection", (twilioWs, req) => {
   // ---------- Response gating helpers ----------
   function canCreateResponseNow() {
     if (!openaiReady || !openaiWs) return false;
+    if (openaiWs.readyState !== WebSocket.OPEN) return false;
     if (responseInFlight) return false;
     const now = Date.now();
     if (now - lastResponseCreateAtMs < RESPONSE_CREATE_MIN_GAP_MS) return false;
     return true;
+  }
+
+  function explainCreateBlock() {
+    const now = Date.now();
+    return {
+      openaiReady,
+      hasOpenaiWs: !!openaiWs,
+      openaiState: openaiWs ? openaiWs.readyState : null,
+      responseInFlight,
+      msSinceLastCreate: now - lastResponseCreateAtMs,
+      minGap: RESPONSE_CREATE_MIN_GAP_MS,
+      streamSid,
+      role: custom.role,
+      at: nowIso(),
+    };
   }
 
   function markResponseCreate() {
@@ -327,18 +352,32 @@ wss.on("connection", (twilioWs, req) => {
   }
 
   function createResponse(instructions) {
-    if (!canCreateResponseNow()) return false;
+    if (!canCreateResponseNow()) {
+      console.log("[bridge] createResponse blocked", explainCreateBlock());
+      return false;
+    }
     markResponseCreate();
-    return wsSend(openaiWs, {
+    const ok = wsSend(openaiWs, {
       type: "response.create",
       response: {
         modalities: ["audio", "text"],
         instructions,
       },
     });
+
+    if (!ok) {
+      console.log("[bridge] wsSend failed for response.create", explainCreateBlock());
+      responseInFlight = false;
+    }
+
+    return ok;
   }
 
   function createUserMessage(text) {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
+      if (DEBUG_OPENAI_EVENTS) console.log("[bridge] createUserMessage skipped (ws not open)");
+      return false;
+    }
     return wsSend(openaiWs, {
       type: "conversation.item.create",
       item: {
@@ -374,7 +413,7 @@ wss.on("connection", (twilioWs, req) => {
     }
 
     forceSpeakCount += 1;
-    console.log("[bridge] forceSpeakNow:", reason, { count: forceSpeakCount });
+    console.log("[bridge] forceSpeakNow:", reason, { count: forceSpeakCount, role: custom.role });
 
     if (custom.role === "callee") {
       createUserMessage("Call connected. Deliver the task now and request a short reply.");
@@ -388,6 +427,41 @@ wss.on("connection", (twilioWs, req) => {
     }
 
     armAudioWatchdog("force_speak");
+  }
+
+  function scheduleCallerGreeting(reason) {
+    if (custom.role !== "caller") return;
+    if (greeted) return;
+    if (!streamSid) return;
+
+    greetOnStartTimer = clearTimer(greetOnStartTimer);
+    greetOnStartTimer = setTimeout(() => {
+      if (closed) return;
+      if (greeted) return;
+      if (!openaiReady) return;
+
+      greeted = true;
+      console.log("[bridge] greeting triggered", { reason, at: nowIso() });
+
+      const ok = createResponse(
+        "Speak warmly and naturally in ENGLISH. One short sentence greeting, then ask: “How can I help?”"
+      );
+      if (!ok) {
+        // if gating blocks it, forceSpeak will try again
+        safeForceSpeak("greet_create_blocked");
+      }
+      armAudioWatchdog("greet");
+    }, GREET_ON_START_DELAY_MS);
+
+    // If no audio frames come out soon, forceSpeak again (covers “response created but no deltas”)
+    greetForceTimer = clearTimer(greetForceTimer);
+    greetForceTimer = setTimeout(() => {
+      if (closed) return;
+      if (!openaiReady) return;
+      if (respOutboundAudioFrames > 0) return;
+      console.log("[bridge] greetForceTimer fired", { reason, at: nowIso() });
+      safeForceSpeak("greet_force_timer");
+    }, GREET_FORCE_TIMEOUT_MS);
   }
 
   // ---------- Tools (caller leg only; callee leg should NOT call tools) ----------
@@ -566,7 +640,9 @@ wss.on("connection", (twilioWs, req) => {
 
   function sendSessionUpdate(ws) {
     const payload = buildLegacySessionUpdatePayload();
-    return wsSend(ws, { type: "session.update", session: payload });
+    const ok = wsSend(ws, { type: "session.update", session: payload });
+    if (!ok) console.log("[openai] session.update send failed", explainCreateBlock());
+    return ok;
   }
 
   function maybeStartCalleeFlow() {
@@ -669,20 +745,17 @@ wss.on("connection", (twilioWs, req) => {
 
       if (msg.type === "session.updated") {
         openaiReady = true;
-        console.log("[openai] session.updated -> ready", { schemaChosen: "legacy-only", role: custom.role });
+        console.log("[openai] session.updated -> ready", {
+          schemaChosen: "legacy-only",
+          role: custom.role,
+          streamSid,
+        });
 
+        // If Twilio start already happened, greet immediately.
         if (custom.role === "callee") {
           maybeStartCalleeFlow();
         } else {
-          if (!greeted && streamSid) {
-            greeted = true;
-            console.log("[bridge] greeting triggered");
-            const ok = createResponse(
-              "Speak warmly and naturally in ENGLISH. One short sentence greeting, then ask: “How can I help?”"
-            );
-            if (!ok) safeForceSpeak("greet_create_blocked");
-            armAudioWatchdog("greet");
-          }
+          scheduleCallerGreeting("session.updated");
         }
         return;
       }
@@ -747,8 +820,6 @@ wss.on("connection", (twilioWs, req) => {
       if (msg.type === "input_audio_buffer.speech_stopped") {
         if (responseInFlight) return;
 
-        // ✅ P0 RELIABILITY: callee replies can be very short (Toyota, Yes, No)
-        // So do NOT require MIN_MEDIA_FRAMES for callee.
         const minFramesRequired = custom.role === "callee" ? 1 : MIN_MEDIA_FRAMES;
         if (mediaFramesSinceLastResponse < minFramesRequired) return;
 
@@ -944,17 +1015,13 @@ wss.on("connection", (twilioWs, req) => {
         sessionId: custom.sessionId || null,
       });
 
+      // If OpenAI is already ready, greet immediately.
       if (openaiReady) {
         if (custom.role === "callee") maybeStartCalleeFlow();
-        else if (!greeted) {
-          greeted = true;
-          console.log("[bridge] greeting triggered");
-          const ok = createResponse(
-            "Speak warmly and naturally in ENGLISH. One short sentence greeting, then ask: “How can I help?”"
-          );
-          if (!ok) safeForceSpeak("greet_create_blocked");
-          armAudioWatchdog("greet");
-        }
+        else scheduleCallerGreeting("twilio.start");
+      } else {
+        // If OpenAI is not ready yet, we will greet on session.updated.
+        scheduleCallerGreeting("twilio.start_waiting_for_openai");
       }
 
       return;

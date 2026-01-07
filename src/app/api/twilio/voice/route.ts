@@ -112,12 +112,13 @@ function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
   const safeMode = escapeForXml(opts.mode);
   const safeRole = escapeForXml(opts.role);
 
-  const calleeType = (opts.calleeType || "personal").trim() as
-    | "personal"
-    | "business";
+  const calleeType = (opts.calleeType || "personal").trim() as "personal" | "business";
   const safeCalleeType = escapeForXml(calleeType);
 
-  const sessionId = (opts.sessionId || "").trim();
+  // IMPORTANT:
+  // If sessionId is missing, we generate one on the server so Twilio customParameters are NEVER null.
+  // This fixes your "sessionId: null" Fly logs and makes M16 outcome keying reliable.
+  const sessionId = (opts.sessionId || "").trim() || `m16_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const callerCallSid = (opts.callerCallSid || "").trim();
 
   const safeSessionId = escapeForXml(sessionId);
@@ -178,7 +179,7 @@ function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
       ${safeCallSid ? `<Parameter name="callSid" value="${safeCallSid}" />` : ``}
       ${safeFrom ? `<Parameter name="from" value="${safeFrom}" />` : ``}
 
-      ${safeSessionId ? `<Parameter name="sessionId" value="${safeSessionId}" />` : ``}
+      <Parameter name="sessionId" value="${safeSessionId}" />
       ${safeCallerCallSid ? `<Parameter name="callerCallSid" value="${safeCallerCallSid}" />` : ``}
 
       ${safeTask ? `<Parameter name="task" value="${safeTask}" />` : ``}
