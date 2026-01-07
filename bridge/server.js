@@ -44,7 +44,9 @@ const GREET_ON_START_DELAY_MS = Number(process.env.GREET_ON_START_DELAY_MS || 25
 const GREET_FORCE_TIMEOUT_MS = Number(process.env.GREET_FORCE_TIMEOUT_MS || 1200);
 
 // Upstash Redis REST (for writing M16 outcome from Fly)
-const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim().replace(/\/+$/, "");
+const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "")
+  .trim()
+  .replace(/\/+$/, "");
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 const M16_OUTCOME_TTL_SECONDS = Number(process.env.M16_OUTCOME_TTL_SECONDS || 60 * 60 * 6); // 6h
 
@@ -447,13 +449,11 @@ wss.on("connection", (twilioWs, req) => {
         "Speak warmly and naturally in ENGLISH. One short sentence greeting, then ask: “How can I help?”"
       );
       if (!ok) {
-        // if gating blocks it, forceSpeak will try again
         safeForceSpeak("greet_create_blocked");
       }
       armAudioWatchdog("greet");
     }, GREET_ON_START_DELAY_MS);
 
-    // If no audio frames come out soon, forceSpeak again (covers “response created but no deltas”)
     greetForceTimer = clearTimer(greetForceTimer);
     greetForceTimer = setTimeout(() => {
       if (closed) return;
@@ -581,6 +581,8 @@ wss.on("connection", (twilioWs, req) => {
   }
 
   // ---------- session.update (LEGACY ONLY) ----------
+  // IMPORTANT: Realtime tool schema validation rejects anyOf/oneOf/allOf/enum/not in many cases.
+  // So we keep parameters as a SIMPLE object schema, and enforce message/messages presence in code.
   function buildLegacySessionUpdatePayload() {
     const baseInstructionsCaller =
       "You are Foundzie, a warm, friendly personal concierge on a REAL phone call. " +
@@ -615,20 +617,38 @@ wss.on("connection", (twilioWs, req) => {
               name: "call_third_party",
               description:
                 "Call a third-party phone number and deliver spoken message(s) VERBATIM. Do NOT connect caller and recipient. " +
-                "For personal calls or multi-message delivery, you MUST have explicit user confirmation and pass confirm=true.",
+                "If user confirmation is required, you MUST ask and wait for YES, then call again with confirm=true.",
               parameters: {
                 type: "object",
                 properties: {
-                  phone: { type: "string" },
-                  messages: { type: "array", items: { type: "string" } },
-                  message: { type: "string" },
-                  roomId: { type: "string" },
-                  callSid: { type: "string" },
-                  calleeType: { type: "string", enum: ["personal", "business"] },
-                  confirm: { type: "boolean" },
+                  phone: {
+                    type: "string",
+                    description: "E.164 phone number to call, e.g. +13312551234",
+                  },
+                  message: {
+                    type: "string",
+                    description:
+                      "Single message to say VERBATIM on the call. Use either message OR messages.",
+                  },
+                  messages: {
+                    type: "array",
+                    items: { type: "string" },
+                    description:
+                      "Multiple messages to say VERBATIM on the call in order. Use either messages OR message.",
+                  },
+                  roomId: { type: "string", description: "Room identifier for tracking." },
+                  callSid: { type: "string", description: "Caller leg CallSid for tracking." },
+                  calleeType: {
+                    type: "string",
+                    description: "personal or business (string).",
+                  },
+                  confirm: {
+                    type: "boolean",
+                    description:
+                      "Set true ONLY after the user explicitly confirms YES to the exact message(s).",
+                  },
                 },
                 required: ["phone"],
-                anyOf: [{ required: ["message"] }, { required: ["messages"] }],
               },
             },
           ],
@@ -740,6 +760,11 @@ wss.on("connection", (twilioWs, req) => {
 
       if (msg.type === "error") {
         console.error("[openai] error:", JSON.stringify(msg, null, 2));
+        // Important: if session.update is rejected, we will never become ready.
+        // Close so reconnect logic can attempt again (and logs are clear).
+        try {
+          if (ws.readyState === WebSocket.OPEN) ws.close();
+        } catch {}
         return;
       }
 
@@ -751,7 +776,6 @@ wss.on("connection", (twilioWs, req) => {
           streamSid,
         });
 
-        // If Twilio start already happened, greet immediately.
         if (custom.role === "callee") {
           maybeStartCalleeFlow();
         } else {
@@ -776,7 +800,8 @@ wss.on("connection", (twilioWs, req) => {
         const piece = String(textDelta);
         if (custom.role === "callee") {
           calleeAssistantText += piece;
-          if (calleeAssistantText.length > 4000) calleeAssistantText = calleeAssistantText.slice(-4000);
+          if (calleeAssistantText.length > 4000)
+            calleeAssistantText = calleeAssistantText.slice(-4000);
         }
         if (DEBUG_OPENAI_TEXT) console.log("[text] delta:", piece.slice(0, 200));
       }
@@ -984,10 +1009,8 @@ wss.on("connection", (twilioWs, req) => {
 
       const cp = msg.start?.customParameters || {};
 
-      // ✅ callSid fallback (critical)
       const startCallSid = String(msg.start?.callSid || "").trim();
 
-      // ✅ from fallback attempts (may still be empty depending on Twilio shape)
       const startFrom =
         String(msg.start?.from || "").trim() ||
         String(msg.start?.caller || "").trim() ||
@@ -1015,12 +1038,10 @@ wss.on("connection", (twilioWs, req) => {
         sessionId: custom.sessionId || null,
       });
 
-      // If OpenAI is already ready, greet immediately.
       if (openaiReady) {
         if (custom.role === "callee") maybeStartCalleeFlow();
         else scheduleCallerGreeting("twilio.start");
       } else {
-        // If OpenAI is not ready yet, we will greet on session.updated.
         scheduleCallerGreeting("twilio.start_waiting_for_openai");
       }
 
@@ -1042,7 +1063,6 @@ wss.on("connection", (twilioWs, req) => {
     if (msg.event === "stop") {
       console.log("[twilio] stop", { role: custom.role, sessionId: custom.sessionId || null });
 
-      // ✅ P0: if callee ends and we never wrote outcome, write *something* now
       if (custom.role === "callee" && !calleeOutcomeWritten) {
         const reply = tryParseReplyFromAssistantText(calleeAssistantText);
         await writeM16Outcome("twilio_stop", {
