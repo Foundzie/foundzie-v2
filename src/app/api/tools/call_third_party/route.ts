@@ -46,7 +46,6 @@ function sanitizeMessage(s: unknown, max = 800): string {
 function normalizeMessages(body: any): string[] {
   const out: string[] = [];
 
-  // Preferred: messages[]
   if (Array.isArray(body?.messages)) {
     for (const m of body.messages) {
       const t = sanitizeMessage(m, 800);
@@ -54,11 +53,9 @@ function normalizeMessages(body: any): string[] {
     }
   }
 
-  // Legacy: message
   const legacy = sanitizeMessage(body?.message, 800);
   if (legacy) out.push(legacy);
 
-  // Deduplicate
   const seen = new Set<string>();
   const uniq: string[] = [];
   for (const m of out) {
@@ -116,7 +113,7 @@ async function resolveActiveCallSid(roomId?: string) {
   return { callSid: "", from: "" };
 }
 
-// Existing M14 relay keys (keep for backward compatibility)
+// Existing M14 relay keys
 function relaySessionKey(id: string) {
   return `foundzie:relay:${id}:v1`;
 }
@@ -124,7 +121,7 @@ function relayByCalleeKey(calleeSid: string) {
   return `foundzie:relay-by-callee:${calleeSid}:v1`;
 }
 
-// New M16 callee-stream state keys (bridge/status will write into these)
+// M16 keys
 function m16SessionKey(sessionId: string) {
   return `foundzie:m16:session:${sessionId}:v1`;
 }
@@ -161,38 +158,35 @@ function decideCallMode(body: any): "relay" | "callee_stream" {
   const explicit = String(body?.mode || "").trim().toLowerCase();
   const stream = body?.stream === true;
 
-  // explicit requests
   if (explicit === "callee_stream" || explicit === "m16") return "callee_stream";
   if (explicit === "relay" || explicit === "m14") return "relay";
 
-  // env default (lets you flip without changing the tool prompt)
   const envDefault = String(process.env.M16_DEFAULT_CALL_MODE || "").trim().toLowerCase();
   if (envDefault === "callee_stream") return "callee_stream";
   if (envDefault === "relay") return "relay";
 
-  // boolean
   if (stream) return "callee_stream";
 
-  // default safe behavior: keep M14 stable unless explicitly enabled
   return "relay";
 }
 
 /**
- * POST /api/tools/call_third_party
- * Body: {
- *   phone,
- *   messages?: string[],
- *   message?: string, // legacy
- *   roomId?,
- *   callSid?,
- *   calleeType?,
- *   confirm?,  // required for personal calls / multi-message when STRICT_MESSAGE_CONFIRM=1
- *   mode? ("relay" | "callee_stream" | "m14" | "m16"),
- *   stream? boolean,
- * }
- *
- * ✅ NO CONFERENCE invariant: caller is held, callee is separate leg.
+ * VERBATIM SAFETY:
+ * - LLM callee_stream can paraphrase long messages.
+ * - For personal calls OR long messages, force M14 relay (Twilio <Say>) to guarantee verbatim delivery + reply capture.
  */
+function shouldForceRelay(calleeType: "personal" | "business", messages: string[], joined: string) {
+  const forceEnv = String(process.env.FORCE_RELAY_FOR_PERSONAL || "1").trim() !== "0";
+  const longThreshold = Number(process.env.RELAY_LONG_MESSAGE_THRESHOLD || 80); // chars
+  const isLong = (joined || "").length >= longThreshold || messages.length > 1;
+
+  if (calleeType === "personal" && forceEnv) return true; // safest default
+  if (calleeType === "personal" && isLong) return true;
+  if (String(process.env.FORCE_RELAY_FOR_LONG_MESSAGES || "1").trim() !== "0" && isLong) return true;
+
+  return false;
+}
+
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as any;
 
@@ -204,7 +198,8 @@ export async function POST(req: NextRequest) {
   let callSid = String(body.callSid || "").trim();
 
   const calleeTypeRaw = String(body.calleeType || "").trim();
-  const calleeType: "personal" | "business" = calleeTypeRaw === "business" ? "business" : "personal";
+  const calleeType: "personal" | "business" =
+    calleeTypeRaw === "business" ? "business" : "personal";
 
   const confirm = body.confirm === true;
 
@@ -215,7 +210,7 @@ export async function POST(req: NextRequest) {
     return json({ ok: false, message: "Missing phone or message(s)." }, 400);
   }
 
-  // ✅ P0 message integrity confirmation gate
+  // Confirmation gate remains unchanged
   const strictConfirmEnabled = String(process.env.STRICT_MESSAGE_CONFIRM || "1").trim() !== "0";
   const multi = messages.length > 1;
   if (strictConfirmEnabled && (calleeType === "personal" || multi)) {
@@ -250,7 +245,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Cooldown (prevents duplicate tool calls)
+  // Cooldown
   const COOLDOWN_SECONDS = Number(process.env.TOOL_CALL_COOLDOWN_SECONDS || 8);
   const fp = fingerprintForCall(phone, messages);
   const cdKey = cooldownKey("call_third_party", fp);
@@ -283,12 +278,14 @@ export async function POST(req: NextRequest) {
   }
 
   const base = getBaseUrl();
-  const chosenMode = decideCallMode(body);
 
-  // Shared sessionId for either mode
+  // Decide mode, then apply verbatim safety override
+  let chosenMode = decideCallMode(body);
+  if (shouldForceRelay(calleeType, messages, messageJoined)) {
+    chosenMode = "relay";
+  }
+
   const sessionId = chosenMode === "relay" ? makeSessionId("relay") : makeSessionId("m16");
-
-  // --- 0) Persist session state FIRST (hard requirement) ---
   const createdAt = new Date().toISOString();
 
   const sharedSession = {
@@ -297,13 +294,8 @@ export async function POST(req: NextRequest) {
     roomId: roomId || null,
     callerCallSid: callSid,
     toPhone: phone,
-
-    // NEW: store messages verbatim
     messages,
-
-    // Legacy compatibility field (still stored)
     message: messageJoined,
-
     calleeType,
     status: "created",
     createdAt,
@@ -311,10 +303,7 @@ export async function POST(req: NextRequest) {
   };
 
   try {
-    // Backward compatible (M14 relay expects foundzie:relay:<id>:v1)
     await kvSetOrThrow(relaySessionKey(sessionId), sharedSession, "relay_session_create");
-
-    // M16 state containers (bridge/status will update these later)
     await kvSetOrThrow(m16SessionKey(sessionId), sharedSession, "m16_session_create");
     await kvSetOrThrow(
       m16CalleeStateKey(sessionId),
@@ -345,9 +334,8 @@ export async function POST(req: NextRequest) {
     msgLen: messageJoined.length,
   });
 
-  // --- 1) Put caller on hold ---
+  // Hold caller
   const holdUrl = `${base}/api/twilio/hold?sid=${encodeURIComponent(sessionId)}`;
-
   let redirectResult: any = null;
   try {
     redirectResult = await redirectTwilioCall(callSid, holdUrl);
@@ -361,28 +349,15 @@ export async function POST(req: NextRequest) {
     try {
       await kvSetOrThrow(
         relaySessionKey(sessionId),
-        {
-          ...sharedSession,
-          status: "caller_redirect_failed",
-          error: redirectResult?.error || "redirectTwilioCall returned null",
-          updatedAt,
-        },
+        { ...sharedSession, status: "caller_redirect_failed", error: redirectResult?.error || "redirectTwilioCall returned null", updatedAt },
         "relay_session_update_redirect_failed"
       );
       await kvSetOrThrow(
         m16SessionKey(sessionId),
-        {
-          ...sharedSession,
-          status: "caller_redirect_failed",
-          error: redirectResult?.error || "redirectTwilioCall returned null",
-          updatedAt,
-        },
+        { ...sharedSession, status: "caller_redirect_failed", error: redirectResult?.error || "redirectTwilioCall returned null", updatedAt },
         "m16_session_update_redirect_failed"
       );
-    } catch {
-      // logged
-    }
-
+    } catch {}
     return json(
       {
         ok: false,
@@ -399,7 +374,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // --- 2) Dial recipient (either relay TTS or callee_stream realtime) ---
+  // Dial recipient
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
   const from = process.env.TWILIO_PHONE_NUMBER;
@@ -428,17 +403,11 @@ export async function POST(req: NextRequest) {
 
   const client = twilio(sid, token);
 
-  // M14 relay URL (existing)
   const relayUrl =
     `${base}/api/twilio/relay?sid=${encodeURIComponent(sessionId)}` +
     `&calleeType=${encodeURIComponent(calleeType)}`;
 
-  // M16 callee_stream URL (new)
-  const task =
-    `Deliver these message(s) verbatim, in order. ` +
-    `After delivering them ONCE, ask for a short reply. ` +
-    `Messages: ${messages.map((m, i) => `[${i + 1}] ${m}`).join(" ")}`.slice(0, 900);
-
+  const task = messageJoined.slice(0, 900); // VERBATIM payload only
   const calleeStreamUrl =
     `${base}/api/twilio/voice?mode=callee_stream` +
     `&calleeType=${encodeURIComponent(calleeType)}` +
@@ -488,26 +457,10 @@ export async function POST(req: NextRequest) {
         { ...sharedSession, status: "callee_create_failed", error: String(e?.message || e), updatedAt },
         "m16_session_update_callee_create_failed"
       );
-      await kvSetOrThrow(
-        m16CalleeStateKey(sessionId),
-        {
-          sessionId,
-          mode: chosenMode,
-          calleeSid: null,
-          transcript: [],
-          outcome: { ok: false, reason: "callee_create_failed", error: String(e?.message || e) },
-          status: "callee_create_failed",
-          createdAt,
-          updatedAt,
-        },
-        "m16_callee_state_update_create_failed"
-      );
-    } catch {
-      // logged
-    }
+    } catch {}
 
     const failMsg =
-      "I tried calling them, but the call didn’t go through. Want me to try again or text them instead?";
+      "I tried calling them, but the call didn’t go through. Want me to try again?";
     await redirectTwilioCall(
       callSid,
       `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(failMsg)}${
@@ -534,7 +487,6 @@ export async function POST(req: NextRequest) {
   const calleeSid = callee?.sid ? String(callee.sid) : null;
   const updatedAt = new Date().toISOString();
 
-  // Persist dialed state (both legacy + M16 keys)
   try {
     await kvSetOrThrow(
       relaySessionKey(sessionId),
@@ -546,43 +498,16 @@ export async function POST(req: NextRequest) {
       { ...sharedSession, status: "callee_dialed", calleeSid, outboundUrl, updatedAt },
       "m16_session_update_callee_dialed"
     );
-    await kvSetOrThrow(
-      m16CalleeStateKey(sessionId),
-      {
-        sessionId,
-        mode: chosenMode,
-        calleeSid,
-        transcript: [],
-        outcome: null,
-        status: chosenMode === "callee_stream" ? "callee_stream_started" : "relay_started",
-        createdAt,
-        updatedAt,
-      },
-      "m16_callee_state_update_started"
-    );
-  } catch {
-    // logged
-  }
+  } catch {}
 
-  // ✅ map calleeSid -> sessionId
   if (calleeSid) {
     if (chosenMode === "relay") {
       try {
-        await kvSetOrThrow(
-          relayByCalleeKey(calleeSid),
-          { sessionId, createdAt: new Date().toISOString() },
-          "relay_by_callee_write"
-        );
+        await kvSetOrThrow(relayByCalleeKey(calleeSid), { sessionId, createdAt: new Date().toISOString() }, "relay_by_callee_write");
       } catch {}
-    }
-
-    if (chosenMode === "callee_stream") {
+    } else {
       try {
-        await kvSetOrThrow(
-          m16ByCalleeKey(calleeSid),
-          { sessionId, createdAt: new Date().toISOString() },
-          "m16_by_callee_write"
-        );
+        await kvSetOrThrow(m16ByCalleeKey(calleeSid), { sessionId, createdAt: new Date().toISOString() }, "m16_by_callee_write");
       } catch {}
     }
   }
@@ -597,16 +522,8 @@ export async function POST(req: NextRequest) {
     sessionId,
     messages,
     cooldownSeconds: COOLDOWN_SECONDS,
-    steps: {
-      callerRedirected,
-      calleeDialed: !!calleeSid,
-    },
-    urls: {
-      holdUrl,
-      outboundUrl,
-      relayUrl,
-      calleeStreamUrl,
-    },
+    steps: { callerRedirected, calleeDialed: !!calleeSid },
+    urls: { holdUrl, outboundUrl, relayUrl, calleeStreamUrl },
     twilio: {
       redirect: redirectResult?.sid ? { sid: redirectResult.sid } : redirectResult,
       calleeSid,
