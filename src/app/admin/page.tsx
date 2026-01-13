@@ -10,10 +10,7 @@ import { listRooms } from "@/app/api/chat/store";
 import { listEvents } from "@/app/api/sos/store";
 import { listCallLogs } from "@/app/api/calls/store";
 import { listTrips } from "@/app/api/trips/store";
-import {
-  getHealthSnapshot,
-  type HealthSnapshot,
-} from "@/app/api/health/store";
+import { getHealthSnapshot, type HealthSnapshot } from "@/app/api/health/store";
 
 import MaintenanceToggle from "./MaintenanceToggle";
 
@@ -23,8 +20,7 @@ type AdminNotification = (typeof mockNotifications)[number];
 
 // ---- Build info (M11d) ----------------------------------------------
 
-const BUILD_VERSION =
-  process.env.NEXT_PUBLIC_FOUNDZIE_VERSION || "v0.11d-dev";
+const BUILD_VERSION = process.env.NEXT_PUBLIC_FOUNDZIE_VERSION || "v0.11d-dev";
 
 const BUILD_MILESTONE =
   process.env.NEXT_PUBLIC_FOUNDZIE_MILESTONE || "M11a–M11d";
@@ -41,6 +37,16 @@ const BUILD_TIME =
     hour: "2-digit",
     minute: "2-digit",
   });
+
+function dollars(n?: number | null) {
+  const v = Number(n || 0);
+  return `$${v.toFixed(4)}`;
+}
+
+function minutesFromSec(sec?: number | null) {
+  const s = Number(sec || 0);
+  return (s / 60).toFixed(2);
+}
 
 export default async function AdminPage() {
   // Fetch live stats + health in parallel
@@ -75,6 +81,22 @@ export default async function AdminPage() {
     (health.places?.osmFallbacks ?? 0) +
       (health.places?.localFallbacks ?? 0) ===
     0;
+
+  // ----- Funds & usage (M15) -----------------------------------------
+
+  const openAiReq = health.agent?.openaiRequests ?? 0;
+  const openAiTokens = health.agent?.openaiTotalTokens ?? 0;
+  const openAiCost = health.agent?.openaiEstimatedCostUsd ?? 0;
+
+  const twilioMinutes = minutesFromSec(
+    health.calls?.twilioTotalDurationSec ?? 0
+  );
+  const twilioCost = health.calls?.twilioEstimatedCostUsd ?? 0;
+
+  const googleCallsToday = health.places?.googleCallsToday ?? 0;
+  const googleCallsDate = health.places?.googleCallsDate ?? "—";
+
+  const kvMode = health.kv?.mode ?? "unknown";
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -187,12 +209,76 @@ export default async function AdminPage() {
           </div>
         </section>
 
+        {/* ✅ FUNDS & USAGE (M15) */}
+        <section>
+          <h2 className="text-sm font-semibold text-gray-900 mb-3">
+            Funds & usage
+          </h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            {/* OpenAI */}
+            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+              <p className="text-xs text-gray-400 mb-1">OpenAI</p>
+              <p className="text-sm font-semibold text-gray-900">
+                {openAiReq} requests
+              </p>
+              <p className="text-[11px] text-gray-500 mt-1">
+                Tokens: {openAiTokens}
+              </p>
+              <p className="text-[11px] text-gray-500 mt-1">
+                Est cost: {dollars(openAiCost)}
+              </p>
+              <p className="text-[10px] text-gray-400 mt-2">
+                Cost stays $0 unless pricing env vars are set.
+              </p>
+            </div>
+
+            {/* Twilio */}
+            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+              <p className="text-xs text-gray-400 mb-1">Twilio</p>
+              <p className="text-sm font-semibold text-gray-900">
+                {twilioMinutes} minutes
+              </p>
+              <p className="text-[11px] text-gray-500 mt-1">
+                Est cost: {dollars(twilioCost)}
+              </p>
+              <p className="text-[10px] text-gray-400 mt-2">
+                Cost shows only if Twilio webhook includes Price.
+              </p>
+            </div>
+
+            {/* Places */}
+            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+              <p className="text-xs text-gray-400 mb-1">Google Places</p>
+              <p className="text-sm font-semibold text-gray-900">
+                {googleCallsToday} calls today
+              </p>
+              <p className="text-[11px] text-gray-500 mt-1">
+                Date: {googleCallsDate}
+              </p>
+              <p className="text-[11px] text-gray-500 mt-1">
+                Total requests: {health.places?.totalRequests ?? 0}
+              </p>
+            </div>
+
+            {/* KV */}
+            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+              <p className="text-xs text-gray-400 mb-1">KV</p>
+              <p className="text-sm font-semibold text-gray-900">{kvMode}</p>
+              <p className="text-[11px] text-gray-500 mt-1">
+                Upstash vars set? {kvMode === "upstash" ? "Yes" : "No"}
+              </p>
+            </div>
+          </div>
+        </section>
+
         {/* SYSTEM HEALTH ROW + MAINTENANCE */}
         <section className="flex items-center justify-between gap-4">
           <div className="flex-1">
             <h2 className="text-sm font-semibold text-gray-900 mb-3">
               System health
             </h2>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {/* Agent health */}
               <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
@@ -204,14 +290,22 @@ export default async function AdminPage() {
                 >
                   {agentHealthy ? "Healthy" : "Attention needed"}
                 </p>
+
                 <p className="text-[11px] text-gray-500 mt-1">
                   {agentHealthy
                     ? "OK · no recent errors"
                     : `Recent errors: ${health.agent?.recentErrors ?? 0}`}
                 </p>
+
                 <p className="text-[11px] text-gray-400 mt-1">
                   Total runs: {health.agent?.totalRuns ?? 0}
                 </p>
+
+                {/* NEW: differentiate agent card */}
+                <p className="text-[11px] text-gray-400 mt-1">
+                  OpenAI tokens: {health.agent?.openaiTotalTokens ?? 0}
+                </p>
+
                 <Link
                   href="/admin/health#agent"
                   className="mt-2 inline-block text-[11px] text-purple-600 hover:underline"
@@ -230,6 +324,7 @@ export default async function AdminPage() {
                 >
                   {callsHealthy ? "Healthy" : "Issues detected"}
                 </p>
+
                 <p className="text-[11px] text-gray-500 mt-1">
                   {callsHealthy
                     ? "OK · all recent calls healthy or skipped"
@@ -237,9 +332,16 @@ export default async function AdminPage() {
                         health.calls?.twilioSkipped ?? 0
                       }`}
                 </p>
+
                 <p className="text-[11px] text-gray-400 mt-1">
                   Outbound calls: {health.calls?.totalCalls ?? 0}
                 </p>
+
+                {/* NEW: differentiate calls card */}
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Minutes: {twilioMinutes} · Est: {dollars(twilioCost)}
+                </p>
+
                 <Link
                   href="/admin/health#calls"
                   className="mt-2 inline-block text-[11px] text-purple-600 hover:underline"
@@ -258,6 +360,7 @@ export default async function AdminPage() {
                 >
                   {placesHealthy ? "Healthy" : "Using fallbacks"}
                 </p>
+
                 <p className="text-[11px] text-gray-500 mt-1">
                   {placesHealthy
                     ? "OK · external places working"
@@ -265,9 +368,16 @@ export default async function AdminPage() {
                         health.places?.osmFallbacks ?? 0
                       }, local: ${health.places?.localFallbacks ?? 0}`}
                 </p>
+
                 <p className="text-[11px] text-gray-400 mt-1">
                   Total requests: {health.places?.totalRequests ?? 0}
                 </p>
+
+                {/* NEW: differentiate places card */}
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Google calls today: {googleCallsToday}
+                </p>
+
                 <Link
                   href="/admin/health#places"
                   className="mt-2 inline-block text-[11px] text-purple-600 hover:underline"
@@ -379,9 +489,7 @@ export default async function AdminPage() {
                   className="border-b last:border-b-0 pb-3 last:pb-0"
                 >
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium text-gray-900">
-                      {n.title}
-                    </p>
+                    <p className="text-sm font-medium text-gray-900">{n.title}</p>
                     <span className="text-[10px] uppercase text-gray-400">
                       {n.type}
                     </span>
@@ -424,9 +532,7 @@ export default async function AdminPage() {
                       {typeof place.distanceMiles === "number"
                         ? ` · ${place.distanceMiles} mi`
                         : ""}
-                      {place.openUntil
-                        ? ` · open until ${place.openUntil}`
-                        : ""}
+                      {place.openUntil ? ` · open until ${place.openUntil}` : ""}
                       {typeof place.rating === "number"
                         ? ` · ★ ${place.rating}`
                         : ""}
@@ -451,9 +557,7 @@ export default async function AdminPage() {
           </h2>
           <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm text-xs text-gray-600 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
-              <p className="font-semibold text-gray-900 mb-1">
-                {BUILD_VERSION}
-              </p>
+              <p className="font-semibold text-gray-900 mb-1">{BUILD_VERSION}</p>
               <p className="text-[11px] text-gray-500">
                 Current milestone: {BUILD_MILESTONE}
               </p>
