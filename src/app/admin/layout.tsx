@@ -13,9 +13,13 @@ export default function AdminLayout({
   children: React.ReactNode;
 }) {
   return (
+    // ✅ Make THIS the scroll container so the admin area can always scroll
     <div
       style={{
-        minHeight: "100vh",
+        height: "100vh",
+        overflowY: "auto",
+        overflowX: "hidden",
+        WebkitOverflowScrolling: "touch",
         background: "#f3f4f6",
         color: "#111827",
       }}
@@ -105,7 +109,6 @@ export default function AdminLayout({
             gap: "8px",
           }}
         >
-          {/* Pill-style nav items */}
           <NavPill href="/admin" label="Dashboard" />
           <NavPill href="/admin/users" label="Users" />
           <NavPill href="/admin/chat" label="Chat" emphasis />
@@ -114,10 +117,11 @@ export default function AdminLayout({
           <NavPill href="/admin/sos" label="SOS" />
           <NavPill href="/admin/trips" label="Trips" />
           <NavPill href="/admin/agent" label="Agent console" />
+          <NavPill href="/admin/health" label="Health" />
         </div>
       </nav>
 
-      {/* Main content card */}
+      {/* Main content */}
       <main
         style={{
           padding: "24px",
@@ -141,10 +145,6 @@ export default function AdminLayout({
   );
 }
 
-/**
- * Pill-style nav link component for the admin header.
- * NOTE: no event handlers here so it stays Server-Component-safe.
- */
 function NavPill({
   href,
   label,

@@ -1,6 +1,7 @@
 // src/app/api/places/store.ts
 import "server-only";
 import { allPlaces } from "@/app/data/places";
+import { recordPlacesFallback, recordPlacesRequest } from "@/app/api/health/store";
 
 export type InteractionMode = "normal" | "child";
 
@@ -37,10 +38,6 @@ type GetPlacesResult = {
 const GOOGLE_TIMEOUT_MS = 6500;
 const OSM_TIMEOUT_MS = 6500;
 
-/**
- * Minimal fetch timeout wrapper.
- * If it times out, it throws AbortError, which we catch and treat as "no results".
- */
 async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
@@ -61,7 +58,7 @@ async function fetchWithTimeout(
 /*  Simple in-memory daily counter for Google calls (protect free tier)        */
 /* -------------------------------------------------------------------------- */
 
-let googleCallsDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+let googleCallsDate = new Date().toISOString().slice(0, 10);
 let googleCallsToday = 0;
 
 function canUseGoogle(): boolean {
@@ -94,7 +91,7 @@ function registerGoogleCall() {
 /* -------------------------------------------------------------------------- */
 
 function haversineMiles(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 3958.8; // miles
+  const R = 3958.8;
   const toRad = (deg: number) => (deg * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
@@ -127,11 +124,6 @@ const GOOGLE_RADIUS_METERS = 3000;
 const GOOGLE_FIELD_MASK =
   "places.id,places.displayName,places.primaryType,places.location,places.formattedAddress,places.rating,places.userRatingCount";
 
-/**
- * Google "New" Places API often returns ids like: "places/ChIJ...."
- * Those BREAK Next.js dynamic routes if you use them in the URL.
- * So we sanitize them to URL-safe ids by stripping "places/".
- */
 function sanitizeGoogleId(raw: unknown, fallback: string) {
   const s = typeof raw === "string" ? raw.trim() : "";
   if (!s) return fallback;
@@ -289,7 +281,7 @@ async function fetchGoogleText(params: GetPlacesParams): Promise<NormalizedPlace
 }
 
 /* -------------------------------------------------------------------------- */
-/*  OpenStreetMap / Nominatim fallback (with timeout)                         */
+/*  OpenStreetMap fallback                                                    */
 /* -------------------------------------------------------------------------- */
 
 async function fetchFromOpenStreetMap(params: GetPlacesParams): Promise<NormalizedPlace[]> {
@@ -387,6 +379,9 @@ function getLocalPlaces(mode: InteractionMode): NormalizedPlace[] {
 /* -------------------------------------------------------------------------- */
 
 export async function getPlaces(params: GetPlacesParams): Promise<GetPlacesResult> {
+  // ✅ M15: count every places request
+  await recordPlacesRequest().catch(() => null);
+
   const { q, lat, lng } = params;
   const hasQuery = typeof q === "string" && q.trim().length > 0;
   const hasLocation = typeof lat === "number" && typeof lng === "number";
@@ -405,8 +400,12 @@ export async function getPlaces(params: GetPlacesParams): Promise<GetPlacesResul
 
   // 3) OSM fallback
   const osm = await fetchFromOpenStreetMap(params);
-  if (osm.length > 0) return { source: "osm", places: osm };
+  if (osm.length > 0) {
+    await recordPlacesFallback("osm", "Used OpenStreetMap fallback").catch(() => null);
+    return { source: "osm", places: osm };
+  }
 
   // 4) Local fallback
+  await recordPlacesFallback("local", "Used local fallback").catch(() => null);
   return { source: "local", places: getLocalPlaces(params.mode) };
 }

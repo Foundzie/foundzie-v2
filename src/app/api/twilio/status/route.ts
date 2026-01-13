@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 import { redirectTwilioCall } from "@/lib/twilio";
 
+export const dynamic = "force-dynamic";
+
 function getBaseUrl(): string {
   const explicit = process.env.TWILIO_BASE_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
@@ -23,7 +25,7 @@ function relayByCalleeKey(calleeSid: string) {
   return `foundzie:relay-by-callee:${calleeSid}:v1`;
 }
 
-// ---- M16 keys ----
+// ---- M16 keys (kept for later; harmless even if M16 postponed) ----
 function m16ByCalleeKey(calleeSid: string) {
   return `foundzie:m16:by-callee:${calleeSid}:v1`;
 }
@@ -36,7 +38,8 @@ function humanizeOutcome(status: string, errorCode: any) {
   if (s === "completed") return "The call completed.";
   if (s === "busy") return "They were busy.";
   if (s === "no-answer") return "They didn’t answer.";
-  if (s === "failed") return `The call failed${errorCode ? ` (code ${errorCode})` : ""}.`;
+  if (s === "failed")
+    return `The call failed${errorCode ? ` (code ${errorCode})` : ""}.`;
   if (s === "canceled") return "The call was canceled.";
   return `The call ended (${status}).`;
 }
@@ -65,18 +68,25 @@ function summarizeRelaySession(session: any) {
   return "";
 }
 
-function summarizeM16Outcome(outcome: any, fallbackStatus: string, fallbackError: any) {
+function summarizeM16Outcome(
+  outcome: any,
+  fallbackStatus: string,
+  fallbackError: any
+) {
   const reply = String(outcome?.reply || "").trim();
-  if (reply) return `Done — they replied: ${reply}. Do you want me to do anything else?`;
+  if (reply)
+    return `Done — they replied: ${reply}. Do you want me to do anything else?`;
 
   const text = String(outcome?.assistantText || "").trim();
   if (text) {
-    // Keep it short for TTS
     const snippet = text.replace(/\s+/g, " ").slice(0, 220);
     return `Done — here’s what I got: ${snippet}. Do you want me to do anything else?`;
   }
 
-  return `Done. ${humanizeOutcome(fallbackStatus, fallbackError)} Do you want me to do anything else?`;
+  return `Done. ${humanizeOutcome(
+    fallbackStatus,
+    fallbackError
+  )} Do you want me to do anything else?`;
 }
 
 export async function POST(req: Request) {
@@ -103,27 +113,36 @@ export async function POST(req: Request) {
   });
 
   const terminal = ["completed", "busy", "no-answer", "failed", "canceled"];
+
+  // Ignore non-terminal updates
   if (!callSid || !terminal.includes(callStatus.toLowerCase())) {
     return NextResponse.json({ ok: true });
   }
 
-  // 1) Try RELAY mapping (M14)
-  const reverseRelay = await kvGetJSON<any>(relayByCalleeKey(callSid)).catch(() => null);
+  // 1) RELAY mapping (M14)
+  const reverseRelay = await kvGetJSON<any>(relayByCalleeKey(callSid)).catch(
+    () => null
+  );
   const relaySessionId = String(reverseRelay?.sessionId || "").trim();
 
   if (relaySessionId) {
-    const session = await kvGetJSON<any>(relaySessionKey(relaySessionId)).catch(() => null);
+    const session = await kvGetJSON<any>(relaySessionKey(relaySessionId)).catch(
+      () => null
+    );
     const callerCallSid = String(session?.callerCallSid || "").trim();
     const roomId = String(session?.roomId || "").trim();
 
     const alreadyFinal =
-      String(session?.status || "").includes("final_") || String(session?.status || "").includes("delivered_");
+      String(session?.status || "").includes("final_") ||
+      String(session?.status || "").includes("delivered_");
 
     if (!alreadyFinal) {
       const relaySummary = summarizeRelaySession(session);
       const fallbackOutcome = humanizeOutcome(callStatus, errorCode);
-      const say = relaySummary || `Done. ${fallbackOutcome} Do you want me to do anything else?`;
+      const say =
+        relaySummary || `Done. ${fallbackOutcome} Do you want me to do anything else?`;
 
+      // Mark session as final to prevent repeated redirects
       await kvSetJSON(relaySessionKey(relaySessionId), {
         ...session,
         status: `final_${callStatus.toLowerCase()}`,
@@ -132,6 +151,7 @@ export async function POST(req: Request) {
         updatedAt: new Date().toISOString(),
       }).catch(() => null);
 
+      // Resume caller with summary
       if (callerCallSid) {
         const base = getBaseUrl();
         await redirectTwilioCall(
@@ -139,21 +159,27 @@ export async function POST(req: Request) {
           `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(say)}${
             roomId ? `&roomId=${encodeURIComponent(roomId)}` : ""
           }`
-        ).catch((e) => console.warn("[twilio status] redirect caller failed", e));
+        ).catch((e) =>
+          console.warn("[twilio status] redirect caller failed", e)
+        );
       }
     }
 
     return NextResponse.json({ ok: true });
   }
 
-  // 2) Try M16 mapping
-  const reverseM16 = await kvGetJSON<any>(m16ByCalleeKey(callSid)).catch(() => null);
+  // 2) M16 mapping (kept for later)
+  const reverseM16 = await kvGetJSON<any>(m16ByCalleeKey(callSid)).catch(
+    () => null
+  );
   const m16SessionId = String(reverseM16?.sessionId || "").trim();
   if (!m16SessionId) {
     return NextResponse.json({ ok: true });
   }
 
-  const outcome = await kvGetJSON<any>(m16CalleeOutcomeKey(m16SessionId)).catch(() => null);
+  const outcome = await kvGetJSON<any>(m16CalleeOutcomeKey(m16SessionId)).catch(
+    () => null
+  );
   const callerCallSid = String(outcome?.callerCallSid || "").trim();
   const roomId = String(outcome?.roomId || "").trim();
 
@@ -166,7 +192,9 @@ export async function POST(req: Request) {
       `${base}/api/twilio/voice?mode=message&say=${encodeURIComponent(say)}${
         roomId ? `&roomId=${encodeURIComponent(roomId)}` : ""
       }`
-    ).catch((e) => console.warn("[twilio status] redirect caller failed (m16)", e));
+    ).catch((e) =>
+      console.warn("[twilio status] redirect caller failed (m16)", e)
+    );
   }
 
   return NextResponse.json({ ok: true });

@@ -6,10 +6,7 @@ import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-export type AgentEvent = {
-  at: string;
-  note?: string;
-};
+export type AgentEvent = { at: string; note?: string };
 
 export type CallIssue = {
   at: string;
@@ -95,9 +92,7 @@ async function load(): Promise<HealthSnapshot> {
   const fromKv = (await kvGetJSON<HealthSnapshot>(HEALTH_KEY)) ?? null;
   if (!fromKv) return defaultSnapshot();
 
-  // simple defensive merge in case we add fields later
   const base = defaultSnapshot();
-
   return {
     ...base,
     ...fromKv,
@@ -112,13 +107,16 @@ async function save(snapshot: HealthSnapshot): Promise<void> {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Public helpers                                                     */
+/*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
 export async function getHealthSnapshot(): Promise<HealthSnapshot> {
   return load();
 }
 
+/**
+ * ✅ REQUIRED (your runtime + api/agent import this)
+ */
 export async function recordAgentCall(ok: boolean, error?: unknown) {
   const snap = await load();
   snap.agent.totalRuns += 1;
@@ -137,15 +135,23 @@ export async function recordAgentCall(ok: boolean, error?: unknown) {
         ? String(error)
         : undefined;
 
-    snap.agent.recentEvents = pushBounded(snap.agent.recentEvents, {
-      at: now,
-      note,
-    });
+    snap.agent.recentEvents = pushBounded(snap.agent.recentEvents, { at: now, note });
   }
 
   await save(snap);
 }
 
+/**
+ * Compatibility alias (older code sometimes uses this)
+ */
+export async function recordAgentRun(input?: { hadError?: boolean; note?: string }) {
+  const hadError = input?.hadError === true;
+  await recordAgentCall(!hadError, input?.note);
+}
+
+/**
+ * Existing calls metric hook (used by /api/calls/outbound/route.ts in your repo)
+ */
 export async function recordOutboundCall(opts: {
   hadError: boolean;
   twilioStatus: "started" | "skipped" | null;
@@ -169,38 +175,64 @@ export async function recordOutboundCall(opts: {
     snap.calls.recentIssues = pushBounded(snap.calls.recentIssues, {
       at: now,
       kind: "skipped",
-      note: "Call skipped (env or config issue)",
+      note: "Call skipped (env/config not set)",
     });
   }
 
   await save(snap);
 }
 
-export async function recordPlacesSource(
-  source: "google" | "osm" | "local"
-) {
+/**
+ * ✅ REQUIRED (your places/store.ts currently calls recordPlacesRequest() with ZERO args)
+ *
+ * ✅ Supports BOTH:
+ *   - recordPlacesRequest()                 -> counts request only
+ *   - recordPlacesRequest("google"|"osm"|"local") -> counts + source metrics
+ */
+export async function recordPlacesRequest(source?: "google" | "osm" | "local") {
   const snap = await load();
   snap.places.totalRequests += 1;
 
-  const now = new Date().toISOString();
+  // If caller only wanted to “count a request”
+  if (!source) {
+    await save(snap);
+    return;
+  }
 
   if (source === "google") {
     snap.places.googleSuccess += 1;
-  } else if (source === "osm") {
-    snap.places.osmFallbacks += 1;
-    snap.places.lastFallbackAt = now;
-    snap.places.recentFallbacks = pushBounded(
-      snap.places.recentFallbacks,
-      { at: now, kind: "osm", note: "Fallback to OpenStreetMap" },
-    );
-  } else if (source === "local") {
-    snap.places.localFallbacks += 1;
-    snap.places.lastFallbackAt = now;
-    snap.places.recentFallbacks = pushBounded(
-      snap.places.recentFallbacks,
-      { at: now, kind: "local", note: "Fallback to local sample data" },
-    );
+    await save(snap);
+    return;
   }
 
+  // osm/local are treated as fallback events too
   await save(snap);
+  await recordPlacesFallback(source, `Fallback to ${source.toUpperCase()}`);
+}
+
+/**
+ * ✅ REQUIRED (your repo imports recordPlacesFallback)
+ */
+export async function recordPlacesFallback(kind: "osm" | "local", note?: string) {
+  const snap = await load();
+  const now = new Date().toISOString();
+
+  if (kind === "osm") snap.places.osmFallbacks += 1;
+  if (kind === "local") snap.places.localFallbacks += 1;
+
+  snap.places.lastFallbackAt = now;
+  snap.places.recentFallbacks = pushBounded(snap.places.recentFallbacks, {
+    at: now,
+    kind,
+    note: note || `Fallback to ${kind}`,
+  });
+
+  await save(snap);
+}
+
+/**
+ * Compatibility alias (some files use recordPlacesSource)
+ */
+export async function recordPlacesSource(source: "google" | "osm" | "local") {
+  await recordPlacesRequest(source);
 }
