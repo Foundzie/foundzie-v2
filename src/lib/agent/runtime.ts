@@ -3,7 +3,7 @@ import "server-only";
 import OpenAI from "openai";
 import { FOUNDZIE_SYSTEM_PROMPT, coreTools } from "@/lib/agent/spec";
 import { toolHandlers as toolImplementations } from "@/lib/agent/tools";
-import { recordAgentCall } from "@/app/api/health/store";
+import { recordAgentCall, recordOpenAiUsage } from "@/app/api/health/store";
 
 export type AgentSource = "mobile" | "admin" | "system";
 
@@ -12,6 +12,14 @@ export interface AgentRequestPayload {
   roomId?: string;
   userId?: string | null;
   source?: AgentSource;
+
+  /**
+   * Tool mode:
+   * - "off": no tool calls allowed
+   * - "debug": tool calls enabled
+   *
+   * NOTE: We default admin -> debug so "call_third_party" can run.
+   */
   toolsMode?: "off" | "debug";
 }
 
@@ -40,10 +48,11 @@ console.log("[agent runtime] has OPENAI_API_KEY?", hasOpenAiKey);
 const openai = hasOpenAiKey ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY! }) : null;
 
 // -----------------------------------------------------
-// Build personalization context from Users store
+// M8b: Build personalization context from Users store
 // -----------------------------------------------------
 async function buildUserContextSuffix(req: AgentRequestPayload): Promise<string> {
   try {
+    // dynamic import to avoid circular issues
     const usersStore = await import("@/app/api/users/store");
     const { getUser, findUserByRoomId } = usersStore as any;
 
@@ -82,6 +91,8 @@ async function buildUserContextSuffix(req: AgentRequestPayload): Promise<string>
     }
 
     if (bits.length === 0) return "";
+
+    // appended at the end of the user message
     return `\n\n[User profile context: ${bits.join("; ")}]`;
   } catch (err) {
     console.error("[agent runtime] buildUserContextSuffix failed:", err);
@@ -95,11 +106,13 @@ async function buildUserContextSuffix(req: AgentRequestPayload): Promise<string>
 function extractMessageText(message: any): string {
   if (!message) return "";
 
-  if (typeof message.content === "string") return message.content.trim();
+  if (typeof message.content === "string") {
+    return message.content.trim();
+  }
 
   if (Array.isArray(message.content)) {
     const parts = message.content as any[];
-    return parts
+    const text = parts
       .map((p) => {
         if (!p) return "";
         if (typeof p === "string") return p;
@@ -109,6 +122,7 @@ function extractMessageText(message: any): string {
       })
       .join(" ")
       .trim();
+    return text;
   }
 
   return "";
@@ -126,7 +140,7 @@ async function runStubAgent(req: AgentRequestPayload, reason?: string): Promise<
     `but normally I'd use my full concierge brain plus tools ` +
     `to help you discover places, plan, or just chat with you.`;
 
-  // Count as a run (not an error)
+  // still a “run”, not an error
   await recordAgentCall(true).catch(() => null);
 
   return {
@@ -154,16 +168,25 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
   if (req.roomId) contextBits.push(`roomId=${req.roomId}`);
   if (req.userId) contextBits.push(`userId=${req.userId}`);
 
-  const contextSuffix = contextBits.length ? `\n\n(Context: ${contextBits.join(", ")})` : "";
+  const contextSuffix = contextBits.length > 0 ? `\n\n(Context: ${contextBits.join(", ")})` : "";
+
   const profileSuffix = await buildUserContextSuffix(req);
+
   const finalUserContent = userText + contextSuffix + profileSuffix;
 
+  // Default admin -> debug so tools can run
   const toolsMode = req.toolsMode ?? (req.source === "admin" ? "debug" : "off");
   const useTools = toolsMode === "debug";
 
+  console.log("[agent runtime] toolsMode:", toolsMode, "useTools:", useTools, "source:", req.source);
+
   const openAiTools: any[] = coreTools.map((t) => ({
     type: "function",
-    function: { name: t.name, description: t.description, parameters: t.parameters },
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    },
   }));
 
   let replyText = "";
@@ -171,6 +194,7 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
   const toolResults: Array<{ name: string; result: unknown }> = [];
 
   try {
+    // Attempt 1
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
@@ -183,34 +207,65 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
       max_tokens: 400,
     });
 
-    const message: any = completion.choices[0]?.message ?? {};
+    // ✅ M15: record tokens / estimated cost (if env pricing set)
+    const usage1: any = (completion as any)?.usage;
+    if (usage1) {
+      await recordOpenAiUsage({
+        promptTokens: usage1.prompt_tokens,
+        completionTokens: usage1.completion_tokens,
+        totalTokens: usage1.total_tokens,
+      }).catch(() => null);
+    }
+
+    const choice: any = completion.choices[0];
+    const message: any = choice?.message ?? {};
+
+    console.log("[agent runtime] raw OpenAI message:", JSON.stringify(message));
+
     replyText = extractMessageText(message);
 
-    if (useTools && Array.isArray(message.tool_calls) && message.tool_calls.length) {
-      for (const call of message.tool_calls as any[]) {
-        if (!call || call.type !== "function" || !call.function) continue;
+    // Tool calls
+    if (useTools && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+      const toolCalls = message.tool_calls as any[];
+      console.log("[agent runtime] tool_calls:", JSON.stringify(toolCalls));
+
+      for (const rawCall of toolCalls) {
+        const call: any = rawCall;
+
+        if (!call || call.type !== "function" || !call.function) {
+          console.warn("[agent runtime] Unsupported tool call shape:", call);
+          continue;
+        }
 
         const toolName: string = call.function.name;
         const impl = (toolImplementations as Record<string, any>)[toolName];
-        if (!impl) continue;
+
+        if (!impl) {
+          console.warn("[agent runtime] Model requested unknown tool:", toolName);
+          continue;
+        }
 
         let parsedArgs: any = {};
         try {
-          parsedArgs = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-        } catch {
-          parsedArgs = {};
+          const argStr = call.function.arguments;
+          parsedArgs = typeof argStr === "string" && argStr.trim() ? JSON.parse(argStr) : {};
+        } catch (err) {
+          console.error("[agent runtime] Failed to parse tool args:", call.function.arguments, err);
         }
 
         try {
+          console.log("[agent runtime] running tool:", toolName, "args:", parsedArgs);
           const result = await impl(parsedArgs);
           usedTools.push(toolName);
           toolResults.push({ name: toolName, result });
+          console.log("[agent runtime] tool result:", toolName, result);
         } catch (err) {
           console.error("[agent runtime] Tool execution failed:", toolName, err);
         }
       }
     }
 
+    // Attempt 2 if empty
     if (!replyText) {
       const completion2 = await openai.chat.completions.create({
         model: "gpt-4.1-mini",
@@ -220,15 +275,27 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
             role: "user",
             content:
               finalUserContent +
-              "\n\nSECOND ATTEMPT: Please respond with a short, friendly text answer. Do NOT call tools this time.",
+              "\n\nSECOND ATTEMPT: Please respond with a short, friendly text answer for the concierge. Do NOT call tools this time.",
           },
         ],
         temperature: 0.4,
         max_tokens: 400,
       });
 
-      const msg2: any = completion2.choices[0]?.message ?? {};
-      const secondText = extractMessageText(msg2);
+      // ✅ M15: record tokens for 2nd attempt too
+      const usage2: any = (completion2 as any)?.usage;
+      if (usage2) {
+        await recordOpenAiUsage({
+          promptTokens: usage2.prompt_tokens,
+          completionTokens: usage2.completion_tokens,
+          totalTokens: usage2.total_tokens,
+        }).catch(() => null);
+      }
+
+      const choice2: any = completion2.choices[0];
+      const message2: any = choice2?.message ?? {};
+      const secondText = extractMessageText(message2);
+
       if (secondText) replyText = secondText;
     }
 
@@ -239,7 +306,6 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
           : "Foundzie: I received your message but my reply was empty. Please try again.";
     }
 
-    // ✅ success run
     await recordAgentCall(true).catch(() => null);
 
     return {
@@ -254,10 +320,7 @@ async function runOpenAiAgent(req: AgentRequestPayload): Promise<AgentResult> {
     };
   } catch (err: any) {
     console.error("[agent runtime] OpenAI error:", err);
-
-    // ✅ error run
     await recordAgentCall(false, err).catch(() => null);
-
     return runStubAgent(req, err instanceof Error ? err.message : String(err));
   }
 }
@@ -270,7 +333,7 @@ export async function runFoundzieAgent(req: AgentRequestPayload): Promise<AgentR
 
     return await runOpenAiAgent(req);
   } catch (err) {
-    console.error("[agent runtime] Outer error:", err);
+    console.error("[agent runtime] OpenAI error, falling back to stub:", err);
     await recordAgentCall(false, err).catch(() => null);
     return runStubAgent(req, err instanceof Error ? err.message : String(err));
   }

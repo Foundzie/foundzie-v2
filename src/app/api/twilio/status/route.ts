@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 import { redirectTwilioCall } from "@/lib/twilio";
+import { recordTwilioStatusCallback } from "@/app/api/health/store";
 
 export const dynamic = "force-dynamic";
 
@@ -104,10 +105,27 @@ export async function POST(req: Request) {
   const callStatus = String(payload.CallStatus || payload.callstatus || "");
   const errorCode = payload.ErrorCode ?? payload.errorcode ?? null;
 
+  // ✅ M15: Duration + cost tracking (best-effort)
+  const durationSec = payload.CallDuration ? Number(payload.CallDuration) : 0;
+
+  const priceRaw = payload.Price ?? payload.price ?? null;
+  const price = priceRaw !== null ? Number(priceRaw) : 0;
+  const priceUnit = String(payload.PriceUnit || payload.price_unit || "").toUpperCase(); // usually "USD"
+
+  await recordTwilioStatusCallback({
+    status: callStatus,
+    durationSec: Number.isFinite(durationSec) ? durationSec : 0,
+    priceUsd: priceUnit === "USD" && Number.isFinite(price) ? price : 0,
+    errorCode,
+  }).catch(() => null);
+
   console.log("[twilio status]", {
     callSid,
     status: callStatus,
     errorCode,
+    durationSec,
+    price,
+    priceUnit,
     to: String(payload.To || ""),
     from: String(payload.From || ""),
   });
@@ -140,9 +158,9 @@ export async function POST(req: Request) {
       const relaySummary = summarizeRelaySession(session);
       const fallbackOutcome = humanizeOutcome(callStatus, errorCode);
       const say =
-        relaySummary || `Done. ${fallbackOutcome} Do you want me to do anything else?`;
+        relaySummary ||
+        `Done. ${fallbackOutcome} Do you want me to do anything else?`;
 
-      // Mark session as final to prevent repeated redirects
       await kvSetJSON(relaySessionKey(relaySessionId), {
         ...session,
         status: `final_${callStatus.toLowerCase()}`,
@@ -151,7 +169,6 @@ export async function POST(req: Request) {
         updatedAt: new Date().toISOString(),
       }).catch(() => null);
 
-      // Resume caller with summary
       if (callerCallSid) {
         const base = getBaseUrl();
         await redirectTwilioCall(
