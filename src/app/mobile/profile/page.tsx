@@ -33,6 +33,13 @@ type ProfileFormState = {
   memberSince: string;
 };
 
+type Contact = {
+  id: string;
+  name: string;
+  phone: string;
+  createdAt: string;
+};
+
 function generateReferralCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let chunk = "";
@@ -69,6 +76,16 @@ export default function ProfilePage() {
   const [shareStatus, setShareStatus] = useState<
     "idle" | "copied" | "shared" | "error"
   >("idle");
+
+  // ---------------- M19 Contacts state ----------------
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [contactsLoading, setContactsLoading] = useState(false);
+  const [contactsError, setContactsError] = useState<string | null>(null);
+
+  const [contactName, setContactName] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [contactSaving, setContactSaving] = useState(false);
+  const [contactDeletingId, setContactDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -173,6 +190,50 @@ export default function ProfilePage() {
     };
   }, [roomId]);
 
+  // ---------------- M19: load contacts ----------------
+  useEffect(() => {
+    if (!roomId) return;
+
+    let cancelled = false;
+
+    async function loadContacts(rid: string) {
+      setContactsLoading(true);
+      setContactsError(null);
+
+      try {
+        const encoded = encodeURIComponent(rid);
+        const res = await fetch(`/api/contacts?roomId=${encoded}`, { cache: "no-store" });
+        const data = (await res.json().catch(() => ({} as any))) as {
+          ok?: boolean;
+          items?: Contact[];
+          message?: string;
+        };
+
+        if (!res.ok || data?.ok === false) {
+          throw new Error(data?.message || "Failed to load contacts");
+        }
+
+        if (!cancelled) {
+          setContacts(Array.isArray(data.items) ? data.items : []);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setContactsError(
+            typeof e?.message === "string" ? e.message : "Could not load contacts."
+          );
+        }
+      } finally {
+        if (!cancelled) setContactsLoading(false);
+      }
+    }
+
+    loadContacts(roomId);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId]);
+
   async function syncModeToBackend(mode: InteractionMode) {
     if (!roomId) return;
 
@@ -251,6 +312,83 @@ export default function ProfilePage() {
       );
     } finally {
       setSavingProfile(false);
+    }
+  }
+
+  // ---------------- M19: add contact ----------------
+  async function handleAddContact(e: FormEvent) {
+    e.preventDefault();
+    if (!roomId || contactSaving) return;
+
+    const name = contactName.trim();
+    const phone = contactPhone.trim();
+
+    if (!name || !phone) {
+      setContactsError("Please enter both a contact name and phone.");
+      return;
+    }
+
+    setContactSaving(true);
+    setContactsError(null);
+
+    try {
+      const res = await fetch("/api/contacts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId, name, phone }),
+      });
+
+      const data = (await res.json().catch(() => ({} as any))) as {
+        ok?: boolean;
+        items?: Contact[];
+        message?: string;
+      };
+
+      if (!res.ok || data?.ok === false) {
+        throw new Error(data?.message || "Failed to add contact");
+      }
+
+      setContacts(Array.isArray(data.items) ? data.items : []);
+      setContactName("");
+      setContactPhone("");
+    } catch (e: any) {
+      setContactsError(typeof e?.message === "string" ? e.message : "Could not add contact.");
+    } finally {
+      setContactSaving(false);
+    }
+  }
+
+  // ---------------- M19: delete contact ----------------
+  async function handleDeleteContact(contactId: string) {
+    if (!roomId || !contactId || contactDeletingId) return;
+
+    setContactDeletingId(contactId);
+    setContactsError(null);
+
+    try {
+      const res = await fetch("/api/contacts", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId, contactId }),
+      });
+
+      const data = (await res.json().catch(() => ({} as any))) as {
+        ok?: boolean;
+        items?: Contact[];
+        message?: string;
+      };
+
+      if (!res.ok || data?.ok === false) {
+        throw new Error(data?.message || "Failed to delete contact");
+      }
+
+      setContacts(Array.isArray(data.items) ? data.items : []);
+    } catch (e: any) {
+      setContactsError(
+        typeof e?.message === "string" ? e.message : "Could not delete contact."
+      );
+    } finally {
+      setContactDeletingId(null);
     }
   }
 
@@ -457,6 +595,72 @@ export default function ProfilePage() {
             <p className="text-[11px] text-slate-500">Loading profile…</p>
           )}
         </form>
+
+        {/* ✅ M19: Contacts */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
+          <p className="text-sm font-medium">Contacts</p>
+          <p className="text-xs text-slate-600">
+            Save people you call often (e.g., “Mother”). We’ll use this for “call my mother” in a later step.
+          </p>
+
+          <form onSubmit={handleAddContact} className="space-y-2">
+            <div className="grid grid-cols-1 gap-2">
+              <input
+                value={contactName}
+                onChange={(e) => setContactName(e.target.value)}
+                placeholder="Contact name (e.g. Mother)"
+                className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
+              />
+              <input
+                value={contactPhone}
+                onChange={(e) => setContactPhone(e.target.value)}
+                placeholder="Phone (recommended: +1...)"
+                className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={!roomId || contactSaving}
+              className="w-full rounded-full bg-purple-600 px-4 py-2 text-xs font-medium text-white disabled:opacity-60"
+            >
+              {contactSaving ? "Saving…" : "Add contact"}
+            </button>
+          </form>
+
+          {contactsLoading && (
+            <p className="text-[11px] text-slate-500">Loading contacts…</p>
+          )}
+          {contactsError && (
+            <p className="text-[11px] text-amber-600">{contactsError}</p>
+          )}
+
+          {contacts.length === 0 && !contactsLoading ? (
+            <p className="text-[11px] text-slate-500">No contacts saved yet.</p>
+          ) : (
+            <ul className="space-y-2">
+              {contacts.map((c) => (
+                <li
+                  key={c.id}
+                  className="flex items-center justify-between gap-3 border border-slate-200 rounded-lg px-3 py-2"
+                >
+                  <div>
+                    <p className="text-xs font-medium text-slate-900">{c.name}</p>
+                    <p className="text-[11px] text-slate-500">{c.phone}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteContact(c.id)}
+                    disabled={!roomId || contactDeletingId === c.id}
+                    className="text-[11px] px-3 py-1.5 rounded-full border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-60"
+                  >
+                    {contactDeletingId === c.id ? "Removing…" : "Remove"}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
         {/* Share / invite card */}
         <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
