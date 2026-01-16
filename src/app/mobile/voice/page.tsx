@@ -6,6 +6,7 @@ import Link from "next/link";
 import type { ChatMessage } from "@/app/data/chat";
 
 const VISITOR_ID_STORAGE_KEY = "foundzie_visitor_id";
+const TWILIO_LIMIT_SECONDS = 5 * 60; // 5 minutes
 
 function createVisitorId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -17,6 +18,7 @@ function createVisitorId() {
 }
 
 type VoiceStatus = "none" | "requested" | "active" | "ended" | "failed";
+type Mode = "idle" | "webrtc" | "twilio";
 
 type EventLogItem = {
   ts: string;
@@ -44,25 +46,31 @@ type RoomUser = {
 };
 
 function normalizePhoneForUX(phone?: string | null) {
-  const p = String(phone || "").trim();
-  return p;
+  return String(phone || "").trim();
 }
 
 export default function MobileVoicePage() {
   const [roomId, setRoomId] = useState<string | null>(null);
 
-  // WebRTC state
+  // Unified mode (M18)
+  const [mode, setMode] = useState<Mode>("idle");
+
+  // WebRTC UI state
   const [status, setStatus] = useState<
     "idle" | "connecting" | "connected" | "ended" | "error"
   >("idle");
   const [error, setError] = useState<string | null>(null);
 
-  // “Call me” (Twilio) state
-  const [callMeStatus, setCallMeStatus] = useState<
+  // Twilio fallback state
+  const [callStatus, setCallStatus] = useState<
     "idle" | "loading-profile" | "calling" | "called" | "error"
   >("idle");
-  const [callMeError, setCallMeError] = useState<string | null>(null);
+  const [callError, setCallError] = useState<string | null>(null);
   const [profilePhone, setProfilePhone] = useState<string>("");
+
+  // Twilio 5-min UX limit
+  const [twilioSecondsLeft, setTwilioSecondsLeft] = useState<number | null>(null);
+  const twilioTimerRef = useRef<number | null>(null);
 
   const [muted, setMuted] = useState(false);
   const [events, setEvents] = useState<EventLogItem[]>([]);
@@ -96,15 +104,15 @@ export default function MobileVoicePage() {
     setRoomId(id);
   }, []);
 
-  // Load profile phone once we have roomId (for M17 “Call me” UX)
+  // Load profile phone once we have roomId (used for Twilio fallback)
   useEffect(() => {
     if (!roomId) return;
 
     let cancelled = false;
 
     async function loadRoomUserPhone(rid: string) {
-      setCallMeStatus("loading-profile");
-      setCallMeError(null);
+      setCallStatus("loading-profile");
+      setCallError(null);
 
       try {
         const encoded = encodeURIComponent(rid);
@@ -117,12 +125,12 @@ export default function MobileVoicePage() {
         const phone = normalizePhoneForUX(data?.item?.phone ?? "");
         if (!cancelled) {
           setProfilePhone(phone);
-          setCallMeStatus("idle");
+          setCallStatus("idle");
         }
       } catch (e: any) {
         if (!cancelled) {
-          setCallMeStatus("error");
-          setCallMeError("Could not load your profile. Please refresh and try again.");
+          setCallStatus("error");
+          setCallError("Could not load your profile. Please refresh and try again.");
         }
       }
     }
@@ -138,10 +146,7 @@ export default function MobileVoicePage() {
     setEvents((prev) =>
       [
         {
-          ts: new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
+          ts: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           type,
           text,
         },
@@ -196,14 +201,10 @@ export default function MobileVoicePage() {
   async function fetchThreadContext(roomIdVal: string) {
     try {
       const encoded = encodeURIComponent(roomIdVal);
-      const res = await fetch(`/api/chat/${encoded}?t=${Date.now()}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(`/api/chat/${encoded}?t=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) return "";
       const data = await res.json().catch(() => ({} as any));
-      const items = Array.isArray(data?.items)
-        ? (data.items as ChatMessage[])
-        : [];
+      const items = Array.isArray(data?.items) ? (data.items as ChatMessage[]) : [];
       return formatThreadForVoice(items, 14);
     } catch {
       return "";
@@ -213,7 +214,6 @@ export default function MobileVoicePage() {
   async function bootstrapSessionUpdate() {
     if (!roomId) return;
 
-    // Pull user profile context
     let name = "";
     let interest = "";
     let tags: string[] = [];
@@ -244,7 +244,6 @@ export default function MobileVoicePage() {
 
     const thread = await fetchThreadContext(roomId);
 
-    // AUDIO-ONLY; no turn_detection fields.
     safeSend({
       type: "session.update",
       session: {
@@ -276,12 +275,7 @@ export default function MobileVoicePage() {
       },
     });
 
-    logEvent(
-      "session.update",
-      thread
-        ? "Voice persona + shared memory loaded (wait for user to speak)."
-        : "Voice persona configured (wait for user)."
-    );
+    logEvent("session.update", "WebRTC voice persona configured (wait for user).");
   }
 
   function absorbRealtimeEvent(msg: any) {
@@ -296,7 +290,6 @@ export default function MobileVoicePage() {
         ? msg.delta
         : "";
 
-    // USER transcription completed
     if (
       type.includes("input_audio_transcription") &&
       (type.includes("completed") || type.includes("done"))
@@ -312,16 +305,11 @@ export default function MobileVoicePage() {
       return;
     }
 
-    // ASSISTANT transcript streaming
-    if (
-      type.includes("response.output_audio_transcript") &&
-      type.includes("delta")
-    ) {
+    if (type.includes("response.output_audio_transcript") && type.includes("delta")) {
       if (text) assistantTranscriptBufRef.current += text;
       return;
     }
 
-    // ASSISTANT transcript completed
     if (
       type.includes("response.output_audio_transcript") &&
       (type.includes("done") || type.includes("completed"))
@@ -336,126 +324,7 @@ export default function MobileVoicePage() {
     }
   }
 
-  async function start() {
-    setError(null);
-
-    if (!canUseWebRTC) {
-      setStatus("error");
-      setError("WebRTC is not supported in this browser.");
-      return;
-    }
-
-    if (!roomId) {
-      setStatus("error");
-      setError("Missing roomId (visitor id). Refresh and try again.");
-      return;
-    }
-
-    if (pcRef.current) return;
-
-    // reset per session
-    didBootstrapRef.current = false;
-    assistantTranscriptBufRef.current = "";
-    userTextBufRef.current = "";
-
-    setStatus("connecting");
-    logEvent("connecting", "Starting microphone + WebRTC session…");
-
-    try {
-      const localStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      });
-      localStreamRef.current = localStream;
-
-      const pc = new RTCPeerConnection();
-      pcRef.current = pc;
-
-      pc.oniceconnectionstatechange = () => {
-        logEvent("ice_state", pc.iceConnectionState);
-      };
-
-      pc.ontrack = (evt) => {
-        const [remoteStream] = evt.streams;
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = remoteStream;
-          remoteAudioRef.current.play().catch(() => {});
-        }
-        logEvent("remote_track", "Remote audio track connected.");
-      };
-
-      for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
-
-      const dc = pc.createDataChannel("oai-events");
-      dcRef.current = dc;
-
-      dc.onopen = () => {
-        logEvent("datachannel_open", "Control channel connected.");
-
-        // ✅ Only do persona/memory bootstrap; DO NOT force a greeting.
-        if (!didBootstrapRef.current) {
-          didBootstrapRef.current = true;
-          bootstrapSessionUpdate().catch(() => {});
-        }
-
-        logEvent("ready", "Connected. Speak first — Foundzie will respond.");
-      };
-
-      dc.onmessage = (evt) => {
-        try {
-          const msg = JSON.parse(String(evt.data));
-          const t = typeof msg?.type === "string" ? msg.type : "event";
-
-          let preview: string | undefined;
-          if (typeof msg?.delta === "string") preview = msg.delta;
-          if (typeof msg?.text === "string") preview = msg.text;
-          if (typeof msg?.error?.message === "string") preview = msg.error.message;
-
-          logEvent(t, preview);
-          absorbRealtimeEvent(msg);
-        } catch {
-          logEvent("message", String(evt.data).slice(0, 200));
-        }
-      };
-
-      dc.onerror = () => logEvent("datachannel_error");
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      const sdpRes = await fetch("/api/realtime/session", {
-        method: "POST",
-        headers: {
-          "Content-Type": "text/plain",
-          "x-foundzie-room-id": roomId,
-        },
-        body: offer.sdp ?? "",
-      });
-
-      if (!sdpRes.ok) {
-        const j = await sdpRes.json().catch(() => null);
-        throw new Error(j?.message || "Realtime session creation failed.");
-      }
-
-      const answerSdp = await sdpRes.text();
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-
-      setStatus("connected");
-      logEvent("connected", "Live voice session ready.");
-      await setVoiceSessionStatus("active");
-    } catch (e: any) {
-      console.error("[voice] start error:", e);
-      const msg =
-        typeof e?.message === "string" ? e.message : "Voice start failed.";
-      setError(msg);
-      setStatus("error");
-      logEvent("error", msg);
-      await setVoiceSessionStatus("failed", msg);
-      await stopInternal();
-    }
-  }
-
-  async function stopInternal() {
+  async function stopInternalWebRTC() {
     try {
       dcRef.current?.close();
     } catch {}
@@ -479,10 +348,233 @@ export default function MobileVoicePage() {
     }
   }
 
-  async function stop() {
-    logEvent("ending", "Ending voice session…");
-    await stopInternal();
+  function clearTwilioTimer() {
+    if (twilioTimerRef.current) {
+      window.clearInterval(twilioTimerRef.current);
+      twilioTimerRef.current = null;
+    }
+    setTwilioSecondsLeft(null);
+  }
+
+  function startTwilioCountdown() {
+    clearTwilioTimer();
+    setTwilioSecondsLeft(TWILIO_LIMIT_SECONDS);
+
+    twilioTimerRef.current = window.setInterval(() => {
+      setTwilioSecondsLeft((prev) => {
+        if (prev === null) return prev;
+        if (prev <= 1) {
+          // At limit → move user to chat UX (cannot forcibly end phone call here)
+          clearTwilioTimer();
+          logEvent("twilio_limit", "5 min reached — continue in chat.");
+          window.location.href = "/mobile/chat";
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }
+
+  // --- Twilio fallback call ---
+  async function callMeTwilioFallback(): Promise<boolean> {
+    setCallError(null);
+
+    if (!roomId) {
+      setCallStatus("error");
+      setCallError("Missing visitor id. Refresh and try again.");
+      return false;
+    }
+
+    // refresh phone from backend
+    setCallStatus("loading-profile");
+    let phone = "";
+
+    try {
+      const encoded = encodeURIComponent(roomId);
+      const res = await fetch(`/api/users/room/${encoded}`, { cache: "no-store" });
+      const data = await res.json().catch(() => ({} as any));
+      phone = normalizePhoneForUX(data?.item?.phone ?? "");
+      setProfilePhone(phone);
+    } catch {
+      setCallStatus("error");
+      setCallError("Could not load your profile. Please refresh and try again.");
+      return false;
+    }
+
+    if (!phone) {
+      setCallStatus("error");
+      setCallError("No phone saved. Add your phone in Profile first.");
+      return false;
+    }
+
+    setCallStatus("calling");
+
+    try {
+      const res = await fetch("/api/calls/outbound", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone,
+          note: "M18: Twilio fallback (from mobile voice)",
+          mode: "voice",
+          roomId,
+        }),
+      });
+
+      const j = await res.json().catch(() => ({} as any));
+      if (!res.ok || j?.ok === false) {
+        const msg =
+          typeof j?.message === "string"
+            ? j.message
+            : "Call failed. Check phone format (+1...) and try again.";
+        setCallStatus("error");
+        setCallError(msg);
+        return false;
+      }
+
+      setCallStatus("called");
+      setMode("twilio");
+      startTwilioCountdown();
+      logEvent("twilio_fallback", `Call requested. TwilioSid: ${j?.twilioSid ?? "n/a"}`);
+      return true;
+    } catch {
+      setCallStatus("error");
+      setCallError("Call request failed. Please try again.");
+      return false;
+    }
+  }
+
+  // --- WebRTC start (returns success boolean) ---
+  async function startWebRTC(): Promise<boolean> {
+    setError(null);
+
+    if (!canUseWebRTC) {
+      setStatus("error");
+      setError("WebRTC is not supported in this browser.");
+      return false;
+    }
+
+    if (!roomId) {
+      setStatus("error");
+      setError("Missing visitor id. Refresh and try again.");
+      return false;
+    }
+
+    if (pcRef.current) return true;
+
+    didBootstrapRef.current = false;
+    assistantTranscriptBufRef.current = "";
+    userTextBufRef.current = "";
+
+    setStatus("connecting");
+    logEvent("connecting", "Starting microphone + WebRTC session…");
+
+    try {
+      const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      localStreamRef.current = localStream;
+
+      const pc = new RTCPeerConnection();
+      pcRef.current = pc;
+
+      pc.oniceconnectionstatechange = () => {
+        logEvent("ice_state", pc.iceConnectionState);
+      };
+
+      pc.ontrack = (evt) => {
+        const [remoteStream] = evt.streams;
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.play().catch(() => {});
+        }
+        logEvent("remote_track", "Remote audio connected.");
+      };
+
+      for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
+
+      const dc = pc.createDataChannel("oai-events");
+      dcRef.current = dc;
+
+      dc.onopen = () => {
+        logEvent("datachannel_open", "Control channel connected.");
+        if (!didBootstrapRef.current) {
+          didBootstrapRef.current = true;
+          bootstrapSessionUpdate().catch(() => {});
+        }
+        logEvent("ready", "Connected. Speak first — Foundzie will respond.");
+      };
+
+      dc.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(String(evt.data));
+          const t = typeof msg?.type === "string" ? msg.type : "event";
+          let preview: string | undefined;
+          if (typeof msg?.delta === "string") preview = msg.delta;
+          if (typeof msg?.text === "string") preview = msg.text;
+          if (typeof msg?.error?.message === "string") preview = msg.error.message;
+          logEvent(t, preview);
+          absorbRealtimeEvent(msg);
+        } catch {
+          logEvent("message", String(evt.data).slice(0, 200));
+        }
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const sdpRes = await fetch("/api/realtime/session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "x-foundzie-room-id": roomId,
+        },
+        body: offer.sdp ?? "",
+      });
+
+      if (!sdpRes.ok) {
+        const j = await sdpRes.json().catch(() => null);
+        throw new Error(j?.message || "Realtime session creation failed.");
+      }
+
+      const answerSdp = await sdpRes.text();
+      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+
+      setStatus("connected");
+      setMode("webrtc");
+      logEvent("connected", "WebRTC voice session ready.");
+      await setVoiceSessionStatus("active");
+      return true;
+    } catch (e: any) {
+      console.error("[voice] start error:", e);
+      const msg = typeof e?.message === "string" ? e.message : "WebRTC start failed.";
+      setError(msg);
+      setStatus("error");
+      logEvent("webrtc_failed", msg);
+      await setVoiceSessionStatus("failed", msg);
+      await stopInternalWebRTC();
+      return false;
+    }
+  }
+
+  // --- M18: Single “Start Concierge” orchestrator ---
+  async function startConcierge() {
+    clearTwilioTimer();
+    setCallError(null);
+    setError(null);
+
+    logEvent("concierge_start", "Attempting WebRTC first…");
+
+    const okWebrtc = await startWebRTC();
+    if (okWebrtc) return;
+
+    logEvent("fallback", "WebRTC failed — falling back to Twilio call.");
+    await callMeTwilioFallback();
+  }
+
+  async function endWebRTC() {
+    logEvent("ending", "Ending WebRTC session…");
+    await stopInternalWebRTC();
     setStatus("ended");
+    setMode("idle");
     await setVoiceSessionStatus("ended");
   }
 
@@ -495,71 +587,11 @@ export default function MobileVoicePage() {
     logEvent(next ? "muted" : "unmuted");
   }
 
-  // ✅ M17: “Call me” using saved profile phone
-  async function callMe() {
-    setCallMeError(null);
-
-    if (!roomId) {
-      setCallMeStatus("error");
-      setCallMeError("Missing visitor id. Refresh and try again.");
-      return;
-    }
-
-    // Make sure we have a fresh phone from backend
-    setCallMeStatus("loading-profile");
-
-    let phone = "";
-    try {
-      const encoded = encodeURIComponent(roomId);
-      const res = await fetch(`/api/users/room/${encoded}`, { cache: "no-store" });
-      const data = await res.json().catch(() => ({} as any));
-      phone = normalizePhoneForUX(data?.item?.phone ?? "");
-      setProfilePhone(phone);
-    } catch {
-      setCallMeStatus("error");
-      setCallMeError("Could not load your profile. Please refresh and try again.");
-      return;
-    }
-
-    if (!phone) {
-      setCallMeStatus("error");
-      setCallMeError("No phone number saved. Please add your phone in Profile first.");
-      return;
-    }
-
-    setCallMeStatus("calling");
-
-    try {
-      const res = await fetch("/api/calls/outbound", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          phone,
-          note: "M17: Call me (from mobile voice)",
-          mode: "voice",
-          roomId,
-        }),
-      });
-
-      const j = await res.json().catch(() => ({} as any));
-
-      if (!res.ok || j?.ok === false) {
-        const msg =
-          typeof j?.message === "string"
-            ? j.message
-            : "Call request failed. Check number format (+1...) and try again.";
-        setCallMeStatus("error");
-        setCallMeError(msg);
-        return;
-      }
-
-      setCallMeStatus("called");
-      logEvent("call_me", `Outbound call requested. TwilioSid: ${j?.twilioSid ?? "n/a"}`);
-      setTimeout(() => setCallMeStatus("idle"), 3500);
-    } catch (e: any) {
-      setCallMeStatus("error");
-      setCallMeError("Call request failed. Please try again.");
-    }
+  function fmtCountdown(sec: number | null) {
+    if (sec === null) return "";
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
   }
 
   return (
@@ -569,7 +601,7 @@ export default function MobileVoicePage() {
           <Link href="/mobile/chat" className="text-xs text-slate-400">
             &larr; Back
           </Link>
-          <h1 className="text-lg font-semibold">Voice</h1>
+          <h1 className="text-lg font-semibold">Concierge</h1>
         </div>
         {roomId ? (
           <span className="text-[10px] text-slate-500 font-mono">{roomId}</span>
@@ -577,104 +609,119 @@ export default function MobileVoicePage() {
       </header>
 
       <section className="px-4 py-4 space-y-3">
-        {/* ✅ M17 Call Me card */}
+        {/* M18 single entrypoint */}
         <div className="p-3 rounded-2xl bg-slate-900/60 border border-slate-800">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <p className="text-sm font-semibold">Call me</p>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Uses the phone saved in your Profile. No re-entry needed.
-              </p>
-            </div>
-            <Link href="/mobile/profile" className="text-xs text-slate-300 underline">
+          <p className="text-sm font-semibold">Start Concierge</p>
+          <p className="text-xs text-slate-400 mt-1">
+            WebRTC first (unlimited). If it fails, we fall back to a Twilio phone call.
+          </p>
+
+          <button
+            type="button"
+            onClick={startConcierge}
+            disabled={status === "connecting" || status === "connected" || callStatus === "calling"}
+            className={[
+              "mt-3 w-full px-4 py-2 rounded-full text-sm font-semibold text-white",
+              "bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600",
+              "shadow-[0_12px_30px_rgba(124,58,237,0.35)]",
+              "hover:brightness-110 active:brightness-95",
+              "disabled:opacity-60 disabled:cursor-not-allowed",
+              "ring-1 ring-purple-200/60",
+            ].join(" ")}
+          >
+            {status === "connecting"
+              ? "Starting WebRTC…"
+              : callStatus === "calling"
+              ? "Calling via Twilio…"
+              : mode === "webrtc" && status === "connected"
+              ? "Live (WebRTC) ✅"
+              : mode === "twilio"
+              ? "Live (Twilio fallback) ✅"
+              : "Start"}
+          </button>
+
+          <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
+            <span>
+              Mode:{" "}
+              <span className="text-white">
+                {mode === "idle" ? "—" : mode.toUpperCase()}
+              </span>
+            </span>
+            <Link href="/mobile/profile" className="underline text-slate-200">
               Profile
             </Link>
           </div>
 
-          <div className="mt-3 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={callMe}
-              disabled={callMeStatus === "calling" || callMeStatus === "loading-profile"}
-              className="flex-1 px-4 py-2 rounded-full bg-indigo-600 text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {callMeStatus === "loading-profile"
-                ? "Checking profile…"
-                : callMeStatus === "calling"
-                ? "Calling…"
-                : callMeStatus === "called"
-                ? "Requested ✅"
-                : "Call me (Twilio)"}
-            </button>
+          {/* Twilio fallback info + limit */}
+          {mode === "twilio" && (
+            <div className="mt-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+              <p className="text-xs text-slate-200 font-medium">
+                Twilio fallback is limited to ~5 minutes
+              </p>
+              <p className="text-[11px] text-slate-400 mt-1">
+                After that, we’ll continue in chat to control costs. (We cannot automatically end the phone call from the browser.)
+              </p>
 
-            <div className="text-[10px] text-slate-400">
-              {profilePhone ? `Saved: ${profilePhone}` : "No phone saved"}
+              <div className="mt-2 flex items-center justify-between">
+                <span className="text-xs text-slate-300">
+                  Time left:{" "}
+                  <span className="font-mono text-white">
+                    {fmtCountdown(twilioSecondsLeft)}
+                  </span>
+                </span>
+
+                <Link
+                  href="/mobile/chat"
+                  className="text-xs underline text-slate-200"
+                >
+                  Open chat now →
+                </Link>
+              </div>
             </div>
+          )}
+
+          {/* Phone info */}
+          <div className="mt-2 text-[11px] text-slate-400">
+            Saved phone:{" "}
+            <span className="text-slate-200">
+              {profilePhone ? profilePhone : "No phone saved"}
+            </span>
           </div>
 
-          {callMeError && (
-            <div className="mt-2 text-xs text-amber-200">
-              {callMeError}{" "}
-              {callMeError.toLowerCase().includes("profile") ||
-              callMeError.toLowerCase().includes("phone") ? (
-                <Link href="/mobile/profile" className="underline text-white">
-                  Open Profile
-                </Link>
-              ) : null}
-            </div>
+          {callError && (
+            <p className="mt-2 text-xs text-amber-200">
+              {callError}{" "}
+              <Link href="/mobile/profile" className="underline text-white">
+                Open Profile
+              </Link>
+            </p>
+          )}
+
+          {error && (
+            <p className="mt-2 text-xs text-amber-200">
+              WebRTC error: {error}
+            </p>
           )}
         </div>
 
-        <p className="text-xs text-slate-400">
-          WebRTC: Tap Start, allow microphone, then speak naturally. (Foundzie waits for you to speak first.)
-        </p>
-
-        {error && (
-          <div className="p-3 rounded-xl bg-red-950/40 border border-red-800">
-            <p className="text-xs text-red-200">{error}</p>
-          </div>
-        )}
-
-        {!canUseWebRTC && (
-          <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
-            <p className="text-xs text-slate-200">
-              WebRTC is not available in this browser.
-            </p>
-          </div>
-        )}
-
+        {/* WebRTC controls (only meaningful in WebRTC mode) */}
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={start}
-            disabled={
-              !canUseWebRTC || status === "connecting" || status === "connected"
-            }
-            className="flex-1 px-4 py-2 rounded-full bg-emerald-600 text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {status === "connecting"
-              ? "Starting…"
-              : status === "connected"
-              ? "Live ✅"
-              : "Start WebRTC voice"}
-          </button>
-
-          <button
-            type="button"
             onClick={toggleMute}
-            disabled={status !== "connected"}
-            className="px-4 py-2 rounded-full bg-slate-800 text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+            disabled={status !== "connected" || mode !== "webrtc"}
+            className="flex-1 px-4 py-2 rounded-full bg-slate-800 text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {muted ? "Unmute" : "Mute"}
           </button>
 
           <button
             type="button"
-            onClick={stop}
-            disabled={status !== "connected"}
-            className="px-4 py-2 rounded-full bg-rose-600 text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+            onClick={endWebRTC}
+            disabled={status !== "connected" || mode !== "webrtc"}
+            className="flex-1 px-4 py-2 rounded-full bg-rose-600 text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            End
+            End WebRTC
           </button>
         </div>
 
@@ -688,7 +735,7 @@ export default function MobileVoicePage() {
 
           {events.length === 0 ? (
             <p className="text-xs text-slate-400 mt-2">
-              No events yet. Start voice to see live activity.
+              No events yet. Press Start to begin.
             </p>
           ) : (
             <ul className="mt-2 space-y-2">
@@ -697,10 +744,7 @@ export default function MobileVoicePage() {
                   <span className="text-slate-500 font-mono mr-2">{e.ts}</span>
                   <span className="text-slate-200">{e.type}</span>
                   {e.text ? (
-                    <span className="text-slate-400">
-                      {" "}
-                      — {String(e.text).slice(0, 180)}
-                    </span>
+                    <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span>
                   ) : null}
                 </li>
               ))}
@@ -709,7 +753,7 @@ export default function MobileVoicePage() {
         </div>
 
         <div className="text-[11px] text-slate-500">
-          Tip: Voice turns are saved back into chat via transcripts.
+          Tip: WebRTC transcripts are saved back into chat via transcripts.
         </div>
       </section>
 
