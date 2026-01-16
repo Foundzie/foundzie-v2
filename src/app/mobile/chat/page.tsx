@@ -16,8 +16,6 @@ function createVisitorId() {
     .slice(2)}`;
 }
 
-type VoiceStatus = "none" | "requested" | "active" | "ended" | "failed";
-
 export default function MobileChatPage() {
   const router = useRouter();
 
@@ -40,10 +38,6 @@ export default function MobileChatPage() {
 
   // Voice sheet state
   const [showVoiceSheet, setShowVoiceSheet] = useState(false);
-  const [voiceRequestError, setVoiceRequestError] = useState<string | null>(
-    null
-  );
-  const [voiceRequesting, setVoiceRequesting] = useState(false);
 
   // Trip-plan saving (M10e)
   const [savingTripId, setSavingTripId] = useState<string | null>(null);
@@ -63,7 +57,7 @@ export default function MobileChatPage() {
     setRoomId(id);
   }, []);
 
-  // Shared loader (initial + polling) – uses the resolved roomId
+  // Shared loader (initial + polling)
   const loadMessages = async (currentRoomId: string, skipLoading?: boolean) => {
     try {
       if (!skipLoading && messages.length === 0) setLoading(true);
@@ -111,9 +105,7 @@ export default function MobileChatPage() {
         const encodedRoomId = encodeURIComponent(roomIdForFetch);
 
         const res = await fetch(`/api/users/room/${encodedRoomId}`);
-        if (!res.ok) {
-          return;
-        }
+        if (!res.ok) return;
 
         const data = await res.json().catch(() => ({} as any));
         const user = data?.item;
@@ -124,16 +116,16 @@ export default function MobileChatPage() {
         const apiInterest =
           typeof user.interest === "string" ? (user.interest as string) : "";
 
-        const isAnonymous = apiName.toLowerCase().startsWith("anonymous visitor");
+        const isAnonymous = apiName
+          .toLowerCase()
+          .startsWith("anonymous visitor");
 
         setNameDraft(isAnonymous ? "" : apiName);
         setInterestDraft(apiInterest);
 
         setHasSharedProfile(!isAnonymous && (!!apiName || !!apiInterest));
       } catch (err) {
-        if (!cancelled) {
-          console.error("checkProfile failed:", err);
-        }
+        if (!cancelled) console.error("checkProfile failed:", err);
       }
     }
 
@@ -185,12 +177,9 @@ export default function MobileChatPage() {
 
       setHasSharedProfile(true);
 
-      if (typeof data.item.name === "string") {
-        setNameDraft(data.item.name);
-      }
-      if (typeof data.item.interest === "string") {
+      if (typeof data.item.name === "string") setNameDraft(data.item.name);
+      if (typeof data.item.interest === "string")
         setInterestDraft(data.item.interest);
-      }
 
       setProfileSavedMessage("Saved! Your concierge now knows who you are.");
     } catch (err) {
@@ -229,7 +218,9 @@ export default function MobileChatPage() {
         throw new Error(data.message || "Failed to save trip plan");
       }
 
-      setSavedTripIds((prev) => (prev.includes(message.id) ? prev : [...prev, message.id]));
+      setSavedTripIds((prev) =>
+        prev.includes(message.id) ? prev : [...prev, message.id]
+      );
     } catch (err) {
       console.error("Save trip plan error", err);
       setError("Could not save trip plan. Please try again.");
@@ -268,7 +259,8 @@ export default function MobileChatPage() {
     const lower = rawText.toLowerCase();
 
     if (lower.startsWith("plan:")) {
-      const userRequest = rawText.slice(5).trim() || "Plan something fun for me.";
+      const userRequest =
+        rawText.slice(5).trim() || "Plan something fun for me.";
 
       transformedText = `
 TRIP_PLANNER_REQUEST:
@@ -353,51 +345,10 @@ ${userRequest}
     }
   }
 
-  // ---------------- Voice: live WebRTC ----------------
-  function handleLiveVoiceClick() {
+  // ---------------- Voice entry (M17c cleanup) ----------------
+  function handleConciergeEntryClick() {
     setShowVoiceSheet(false);
     router.push("/mobile/voice");
-  }
-
-  // ---------------- Voice: create session + go to concierge (fallback) ----------------
-  async function handleVoiceConciergeClick() {
-    if (!roomId) {
-      router.push("/mobile/concierge");
-      return;
-    }
-
-    setVoiceRequesting(true);
-    setVoiceRequestError(null);
-
-    try {
-      const res = await fetch("/api/voice/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          roomId,
-          status: "requested" as VoiceStatus,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({} as any));
-
-      if (!res.ok) {
-        const message =
-          typeof data === "object" && data && "message" in data
-            ? String((data as { message?: unknown }).message)
-            : "Voice session request failed";
-        throw new Error(message);
-      }
-    } catch (err) {
-      console.error("Failed to request voice session from mobile:", err);
-      setVoiceRequestError(
-        "We couldn’t flag your call request, but your concierge can still call you from the next screen."
-      );
-    } finally {
-      setVoiceRequesting(false);
-      setShowVoiceSheet(false);
-      router.push("/mobile/concierge");
-    }
   }
 
   // ---------------- UI ----------------
@@ -429,7 +380,10 @@ ${userRequest}
 
       {roomId && (
         <section className="px-4 pt-3 pb-2 border-b border-slate-200 bg-slate-50">
-          <form onSubmit={handleProfileSave} className="flex flex-col gap-2 text-[11px]">
+          <form
+            onSubmit={handleProfileSave}
+            className="flex flex-col gap-2 text-[11px]"
+          >
             <p className="text-slate-700">
               {hasSharedProfile
                 ? "You can update your details anytime to help your concierge personalise suggestions."
@@ -458,9 +412,13 @@ ${userRequest}
               </button>
             </div>
 
-            {profileError && <p className="text-[11px] text-red-600">{profileError}</p>}
+            {profileError && (
+              <p className="text-[11px] text-red-600">{profileError}</p>
+            )}
             {profileSavedMessage && (
-              <p className="text-[11px] text-emerald-600">{profileSavedMessage}</p>
+              <p className="text-[11px] text-emerald-600">
+                {profileSavedMessage}
+              </p>
             )}
           </form>
         </section>
@@ -481,16 +439,23 @@ ${userRequest}
           messages.map((msg, index) => {
             const isUser = msg.sender === "user";
 
-            let displayText = msg.text || (msg.attachmentName ? "(attachment)" : "");
+            let displayText =
+              msg.text || (msg.attachmentName ? "(attachment)" : "");
 
             if (
               typeof displayText === "string" &&
               displayText.startsWith("TRIP_PLANNER_REQUEST:")
             ) {
               const lines = displayText.split("\n");
-              const firstBlank = lines.findIndex((line) => line.trim().length === 0);
+              const firstBlank = lines.findIndex(
+                (line) => line.trim().length === 0
+              );
 
-              if (firstBlank !== -1 && lines[firstBlank + 1] && lines[firstBlank + 1].trim().length > 0) {
+              if (
+                firstBlank !== -1 &&
+                lines[firstBlank + 1] &&
+                lines[firstBlank + 1].trim().length > 0
+              ) {
                 displayText = lines[firstBlank + 1].trim();
               } else {
                 displayText = "Trip planning request sent to concierge.";
@@ -530,7 +495,9 @@ ${userRequest}
                     </p>
                   )}
 
-                  <p className="whitespace-pre-wrap break-words">{displayText}</p>
+                  <p className="whitespace-pre-wrap break-words">
+                    {displayText}
+                  </p>
 
                   {isTripPlan && (
                     <div className="mt-2 flex items-center justify-between gap-2">
@@ -543,12 +510,20 @@ ${userRequest}
                         onClick={() => handleSaveTripPlan(msg)}
                         className="text-[10px] px-2 py-[2px] rounded-full bg-emerald-600 text-white font-medium disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        {isSaved ? "Saved" : isSavingThis ? "Saving..." : "Save plan"}
+                        {isSaved
+                          ? "Saved"
+                          : isSavingThis
+                          ? "Saving..."
+                          : "Save plan"}
                       </button>
                     </div>
                   )}
 
-                  <p className={`mt-1 text-[10px] text-right ${isUser ? "text-white/80" : "text-slate-500"}`}>
+                  <p
+                    className={`mt-1 text-[10px] text-right ${
+                      isUser ? "text-white/80" : "text-slate-500"
+                    }`}
+                  >
                     {new Date(msg.createdAt).toLocaleTimeString([], {
                       hour: "2-digit",
                       minute: "2-digit",
@@ -572,7 +547,11 @@ ${userRequest}
             <span className="px-2 py-[2px] rounded-full bg-slate-100 border border-slate-200">
               {attachmentName}
             </span>
-            <button type="button" className="underline" onClick={() => setAttachmentName(null)}>
+            <button
+              type="button"
+              className="underline"
+              onClick={() => setAttachmentName(null)}
+            >
               remove
             </button>
           </div>
@@ -596,7 +575,9 @@ ${userRequest}
               type="button"
               className="px-2 py-[2px] rounded-full bg-slate-50 border border-slate-200 hover:bg-slate-100"
               onClick={() =>
-                setInput("plan: Plan a relaxed family afternoon nearby with kid-friendly places.")
+                setInput(
+                  "plan: Plan a relaxed family afternoon nearby with kid-friendly places."
+                )
               }
             >
               Family afternoon nearby
@@ -605,7 +586,9 @@ ${userRequest}
               type="button"
               className="px-2 py-[2px] rounded-full bg-slate-50 border border-slate-200 hover:bg-slate-100"
               onClick={() =>
-                setInput("plan: Plan a cozy date night in or near 60515 with dinner and one fun activity.")
+                setInput(
+                  "plan: Plan a cozy date night in or near 60515 with dinner and one fun activity."
+                )
               }
             >
               Date night in 60515
@@ -649,7 +632,7 @@ ${userRequest}
         </form>
       </section>
 
-      {/* Voice sheet */}
+      {/* Voice sheet (M17c: single entrypoint) */}
       {showVoiceSheet && (
         <div
           className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-30"
@@ -660,7 +643,9 @@ ${userRequest}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2">
-              <h2 className="text-base font-semibold text-slate-900">Talk to Foundzie</h2>
+              <h2 className="text-base font-semibold text-slate-900">
+                Talk to Foundzie
+              </h2>
               <button
                 type="button"
                 onClick={() => setShowVoiceSheet(false)}
@@ -671,28 +656,21 @@ ${userRequest}
             </div>
 
             <p className="text-xs text-slate-600">
-              Choose live voice (WebRTC) or request a phone call via concierge.
+              Start your concierge experience. (WebRTC first — Twilio fallback comes in a future milestone.)
             </p>
 
             <button
               type="button"
-              onClick={handleLiveVoiceClick}
-              className="w-full px-4 py-2 rounded-full bg-emerald-600 text-xs font-medium text-white hover:bg-emerald-500"
+              onClick={handleConciergeEntryClick}
+              className={[
+                "w-full px-4 py-2 rounded-full text-xs font-semibold text-white",
+                "bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600",
+                "shadow-[0_12px_30px_rgba(124,58,237,0.35)]",
+                "hover:brightness-110 active:brightness-95",
+                "ring-1 ring-purple-200/60",
+              ].join(" ")}
             >
-              Live voice (WebRTC)
-            </button>
-
-            {voiceRequestError && (
-              <p className="text-[11px] text-amber-600">{voiceRequestError}</p>
-            )}
-
-            <button
-              type="button"
-              onClick={handleVoiceConciergeClick}
-              disabled={voiceRequesting}
-              className="w-full px-4 py-2 rounded-full bg-purple-600 text-xs font-medium text-white hover:bg-purple-500 disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {voiceRequesting ? "Requesting…" : "Call me via concierge"}
+              Concierge
             </button>
 
             <button
