@@ -1,7 +1,7 @@
 // src/app/api/places/store.ts
 import "server-only";
 import { allPlaces } from "@/app/data/places";
-import { recordPlacesFallback, recordPlacesRequest } from "@/app/api/health/store";
+import { recordPlacesRequest } from "@/app/api/health/store";
 
 export type InteractionMode = "normal" | "child";
 
@@ -325,7 +325,12 @@ async function fetchFromOpenStreetMap(params: GetPlacesParams): Promise<Normaliz
       const placeLng = Number(p.lon);
 
       let distanceMiles: number | null = null;
-      if (lat !== undefined && lng !== undefined && Number.isFinite(placeLat) && Number.isFinite(placeLng)) {
+      if (
+        lat !== undefined &&
+        lng !== undefined &&
+        Number.isFinite(placeLat) &&
+        Number.isFinite(placeLng)
+      ) {
         distanceMiles = Number(haversineMiles(lat, lng, placeLat, placeLng).toFixed(2));
       }
 
@@ -379,9 +384,6 @@ function getLocalPlaces(mode: InteractionMode): NormalizedPlace[] {
 /* -------------------------------------------------------------------------- */
 
 export async function getPlaces(params: GetPlacesParams): Promise<GetPlacesResult> {
-  // ✅ M15: count every places request
-  await recordPlacesRequest().catch(() => null);
-
   const { q, lat, lng } = params;
   const hasQuery = typeof q === "string" && q.trim().length > 0;
   const hasLocation = typeof lat === "number" && typeof lng === "number";
@@ -389,23 +391,29 @@ export async function getPlaces(params: GetPlacesParams): Promise<GetPlacesResul
   // 1) Prefer Google Text if user supplied q
   if (hasQuery) {
     const googleText = await fetchGoogleText(params);
-    if (googleText.length > 0) return { source: "google", places: googleText };
+    if (googleText.length > 0) {
+      await recordPlacesRequest("google").catch(() => null);
+      return { source: "google", places: googleText };
+    }
   }
 
   // 2) Otherwise, if we have location, try Google Nearby
   if (hasLocation) {
     const googleNearby = await fetchGoogleNearby(params);
-    if (googleNearby.length > 0) return { source: "google", places: googleNearby };
+    if (googleNearby.length > 0) {
+      await recordPlacesRequest("google").catch(() => null);
+      return { source: "google", places: googleNearby };
+    }
   }
 
   // 3) OSM fallback
   const osm = await fetchFromOpenStreetMap(params);
   if (osm.length > 0) {
-    await recordPlacesFallback("osm", "Used OpenStreetMap fallback").catch(() => null);
+    await recordPlacesRequest("osm").catch(() => null);
     return { source: "osm", places: osm };
   }
 
   // 4) Local fallback
-  await recordPlacesFallback("local", "Used local fallback").catch(() => null);
+  await recordPlacesRequest("local").catch(() => null);
   return { source: "local", places: getLocalPlaces(params.mode) };
 }
