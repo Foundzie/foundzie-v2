@@ -40,6 +40,15 @@ type Contact = {
   createdAt: string;
 };
 
+function createVisitorId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `visitor-${crypto.randomUUID()}`;
+  }
+  return `visitor-${Date.now().toString(16)}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+}
+
 function generateReferralCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let chunk = "";
@@ -85,14 +94,21 @@ export default function ProfilePage() {
   const [contactName, setContactName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
   const [contactSaving, setContactSaving] = useState(false);
-  const [contactDeletingId, setContactDeletingId] = useState<string | null>(null);
+  const [contactDeletingId, setContactDeletingId] = useState<string | null>(
+    null
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     try {
-      const storedRoom = window.localStorage.getItem(VISITOR_ID_STORAGE_KEY);
-      if (storedRoom) setRoomId(storedRoom);
+      // ✅ Ensure roomId exists (fix: Profile must generate if missing)
+      let storedRoom = window.localStorage.getItem(VISITOR_ID_STORAGE_KEY);
+      if (!storedRoom) {
+        storedRoom = createVisitorId();
+        window.localStorage.setItem(VISITOR_ID_STORAGE_KEY, storedRoom);
+      }
+      setRoomId(storedRoom);
 
       let foundMode: string | null = null;
       for (const key of MODE_KEYS) {
@@ -146,7 +162,9 @@ export default function ProfilePage() {
     async function loadUser(currentRoomId: string) {
       try {
         const encoded = encodeURIComponent(currentRoomId);
-        const res = await fetch(`/api/users/room/${encoded}`, { cache: "no-store" });
+        const res = await fetch(`/api/users/room/${encoded}`, {
+          cache: "no-store",
+        });
         const json = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
           item?: AdminUserLike;
@@ -202,7 +220,9 @@ export default function ProfilePage() {
 
       try {
         const encoded = encodeURIComponent(rid);
-        const res = await fetch(`/api/contacts?roomId=${encoded}`, { cache: "no-store" });
+        const res = await fetch(`/api/contacts?roomId=${encoded}`, {
+          cache: "no-store",
+        });
         const data = (await res.json().catch(() => ({} as any))) as {
           ok?: boolean;
           items?: Contact[];
@@ -219,7 +239,9 @@ export default function ProfilePage() {
       } catch (e: any) {
         if (!cancelled) {
           setContactsError(
-            typeof e?.message === "string" ? e.message : "Could not load contacts."
+            typeof e?.message === "string"
+              ? e.message
+              : "Could not load contacts."
           );
         }
       } finally {
@@ -352,13 +374,14 @@ export default function ProfilePage() {
       setContactName("");
       setContactPhone("");
     } catch (e: any) {
-      setContactsError(typeof e?.message === "string" ? e.message : "Could not add contact.");
+      setContactsError(
+        typeof e?.message === "string" ? e.message : "Could not add contact."
+      );
     } finally {
       setContactSaving(false);
     }
   }
 
-  // ---------------- M19: delete contact ----------------
   async function handleDeleteContact(contactId: string) {
     if (!roomId || !contactId || contactDeletingId) return;
 
@@ -385,7 +408,9 @@ export default function ProfilePage() {
       setContacts(Array.isArray(data.items) ? data.items : []);
     } catch (e: any) {
       setContactsError(
-        typeof e?.message === "string" ? e.message : "Could not delete contact."
+        typeof e?.message === "string"
+          ? e.message
+          : "Could not delete contact."
       );
     } finally {
       setContactDeletingId(null);
@@ -456,7 +481,6 @@ export default function ProfilePage() {
 
   return (
     <main className="min-h-screen bg-white text-slate-900 pb-6">
-      {/* Header */}
       <header className="px-4 pt-6 pb-4 bg-white border-b border-slate-200">
         <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 mb-1">
           Profile
@@ -470,7 +494,6 @@ export default function ProfilePage() {
         </p>
       </header>
 
-      {/* Content */}
       <section className="px-4 py-4 space-y-4">
         {/* Profile card + form */}
         <form
@@ -508,7 +531,9 @@ export default function ProfilePage() {
               <span>Full name</span>
               <input
                 value={profile.name}
-                onChange={(e) => setProfile((p) => ({ ...p, name: e.target.value }))}
+                onChange={(e) =>
+                  setProfile((p) => ({ ...p, name: e.target.value }))
+                }
                 placeholder="e.g. Kashif Yusuf"
                 className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
               />
@@ -520,7 +545,9 @@ export default function ProfilePage() {
                 <Mail className="w-3 h-3 text-slate-400" />
                 <input
                   value={profile.email}
-                  onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
+                  onChange={(e) =>
+                    setProfile((p) => ({ ...p, email: e.target.value }))
+                  }
                   type="email"
                   placeholder="you@example.com"
                   className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
@@ -534,7 +561,9 @@ export default function ProfilePage() {
                 <Phone className="w-3 h-3 text-slate-400" />
                 <input
                   value={profile.phone}
-                  onChange={(e) => setProfile((p) => ({ ...p, phone: e.target.value }))}
+                  onChange={(e) =>
+                    setProfile((p) => ({ ...p, phone: e.target.value }))
+                  }
                   placeholder="+1 555 123 4567"
                   className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
                 />
@@ -547,7 +576,9 @@ export default function ProfilePage() {
                 <MapPin className="w-3 h-3 text-slate-400" />
                 <input
                   value={profile.city}
-                  onChange={(e) => setProfile((p) => ({ ...p, city: e.target.value }))}
+                  onChange={(e) =>
+                    setProfile((p) => ({ ...p, city: e.target.value }))
+                  }
                   placeholder="e.g. Downers Grove, Chicago, Istanbul"
                   className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500"
                 />
@@ -558,7 +589,9 @@ export default function ProfilePage() {
               <span>What are you into?</span>
               <textarea
                 value={profile.interests}
-                onChange={(e) => setProfile((p) => ({ ...p, interests: e.target.value }))}
+                onChange={(e) =>
+                  setProfile((p) => ({ ...p, interests: e.target.value }))
+                }
                 placeholder="e.g. brunch, family activities, live music, rooftop views"
                 rows={3}
                 className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-pink-500 resize-none"
@@ -596,7 +629,7 @@ export default function ProfilePage() {
           )}
         </form>
 
-        {/* ✅ M19: Contacts */}
+        {/* Contacts */}
         <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
           <p className="text-sm font-medium">Contacts</p>
           <p className="text-xs text-slate-600">
