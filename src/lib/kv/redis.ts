@@ -29,7 +29,7 @@ const redis =
       })
     : null;
 
-// Instead of permanently disabling Redis, use a short cooldown and retry later.
+// short cooldown on transient Upstash failures
 let redisDisabledUntil = 0; // epoch ms
 
 function isRedisAllowedNow() {
@@ -38,19 +38,38 @@ function isRedisAllowedNow() {
 
 function markRedisFailed(err: unknown, where: string) {
   console.error(`[kv.redis] Upstash error in ${where}:`, err);
-  // Back off briefly (serverless transient failures happen)
-  redisDisabledUntil = Date.now() + 15_000; // 15 seconds
+  redisDisabledUntil = Date.now() + 15_000; // 15s backoff
 }
 
 /* ---------------- Helpers ---------------- */
 
-function safeParse<T>(raw: string | null): T | null {
+function safeParseString<T>(raw: string | null): T | null {
   if (!raw) return null;
   try {
     return JSON.parse(raw) as T;
   } catch {
     return null;
   }
+}
+
+/**
+ * Upstash may return either:
+ * - a JSON string, or
+ * - an already-parsed JSON value (object/array/number/etc).
+ *
+ * This normalizes both forms into a T (or null).
+ */
+function normalizeUpstashValue<T>(value: unknown): T | null {
+  if (value === null || value === undefined) return null;
+
+  // If it's already JSON (object/array/number/bool), accept it
+  if (typeof value !== "string") {
+    return value as T;
+  }
+
+  // If it's a string, try parsing as JSON; if parsing fails, treat as "not JSON"
+  const parsed = safeParseString<T>(value);
+  return parsed;
 }
 
 function safeStringify(value: any) {
@@ -61,25 +80,28 @@ function safeStringify(value: any) {
   }
 }
 
+/* ---------------- Public KV API ---------------- */
+
 /**
- * Read a JSON value from KV.
- * Uses Upstash when available; falls back to memory.
+ * Best-effort read: Upstash → memory fallback.
  */
 export async function kvGetJSON<T = Json>(key: string): Promise<T | null> {
   if (!key) return null;
 
   if (isRedisAllowedNow()) {
     try {
-      const raw = (await redis!.get<string>(key)) ?? null;
-      return safeParse<T>(raw);
+      // IMPORTANT: do not assume a string; Upstash may return JSON directly.
+      const v = await redis!.get(key);
+      const normalized = normalizeUpstashValue<T>(v);
+      return normalized;
     } catch (err) {
       markRedisFailed(err, "kvGetJSON");
     }
   }
 
-  // memory fallback
+  // memory fallback always stores strings
   const raw = memoryStore.get(key) ?? null;
-  const parsed = safeParse<T>(raw);
+  const parsed = safeParseString<T>(raw);
   if (raw && parsed === null) {
     console.error("[kvGetJSON] Failed to parse JSON in memory for key:", key);
     memoryStore.delete(key);
@@ -88,8 +110,10 @@ export async function kvGetJSON<T = Json>(key: string): Promise<T | null> {
 }
 
 /**
- * Write a JSON value to KV.
- * Uses Upstash when available; falls back to memory.
+ * Best-effort write: Upstash → memory fallback.
+ *
+ * We write JSON **as a string** for compatibility with memory fallback.
+ * Reads can handle both string and native JSON (see normalizeUpstashValue).
  */
 export async function kvSetJSON(key: string, value: Json): Promise<void> {
   if (!key) return;
@@ -110,16 +134,14 @@ export async function kvSetJSON(key: string, value: Json): Promise<void> {
 
 /**
  * STRICT read:
- * - If Upstash is configured, ONLY read from Upstash.
- * - If Upstash fails, throw (do NOT silently fall back).
- * - If Upstash is not configured, fall back to memory.
+ * If Upstash is configured, do NOT fallback to memory.
  */
 export async function kvGetJSONStrict<T = Json>(key: string): Promise<T | null> {
   if (!key) return null;
 
   if (!redis) {
     const raw = memoryStore.get(key) ?? null;
-    return safeParse<T>(raw);
+    return safeParseString<T>(raw);
   }
 
   if (!isRedisAllowedNow()) {
@@ -127,8 +149,8 @@ export async function kvGetJSONStrict<T = Json>(key: string): Promise<T | null> 
   }
 
   try {
-    const raw = (await redis.get<string>(key)) ?? null;
-    return safeParse<T>(raw);
+    const v = await redis.get(key);
+    return normalizeUpstashValue<T>(v);
   } catch (err) {
     markRedisFailed(err, "kvGetJSONStrict");
     throw new Error("Upstash read failed.");
@@ -137,9 +159,7 @@ export async function kvGetJSONStrict<T = Json>(key: string): Promise<T | null> 
 
 /**
  * STRICT write:
- * - If Upstash is configured, ONLY write to Upstash.
- * - If Upstash fails, throw (so callers can show error and retry).
- * - If Upstash is not configured, fall back to memory.
+ * If Upstash is configured, do NOT fallback to memory.
  */
 export async function kvSetJSONStrict(key: string, value: Json): Promise<void> {
   if (!key) return;
@@ -164,11 +184,11 @@ export async function kvSetJSONStrict(key: string, value: Json): Promise<void> {
 }
 
 /**
- * Optional debug helper
+ * Debug helper
  */
 export async function kvDebugGetRaw(key: string): Promise<{
   key: string;
-  raw: string | null;
+  raw: any | null;
   parsed: any | null;
   source: "upstash" | "memory";
 }> {
@@ -176,13 +196,13 @@ export async function kvDebugGetRaw(key: string): Promise<{
 
   if (isRedisAllowedNow()) {
     try {
-      const raw = (await redis!.get<string>(key)) ?? null;
-      return { key, raw, parsed: safeParse(raw), source: "upstash" };
+      const v = await redis!.get(key);
+      return { key, raw: v ?? null, parsed: normalizeUpstashValue(v), source: "upstash" };
     } catch (err) {
       markRedisFailed(err, "kvDebugGetRaw");
     }
   }
 
   const raw = memoryStore.get(key) ?? null;
-  return { key, raw, parsed: safeParse(raw), source: "memory" };
+  return { key, raw, parsed: safeParseString(raw), source: "memory" };
 }
