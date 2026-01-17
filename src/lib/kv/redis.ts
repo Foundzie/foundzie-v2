@@ -29,12 +29,17 @@ const redis =
       })
     : null;
 
-// If redis fails once, stop using it for this process
-let redisHealthy = !!redis;
+// Instead of permanently disabling Redis, use a short cooldown and retry later.
+let redisDisabledUntil = 0; // epoch ms
+
+function isRedisAllowedNow() {
+  return !!redis && Date.now() >= redisDisabledUntil;
+}
 
 function markRedisFailed(err: unknown, where: string) {
   console.error(`[kv.redis] Upstash error in ${where}:`, err);
-  redisHealthy = false;
+  // Back off briefly (serverless transient failures happen)
+  redisDisabledUntil = Date.now() + 15_000; // 15 seconds
 }
 
 /* ---------------- Helpers ---------------- */
@@ -43,8 +48,16 @@ function safeParse<T>(raw: string | null): T | null {
   if (!raw) return null;
   try {
     return JSON.parse(raw) as T;
-  } catch (err) {
+  } catch {
     return null;
+  }
+}
+
+function safeStringify(value: any) {
+  try {
+    return JSON.stringify(value ?? null);
+  } catch {
+    return "null";
   }
 }
 
@@ -55,12 +68,10 @@ function safeParse<T>(raw: string | null): T | null {
 export async function kvGetJSON<T = Json>(key: string): Promise<T | null> {
   if (!key) return null;
 
-  // Upstash first
-  if (redis && redisHealthy) {
+  if (isRedisAllowedNow()) {
     try {
-      const raw = (await redis.get<string>(key)) ?? null;
-      const parsed = safeParse<T>(raw);
-      return parsed;
+      const raw = (await redis!.get<string>(key)) ?? null;
+      return safeParse<T>(raw);
     } catch (err) {
       markRedisFailed(err, "kvGetJSON");
     }
@@ -83,11 +94,11 @@ export async function kvGetJSON<T = Json>(key: string): Promise<T | null> {
 export async function kvSetJSON(key: string, value: Json): Promise<void> {
   if (!key) return;
 
-  const raw = JSON.stringify(value ?? null);
+  const raw = safeStringify(value);
 
-  if (redis && redisHealthy) {
+  if (isRedisAllowedNow()) {
     try {
-      await redis.set(key, raw);
+      await redis!.set(key, raw);
       return;
     } catch (err) {
       markRedisFailed(err, "kvSetJSON");
@@ -95,6 +106,61 @@ export async function kvSetJSON(key: string, value: Json): Promise<void> {
   }
 
   memoryStore.set(key, raw);
+}
+
+/**
+ * STRICT read:
+ * - If Upstash is configured, ONLY read from Upstash.
+ * - If Upstash fails, throw (do NOT silently fall back).
+ * - If Upstash is not configured, fall back to memory.
+ */
+export async function kvGetJSONStrict<T = Json>(key: string): Promise<T | null> {
+  if (!key) return null;
+
+  if (!redis) {
+    const raw = memoryStore.get(key) ?? null;
+    return safeParse<T>(raw);
+  }
+
+  if (!isRedisAllowedNow()) {
+    throw new Error("Upstash temporarily unavailable (cooldown).");
+  }
+
+  try {
+    const raw = (await redis.get<string>(key)) ?? null;
+    return safeParse<T>(raw);
+  } catch (err) {
+    markRedisFailed(err, "kvGetJSONStrict");
+    throw new Error("Upstash read failed.");
+  }
+}
+
+/**
+ * STRICT write:
+ * - If Upstash is configured, ONLY write to Upstash.
+ * - If Upstash fails, throw (so callers can show error and retry).
+ * - If Upstash is not configured, fall back to memory.
+ */
+export async function kvSetJSONStrict(key: string, value: Json): Promise<void> {
+  if (!key) return;
+
+  const raw = safeStringify(value);
+
+  if (!redis) {
+    memoryStore.set(key, raw);
+    return;
+  }
+
+  if (!isRedisAllowedNow()) {
+    throw new Error("Upstash temporarily unavailable (cooldown).");
+  }
+
+  try {
+    await redis.set(key, raw);
+  } catch (err) {
+    markRedisFailed(err, "kvSetJSONStrict");
+    throw new Error("Upstash write failed.");
+  }
 }
 
 /**
@@ -108,9 +174,9 @@ export async function kvDebugGetRaw(key: string): Promise<{
 }> {
   if (!key) return { key, raw: null, parsed: null, source: "memory" };
 
-  if (redis && redisHealthy) {
+  if (isRedisAllowedNow()) {
     try {
-      const raw = (await redis.get<string>(key)) ?? null;
+      const raw = (await redis!.get<string>(key)) ?? null;
       return { key, raw, parsed: safeParse(raw), source: "upstash" };
     } catch (err) {
       markRedisFailed(err, "kvDebugGetRaw");

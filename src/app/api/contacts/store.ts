@@ -1,6 +1,6 @@
 // src/app/api/contacts/store.ts
 import "server-only";
-import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
+import { kvGetJSONStrict, kvSetJSONStrict } from "@/lib/kv/redis";
 
 export type Contact = {
   id: string;
@@ -25,11 +25,14 @@ export async function listContacts(roomId: string): Promise<Contact[]> {
   const rid = normalizeRoomId(roomId);
   if (!rid) return [];
 
-  const items = (await kvGetJSON<Contact[]>(keyForRoom(rid))) ?? [];
+  const items = (await kvGetJSONStrict<Contact[]>(keyForRoom(rid))) ?? [];
   return Array.isArray(items) ? items : [];
 }
 
-export async function addContact(roomId: string, input: { name: string; phone: string }) {
+export async function addContact(
+  roomId: string,
+  input: { name: string; phone: string }
+) {
   const rid = normalizeRoomId(roomId);
   if (!rid) throw new Error("Missing roomId");
 
@@ -49,7 +52,6 @@ export async function addContact(roomId: string, input: { name: string; phone: s
 
   const current = await listContacts(rid);
 
-  // De-dupe by normalized phone + name (best-effort)
   const exists = current.some(
     (c) =>
       c.name.trim().toLowerCase() === name.toLowerCase() &&
@@ -57,7 +59,9 @@ export async function addContact(roomId: string, input: { name: string; phone: s
   );
 
   const next = exists ? current : [contact, ...current].slice(0, 200);
-  await kvSetJSON(keyForRoom(rid), next);
+
+  // ✅ STRICT: must persist to Upstash when configured
+  await kvSetJSONStrict(keyForRoom(rid), next);
 
   return { contact, list: next };
 }
@@ -70,7 +74,9 @@ export async function deleteContact(roomId: string, contactId: string) {
 
   const current = await listContacts(rid);
   const next = current.filter((c) => c.id !== cid);
-  await kvSetJSON(keyForRoom(rid), next);
+
+  // ✅ STRICT: must persist to Upstash when configured
+  await kvSetJSONStrict(keyForRoom(rid), next);
 
   return { removed: current.length !== next.length, list: next };
 }
