@@ -52,6 +52,15 @@ type Contact = {
   createdAt: string;
 };
 
+type LastLocation = {
+  roomId: string;
+  lat: number;
+  lng: number;
+  accuracy?: number | null;
+  source?: string;
+  updatedAt: string;
+};
+
 function normalizePhoneForUX(phone?: string | null) {
   return String(phone || "").trim();
 }
@@ -75,10 +84,8 @@ export default function MobileVoicePage() {
   const [callError, setCallError] = useState<string | null>(null);
   const [profilePhone, setProfilePhone] = useState<string>("");
 
-  // Twilio 5-min UX limit (kept as-is for now; M18 coaching refinement postponed)
-  const [twilioSecondsLeft, setTwilioSecondsLeft] = useState<number | null>(
-    null
-  );
+  // Twilio 5-min UX limit
+  const [twilioSecondsLeft, setTwilioSecondsLeft] = useState<number | null>(null);
   const twilioTimerRef = useRef<number | null>(null);
 
   // ✅ M19b: contacts picker state
@@ -139,9 +146,7 @@ export default function MobileVoicePage() {
 
       try {
         const encoded = encodeURIComponent(rid);
-        const res = await fetch(`/api/users/room/${encoded}`, {
-          cache: "no-store",
-        });
+        const res = await fetch(`/api/users/room/${encoded}`, { cache: "no-store" });
         const data = (await res.json().catch(() => ({} as any))) as {
           ok?: boolean;
           item?: RoomUser;
@@ -152,12 +157,10 @@ export default function MobileVoicePage() {
           setProfilePhone(phone);
           setCallStatus("idle");
         }
-      } catch (e: any) {
+      } catch {
         if (!cancelled) {
           setCallStatus("error");
-          setCallError(
-            "Could not load your profile. Please refresh and try again."
-          );
+          setCallError("Could not load your profile. Please refresh and try again.");
         }
       }
     }
@@ -181,9 +184,7 @@ export default function MobileVoicePage() {
 
       try {
         const encoded = encodeURIComponent(rid);
-        const res = await fetch(`/api/contacts?roomId=${encoded}`, {
-          cache: "no-store",
-        });
+        const res = await fetch(`/api/contacts?roomId=${encoded}`, { cache: "no-store" });
 
         const data = (await res.json().catch(() => ({} as any))) as {
           ok?: boolean;
@@ -199,17 +200,11 @@ export default function MobileVoicePage() {
 
         if (!cancelled) {
           setContacts(items);
-
-          // Auto-select first contact if none selected yet
-          if (!selectedContactId && items.length > 0) {
-            setSelectedContactId(items[0].id);
-          }
+          if (!selectedContactId && items.length > 0) setSelectedContactId(items[0].id);
         }
       } catch (e: any) {
         if (!cancelled) {
-          setContactsError(
-            typeof e?.message === "string" ? e.message : "Could not load contacts."
-          );
+          setContactsError(typeof e?.message === "string" ? e.message : "Could not load contacts.");
         }
       } finally {
         if (!cancelled) setContactsLoading(false);
@@ -228,10 +223,7 @@ export default function MobileVoicePage() {
     setEvents((prev) =>
       [
         {
-          ts: new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
+          ts: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           type,
           text,
         },
@@ -246,11 +238,7 @@ export default function MobileVoicePage() {
       await fetch("/api/voice/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          roomId,
-          status: next,
-          lastError: lastError ?? null,
-        }),
+        body: JSON.stringify({ roomId, status: next, lastError: lastError ?? null }),
       });
     } catch {
       // non-blocking
@@ -286,13 +274,24 @@ export default function MobileVoicePage() {
   async function fetchThreadContext(roomIdVal: string) {
     try {
       const encoded = encodeURIComponent(roomIdVal);
-      const res = await fetch(`/api/chat/${encoded}?t=${Date.now()}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(`/api/chat/${encoded}?t=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) return "";
       const data = await res.json().catch(() => ({} as any));
       const items = Array.isArray(data?.items) ? (data.items as ChatMessage[]) : [];
       return formatThreadForVoice(items, 14);
+    } catch {
+      return "";
+    }
+  }
+
+  async function fetchLocationLine(rid: string): Promise<string> {
+    try {
+      const res = await fetch(`/api/location?roomId=${encodeURIComponent(rid)}`, { cache: "no-store" });
+      const j = (await res.json().catch(() => ({} as any))) as { ok?: boolean; item?: LastLocation | null };
+      const loc = j?.item;
+      if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng) || !loc.updatedAt) return "";
+      const acc = loc.accuracy == null ? "n/a" : String(loc.accuracy);
+      return `User location: lat=${loc.lat}, lng=${loc.lng} (accuracy ${acc}m), updatedAt=${loc.updatedAt}`;
     } catch {
       return "";
     }
@@ -326,12 +325,11 @@ export default function MobileVoicePage() {
         ? `Caller name: ${name}.`
         : "Caller name unknown.";
 
-    const interestLine = interest
-      ? `Caller preferences/context: ${interest}.`
-      : "";
+    const interestLine = interest ? `Caller preferences/context: ${interest}.` : "";
     const tagsLine = tags.length ? `Caller tags: ${tags.join(", ")}.` : "";
 
     const thread = await fetchThreadContext(roomId);
+    const locLine = await fetchLocationLine(roomId);
 
     safeSend({
       type: "session.update",
@@ -356,6 +354,7 @@ export default function MobileVoicePage() {
           identityLine,
           interestLine,
           tagsLine,
+          locLine,
           thread ? `SHARED MEMORY (recent conversation):\n${thread}` : "",
         ]
           .filter(Boolean)
@@ -364,7 +363,7 @@ export default function MobileVoicePage() {
       },
     });
 
-    logEvent("session.update", "WebRTC voice persona configured (wait for user).");
+    logEvent("session.update", locLine ? "WebRTC configured + location injected." : "WebRTC configured (no location yet).");
   }
 
   function absorbRealtimeEvent(msg: any) {
@@ -394,10 +393,7 @@ export default function MobileVoicePage() {
       return;
     }
 
-    if (
-      type.includes("response.output_audio_transcript") &&
-      type.includes("delta")
-    ) {
+    if (type.includes("response.output_audio_transcript") && type.includes("delta")) {
       if (text) assistantTranscriptBufRef.current += text;
       return;
     }
@@ -417,25 +413,17 @@ export default function MobileVoicePage() {
   }
 
   async function stopInternalWebRTC() {
-    try {
-      dcRef.current?.close();
-    } catch {}
+    try { dcRef.current?.close(); } catch {}
     dcRef.current = null;
 
-    try {
-      pcRef.current?.close();
-    } catch {}
+    try { pcRef.current?.close(); } catch {}
     pcRef.current = null;
 
-    try {
-      localStreamRef.current?.getTracks().forEach((t) => t.stop());
-    } catch {}
+    try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
     localStreamRef.current = null;
 
     if (remoteAudioRef.current) {
-      try {
-        remoteAudioRef.current.pause();
-      } catch {}
+      try { remoteAudioRef.current.pause(); } catch {}
       remoteAudioRef.current.srcObject = null;
     }
   }
@@ -466,7 +454,6 @@ export default function MobileVoicePage() {
     }, 1000);
   }
 
-  // --- Twilio fallback call ---
   async function callMeTwilioFallback(): Promise<boolean> {
     setCallError(null);
 
@@ -481,9 +468,7 @@ export default function MobileVoicePage() {
 
     try {
       const encoded = encodeURIComponent(roomId);
-      const res = await fetch(`/api/users/room/${encoded}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(`/api/users/room/${encoded}`, { cache: "no-store" });
       const data = await res.json().catch(() => ({} as any));
       phone = normalizePhoneForUX(data?.item?.phone ?? "");
       setProfilePhone(phone);
@@ -527,10 +512,7 @@ export default function MobileVoicePage() {
       setCallStatus("called");
       setMode("twilio");
       startTwilioCountdown();
-      logEvent(
-        "twilio_fallback",
-        `Call requested. TwilioSid: ${j?.twilioSid ?? "n/a"}`
-      );
+      logEvent("twilio_fallback", `Call requested. TwilioSid: ${j?.twilioSid ?? "n/a"}`);
       return true;
     } catch {
       setCallStatus("error");
@@ -539,7 +521,6 @@ export default function MobileVoicePage() {
     }
   }
 
-  // --- WebRTC start (returns success boolean) ---
   async function startWebRTC(): Promise<boolean> {
     setError(null);
 
@@ -565,10 +546,7 @@ export default function MobileVoicePage() {
     logEvent("connecting", "Starting microphone + WebRTC session…");
 
     try {
-      const localStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      });
+      const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       localStreamRef.current = localStream;
 
       const pc = new RTCPeerConnection();
@@ -587,8 +565,7 @@ export default function MobileVoicePage() {
         logEvent("remote_track", "Remote audio connected.");
       };
 
-      for (const track of localStream.getTracks())
-        pc.addTrack(track, localStream);
+      for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
 
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
@@ -609,8 +586,7 @@ export default function MobileVoicePage() {
           let preview: string | undefined;
           if (typeof msg?.delta === "string") preview = msg.delta;
           if (typeof msg?.text === "string") preview = msg.text;
-          if (typeof msg?.error?.message === "string")
-            preview = msg.error.message;
+          if (typeof msg?.error?.message === "string") preview = msg.error.message;
           logEvent(t, preview);
           absorbRealtimeEvent(msg);
         } catch {
@@ -644,9 +620,7 @@ export default function MobileVoicePage() {
       await setVoiceSessionStatus("active");
       return true;
     } catch (e: any) {
-      console.error("[voice] start error:", e);
-      const msg =
-        typeof e?.message === "string" ? e.message : "WebRTC start failed.";
+      const msg = typeof e?.message === "string" ? e.message : "WebRTC start failed.";
       setError(msg);
       setStatus("error");
       logEvent("webrtc_failed", msg);
@@ -656,7 +630,6 @@ export default function MobileVoicePage() {
     }
   }
 
-  // --- M18: Single “Start Concierge” orchestrator ---
   async function startConcierge() {
     clearTwilioTimer();
     setCallError(null);
@@ -695,7 +668,6 @@ export default function MobileVoicePage() {
     return `${m}:${String(s).padStart(2, "0")}`;
   }
 
-  // ✅ M19b: open confirm modal
   function requestCallSelectedContact() {
     setCallContactError(null);
     if (!selectedContact) {
@@ -705,7 +677,6 @@ export default function MobileVoicePage() {
     setConfirmOpen(true);
   }
 
-  // ✅ M19b: confirm and place call
   async function confirmCallSelectedContact() {
     setCallContactError(null);
 
@@ -742,13 +713,9 @@ export default function MobileVoicePage() {
         return;
       }
 
-      logEvent(
-        "call_contact",
-        `Calling ${selectedContact.name}. TwilioSid: ${j?.twilioSid ?? "n/a"}`
-      );
-
+      logEvent("call_contact", `Calling ${selectedContact.name}. TwilioSid: ${j?.twilioSid ?? "n/a"}`);
       setConfirmOpen(false);
-    } catch (e: any) {
+    } catch {
       setCallContactError("Call request failed. Please try again.");
     } finally {
       setConfirming(false);
@@ -770,7 +737,6 @@ export default function MobileVoicePage() {
       </header>
 
       <section className="px-4 py-4 space-y-3">
-        {/* M18 single entrypoint */}
         <div className="p-3 rounded-2xl bg-slate-900/60 border border-slate-800">
           <p className="text-sm font-semibold">Start Concierge</p>
           <p className="text-xs text-slate-400 mt-1">
@@ -780,11 +746,7 @@ export default function MobileVoicePage() {
           <button
             type="button"
             onClick={startConcierge}
-            disabled={
-              status === "connecting" ||
-              status === "connected" ||
-              callStatus === "calling"
-            }
+            disabled={status === "connecting" || status === "connected" || callStatus === "calling"}
             className={[
               "mt-3 w-full px-4 py-2 rounded-full text-sm font-semibold text-white",
               "bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600",
@@ -807,17 +769,13 @@ export default function MobileVoicePage() {
 
           <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
             <span>
-              Mode:{" "}
-              <span className="text-white">
-                {mode === "idle" ? "—" : mode.toUpperCase()}
-              </span>
+              Mode: <span className="text-white">{mode === "idle" ? "—" : mode.toUpperCase()}</span>
             </span>
             <Link href="/mobile/profile" className="underline text-slate-200">
               Profile
             </Link>
           </div>
 
-          {/* Twilio fallback info + limit */}
           {mode === "twilio" && (
             <div className="mt-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
               <p className="text-xs text-slate-200 font-medium">
@@ -829,28 +787,18 @@ export default function MobileVoicePage() {
 
               <div className="mt-2 flex items-center justify-between">
                 <span className="text-xs text-slate-300">
-                  Time left:{" "}
-                  <span className="font-mono text-white">
-                    {fmtCountdown(twilioSecondsLeft)}
-                  </span>
+                  Time left: <span className="font-mono text-white">{fmtCountdown(twilioSecondsLeft)}</span>
                 </span>
 
-                <Link
-                  href="/mobile/chat"
-                  className="text-xs underline text-slate-200"
-                >
+                <Link href="/mobile/chat" className="text-xs underline text-slate-200">
                   Open chat now →
                 </Link>
               </div>
             </div>
           )}
 
-          {/* Phone info */}
           <div className="mt-2 text-[11px] text-slate-400">
-            Saved phone:{" "}
-            <span className="text-slate-200">
-              {profilePhone ? profilePhone : "No phone saved"}
-            </span>
+            Saved phone: <span className="text-slate-200">{profilePhone ? profilePhone : "No phone saved"}</span>
           </div>
 
           {callError && (
@@ -862,12 +810,9 @@ export default function MobileVoicePage() {
             </p>
           )}
 
-          {error && (
-            <p className="mt-2 text-xs text-amber-200">WebRTC error: {error}</p>
-          )}
+          {error && <p className="mt-2 text-xs text-amber-200">WebRTC error: {error}</p>}
         </div>
 
-        {/* ✅ M19b: Call a contact */}
         <div className="p-3 rounded-2xl bg-slate-900/60 border border-slate-800">
           <p className="text-sm font-semibold">Call a contact</p>
           <p className="text-xs text-slate-400 mt-1">
@@ -887,40 +832,35 @@ export default function MobileVoicePage() {
               .
             </p>
           ) : (
-            <>
-              <div className="mt-3 space-y-2">
-                <label className="text-[11px] text-slate-400">
-                  Select contact
-                </label>
-                <select
-                  value={selectedContactId}
-                  onChange={(e) => setSelectedContactId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none"
-                >
-                  {contacts.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} — {c.phone}
-                    </option>
-                  ))}
-                </select>
+            <div className="mt-3 space-y-2">
+              <label className="text-[11px] text-slate-400">Select contact</label>
+              <select
+                value={selectedContactId}
+                onChange={(e) => setSelectedContactId(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none"
+              >
+                {contacts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} — {c.phone}
+                  </option>
+                ))}
+              </select>
 
-                <button
-                  type="button"
-                  onClick={requestCallSelectedContact}
-                  className="w-full mt-2 px-4 py-2 rounded-full bg-purple-600 text-sm font-semibold text-white hover:bg-purple-500"
-                >
-                  Call selected contact
-                </button>
+              <button
+                type="button"
+                onClick={requestCallSelectedContact}
+                className="w-full mt-2 px-4 py-2 rounded-full bg-purple-600 text-sm font-semibold text-white hover:bg-purple-500"
+              >
+                Call selected contact
+              </button>
 
-                {callContactError && (
-                  <p className="text-[11px] text-amber-200">{callContactError}</p>
-                )}
-              </div>
-            </>
+              {callContactError && (
+                <p className="text-[11px] text-amber-200">{callContactError}</p>
+              )}
+            </div>
           )}
         </div>
 
-        {/* WebRTC controls (only meaningful in WebRTC mode) */}
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -950,9 +890,7 @@ export default function MobileVoicePage() {
           </div>
 
           {events.length === 0 ? (
-            <p className="text-xs text-slate-400 mt-2">
-              No events yet. Press Start to begin.
-            </p>
+            <p className="text-xs text-slate-400 mt-2">No events yet. Press Start to begin.</p>
           ) : (
             <ul className="mt-2 space-y-2">
               {events.map((e, idx) => (
@@ -960,10 +898,7 @@ export default function MobileVoicePage() {
                   <span className="text-slate-500 font-mono mr-2">{e.ts}</span>
                   <span className="text-slate-200">{e.type}</span>
                   {e.text ? (
-                    <span className="text-slate-400">
-                      {" "}
-                      — {String(e.text).slice(0, 180)}
-                    </span>
+                    <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span>
                   ) : null}
                 </li>
               ))}
@@ -976,7 +911,6 @@ export default function MobileVoicePage() {
         </div>
       </section>
 
-      {/* ✅ Confirm modal */}
       {confirmOpen && (
         <div
           className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-40"
@@ -999,14 +933,8 @@ export default function MobileVoicePage() {
 
             <p className="text-sm text-slate-700">
               Call{" "}
-              <span className="font-semibold">
-                {selectedContact?.name ?? "this contact"}
-              </span>{" "}
-              at{" "}
-              <span className="font-mono">
-                {selectedContact?.phone ?? ""}
-              </span>
-              ?
+              <span className="font-semibold">{selectedContact?.name ?? "this contact"}</span>{" "}
+              at <span className="font-mono">{selectedContact?.phone ?? ""}</span>?
             </p>
 
             {callContactError && (

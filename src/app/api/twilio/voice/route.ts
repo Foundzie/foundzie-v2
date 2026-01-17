@@ -1,6 +1,7 @@
 // src/app/api/twilio/voice/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { kvSetJSON } from "@/lib/kv/redis";
+import { getLastLocation } from "@/app/api/location/store";
 
 export const dynamic = "force-dynamic";
 
@@ -90,15 +91,19 @@ type StreamTwimlOpts = {
   mode: Mode;
   role: Role;
 
-  // For M16 orchestration:
-  sessionId?: string; // shared across both legs
-  callerCallSid?: string; // caller leg callSid (so status route can resume it)
+  sessionId?: string;
+  callerCallSid?: string;
 
-  // Prompt/task for bridge:
   task?: string;
-
-  // personal | business (controls brand line rules inside bridge/agent)
   calleeType?: "personal" | "business";
+
+  // ✅ M20
+  location?: {
+    lat: number;
+    lng: number;
+    accuracy?: number | null;
+    updatedAt?: string;
+  } | null;
 };
 
 function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
@@ -112,13 +117,14 @@ function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
   const safeMode = escapeForXml(opts.mode);
   const safeRole = escapeForXml(opts.role);
 
-  const calleeType = (opts.calleeType || "personal").trim() as "personal" | "business";
+  const calleeType = (opts.calleeType || "personal").trim() as
+    | "personal"
+    | "business";
   const safeCalleeType = escapeForXml(calleeType);
 
-  // IMPORTANT:
-  // If sessionId is missing, we generate one on the server so Twilio customParameters are NEVER null.
-  // This fixes your "sessionId: null" Fly logs and makes M16 outcome keying reliable.
-  const sessionId = (opts.sessionId || "").trim() || `m16_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const sessionId =
+    (opts.sessionId || "").trim() ||
+    `m16_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const callerCallSid = (opts.callerCallSid || "").trim();
 
   const safeSessionId = escapeForXml(sessionId);
@@ -127,11 +133,9 @@ function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
   const task = (opts.task || "").trim().slice(0, 900);
   const safeTask = escapeForXml(task);
 
-  // Twilio call lifecycle callback (NOT media stream callback)
   const statusCb = `${base}/api/twilio/status`;
 
   if (!wss) {
-    // Callee leg should fail fast + hangup (caller leg can be resumed by status logic)
     if (opts.role === "callee") {
       return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -142,7 +146,6 @@ function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
 </Response>`;
     }
 
-    // Caller leg fallback: gather loop
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   ${buildGatherFallbackVerbs(`${opts.marker} wss=EMPTY`)}
@@ -151,13 +154,16 @@ function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
 
   const gatherFallbackUrl = `${base}/api/twilio/gather`;
 
-  // Critical behavioral split:
-  // - caller_stream: keep call alive if stream ends
-  // - callee_stream: hang up cleanly when stream ends
   const afterStream =
     opts.role === "callee"
       ? `<Hangup/>`
       : `<Redirect method="POST">${escapeForXml(gatherFallbackUrl)}</Redirect>`;
+
+  const loc = opts.location ?? null;
+  const locLat = loc ? String(loc.lat) : "";
+  const locLng = loc ? String(loc.lng) : "";
+  const locAcc = loc && loc.accuracy != null ? String(loc.accuracy) : "";
+  const locUpdated = loc && loc.updatedAt ? String(loc.updatedAt) : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -175,7 +181,6 @@ function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
 
       ${safeRoom ? `<Parameter name="roomId" value="${safeRoom}" />` : ``}
 
-      <!-- IMPORTANT: callSid/from may be blank on GET; bridge must fall back to start.callSid -->
       ${safeCallSid ? `<Parameter name="callSid" value="${safeCallSid}" />` : ``}
       ${safeFrom ? `<Parameter name="from" value="${safeFrom}" />` : ``}
 
@@ -183,6 +188,12 @@ function buildStreamOnlyTwiml(opts: StreamTwimlOpts) {
       ${safeCallerCallSid ? `<Parameter name="callerCallSid" value="${safeCallerCallSid}" />` : ``}
 
       ${safeTask ? `<Parameter name="task" value="${safeTask}" />` : ``}
+
+      <!-- ✅ M20 location (best-effort) -->
+      ${locLat ? `<Parameter name="locLat" value="${escapeForXml(locLat)}" />` : ``}
+      ${locLng ? `<Parameter name="locLng" value="${escapeForXml(locLng)}" />` : ``}
+      ${locAcc ? `<Parameter name="locAcc" value="${escapeForXml(locAcc)}" />` : ``}
+      ${locUpdated ? `<Parameter name="locUpdatedAt" value="${escapeForXml(locUpdated)}" />` : ``}
     </Stream>
   </Connect>
 
@@ -218,18 +229,6 @@ async function persistActiveCall(roomId: string, callSid: string, from: string) 
   }
 }
 
-/**
- * Mode parsing rules:
- * - New official:
- *   - mode=caller_stream  -> role=caller
- *   - mode=callee_stream  -> role=callee
- *   - mode=message        -> special TTS + resume
- *
- * - Backward compatible:
- *   - mode=callee -> callee_stream
- *   - mode=relay  -> callee_stream
- *   - (empty)     -> caller_stream
- */
 function parseModeRole(url: URL): { mode: Mode; role: Role; legacyModeRaw: string } {
   const raw = (url.searchParams.get("mode") || "").trim();
 
@@ -238,11 +237,10 @@ function parseModeRole(url: URL): { mode: Mode; role: Role; legacyModeRaw: strin
   if (raw === "callee_stream") return { mode: "callee_stream", role: "callee", legacyModeRaw: raw };
   if (raw === "caller_stream") return { mode: "caller_stream", role: "caller", legacyModeRaw: raw };
 
-  // compatibility
-  if (raw === "callee" || raw === "relay")
+  if (raw === "callee" || raw === "relay") {
     return { mode: "callee_stream", role: "callee", legacyModeRaw: raw };
+  }
 
-  // default
   return { mode: "caller_stream", role: "caller", legacyModeRaw: raw || "default" };
 }
 
@@ -265,7 +263,6 @@ export async function GET(req: NextRequest) {
   const task = (url.searchParams.get("task") || "").trim();
   const calleeType = parseCalleeType(url);
 
-  // M16 orchestration params
   const sessionId = (url.searchParams.get("sessionId") || "").trim();
   const callerCallSid = (url.searchParams.get("callerCallSid") || "").trim();
 
@@ -275,6 +272,8 @@ export async function GET(req: NextRequest) {
 
   const wss = (process.env.TWILIO_MEDIA_STREAM_WSS_URL || "").trim();
   const marker = `mode=${mode} legacyMode=${legacyModeRaw} sha=${shaMarker()} wss=${wss ? "SET" : "EMPTY"} method=GET`;
+
+  const location = roomId ? await getLastLocation(roomId).catch(() => null) : null;
 
   return twiml(
     buildStreamOnlyTwiml({
@@ -286,6 +285,9 @@ export async function GET(req: NextRequest) {
       calleeType,
       sessionId: sessionId || undefined,
       callerCallSid: callerCallSid || undefined,
+      location: location
+        ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy, updatedAt: location.updatedAt }
+        : null,
     })
   );
 }
@@ -300,7 +302,6 @@ export async function POST(req: NextRequest) {
   const task = (url.searchParams.get("task") || "").trim();
   const calleeType = parseCalleeType(url);
 
-  // M16 orchestration params
   const sessionId = (url.searchParams.get("sessionId") || "").trim();
   const callerCallSid = (url.searchParams.get("callerCallSid") || "").trim();
 
@@ -318,13 +319,15 @@ export async function POST(req: NextRequest) {
   const callSid = typeof callSidRaw === "string" ? callSidRaw.trim() : "";
   const from = typeof fromRaw === "string" ? fromRaw.trim() : "";
 
-  // RoomId logic stays exactly as you had it
-  const roomId = roomIdFromQuery || (callSid ? `call:${callSid}` : from ? `phone:${from}` : "");
+  const roomId =
+    roomIdFromQuery ||
+    (callSid ? `call:${callSid}` : from ? `phone:${from}` : "");
 
-  // Only map active caller leg
   if (role === "caller") {
     await persistActiveCall(roomId, callSid, from);
   }
+
+  const location = roomId ? await getLastLocation(roomId).catch(() => null) : null;
 
   return twiml(
     buildStreamOnlyTwiml({
@@ -338,6 +341,9 @@ export async function POST(req: NextRequest) {
       calleeType,
       sessionId: sessionId || undefined,
       callerCallSid: callerCallSid || undefined,
+      location: location
+        ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy, updatedAt: location.updatedAt }
+        : null,
     })
   );
 }

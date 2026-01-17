@@ -44,6 +44,35 @@ function pickPlaces(json: PlacesResponse): Place[] {
   return [];
 }
 
+const VISITOR_ID_STORAGE_KEY = "foundzie_visitor_id";
+
+function createVisitorId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `visitor-${crypto.randomUUID()}`;
+  }
+  return `visitor-${Date.now().toString(16)}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+}
+
+async function saveLocationToBackend(roomId: string, lat: number, lng: number, accuracy?: number) {
+  try {
+    await fetch("/api/location", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        roomId,
+        lat,
+        lng,
+        accuracy: typeof accuracy === "number" ? accuracy : undefined,
+        source: "browser",
+      }),
+    });
+  } catch {
+    // non-blocking
+  }
+}
+
 export default function NearbyPage() {
   const [places, setPlaces] = useState<Place[]>([]);
   const [loading, setLoading] = useState(true);
@@ -94,11 +123,27 @@ export default function NearbyPage() {
         }
       }
 
+      // ✅ Ensure visitor id exists
+      let rid = "";
+      if (typeof window !== "undefined") {
+        rid = window.localStorage.getItem(VISITOR_ID_STORAGE_KEY) || "";
+        if (!rid) {
+          rid = createVisitorId();
+          window.localStorage.setItem(VISITOR_ID_STORAGE_KEY, rid);
+        }
+      }
+
       if (typeof navigator !== "undefined" && navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
-          (pos) => {
+          async (pos) => {
             const lat = pos.coords.latitude;
             const lng = pos.coords.longitude;
+
+            // ✅ M20: store location for voice/twilio context
+            if (rid) {
+              await saveLocationToBackend(rid, lat, lng, pos.coords.accuracy);
+            }
+
             const url = `/api/places?lat=${lat}&lng=${lng}&mode=${modeParam}`;
             fetchPlaces(url);
           },
@@ -237,7 +282,6 @@ export default function NearbyPage() {
       </header>
 
       <div className="mx-auto max-w-md px-4 pt-4">
-        {/* Interest box */}
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <p className="text-[12px] text-slate-600">
             Tell Foundzie what you&apos;re into and we&apos;ll use it to improve suggestions.
@@ -277,7 +321,6 @@ export default function NearbyPage() {
           </div>
         </section>
 
-        {/* List */}
         <section className="mt-4">
           {loading ? (
             <p className="text-center py-10 text-slate-500 text-[13px]">Loading…</p>

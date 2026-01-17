@@ -31,6 +31,35 @@ function pickPlaces(json: PlacesResponse): Place[] {
   return [];
 }
 
+const VISITOR_ID_STORAGE_KEY = "foundzie_visitor_id";
+
+function createVisitorId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `visitor-${crypto.randomUUID()}`;
+  }
+  return `visitor-${Date.now().toString(16)}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+}
+
+async function saveLocationToBackend(roomId: string, lat: number, lng: number, accuracy?: number) {
+  try {
+    await fetch("/api/location", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        roomId,
+        lat,
+        lng,
+        accuracy: typeof accuracy === "number" ? accuracy : undefined,
+        source: "browser",
+      }),
+    });
+  } catch {
+    // non-blocking
+  }
+}
+
 export default function MobileExplorePage() {
   const [query, setQuery] = useState("");
   const [places, setPlaces] = useState<Place[]>([]);
@@ -71,11 +100,27 @@ export default function MobileExplorePage() {
         }
       }
 
+      // ✅ Ensure visitor id exists
+      let rid = "";
+      if (typeof window !== "undefined") {
+        rid = window.localStorage.getItem(VISITOR_ID_STORAGE_KEY) || "";
+        if (!rid) {
+          rid = createVisitorId();
+          window.localStorage.setItem(VISITOR_ID_STORAGE_KEY, rid);
+        }
+      }
+
       if (typeof navigator !== "undefined" && navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
-          (pos) => {
+          async (pos) => {
             const lat = pos.coords.latitude;
             const lng = pos.coords.longitude;
+
+            // ✅ M20: store location for voice/twilio context
+            if (rid) {
+              await saveLocationToBackend(rid, lat, lng, pos.coords.accuracy);
+            }
+
             const url = `/api/places?lat=${lat}&lng=${lng}&mode=${modeParam}`;
             fetchPlaces(url);
           },
@@ -96,12 +141,14 @@ export default function MobileExplorePage() {
   const filtered = places.filter((p) => {
     if (!query) return true;
     const q = query.toLowerCase();
-    return p.name.toLowerCase().includes(q) || (p.category || "").toLowerCase().includes(q);
+    return (
+      p.name.toLowerCase().includes(q) ||
+      (p.category || "").toLowerCase().includes(q)
+    );
   });
 
   return (
     <main className="min-h-screen bg-white text-slate-900 pb-24">
-      {/* Header */}
       <header className="sticky top-0 z-10 bg-white/90 backdrop-blur-md border-b border-slate-200">
         <div className="mx-auto max-w-md px-4 pt-4 pb-3">
           <div className="flex items-center justify-between">
@@ -145,7 +192,6 @@ export default function MobileExplorePage() {
         </div>
       </header>
 
-      {/* Content */}
       <div className="mx-auto max-w-md px-4 pt-4">
         {loading ? (
           <p className="text-center py-10 text-slate-500 text-[13px]">Loading…</p>
@@ -176,7 +222,10 @@ export default function MobileExplorePage() {
                           <p className="mt-0.5 text-[12px] text-slate-600">
                             {p.category}
                             {p.distanceMiles != null && (
-                              <span className="text-slate-400"> • {p.distanceMiles.toFixed(1)} mi</span>
+                              <span className="text-slate-400">
+                                {" "}
+                                • {p.distanceMiles.toFixed(1)} mi
+                              </span>
                             )}
                           </p>
 
@@ -184,7 +233,10 @@ export default function MobileExplorePage() {
                             <p className="mt-1 text-[12px] text-slate-600">
                               ★ {p.rating.toFixed(1)}
                               {typeof p.reviews === "number" && p.reviews > 0 && (
-                                <span className="text-slate-400"> • {p.reviews} reviews</span>
+                                <span className="text-slate-400">
+                                  {" "}
+                                  • {p.reviews} reviews
+                                </span>
                               )}
                             </p>
                           )}
