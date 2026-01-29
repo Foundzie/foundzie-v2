@@ -178,6 +178,11 @@ function normalizeToE164Maybe(phoneRaw) {
   return { ok: false, e164: "", reason: `invalid_format digits=${digits.length}` };
 }
 
+function toNumMaybe(x) {
+  const n = Number(String(x ?? "").trim());
+  return Number.isFinite(n) ? n : null;
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -212,6 +217,13 @@ wss.on("connection", (twilioWs, req) => {
     task: "",
     sessionId: "",
     callerCallSid: "",
+
+    // ✅ M20: location passthrough from Twilio customParameters
+    locLat: null,
+    locLng: null,
+    locAcc: null,
+    locUpdatedAt: "",
+    locLabel: "", // best-effort human label
   };
 
   // OpenAI socket + state
@@ -299,6 +311,13 @@ wss.on("connection", (twilioWs, req) => {
       sessionId: custom.sessionId || null,
       model: REALTIME_MODEL,
       voice: REALTIME_VOICE,
+
+      // ✅ M20
+      locLat: custom.locLat,
+      locLng: custom.locLng,
+      locAcc: custom.locAcc,
+      locUpdatedAt: custom.locUpdatedAt || null,
+      locLabel: custom.locLabel || null,
     });
 
     try {
@@ -316,6 +335,46 @@ wss.on("connection", (twilioWs, req) => {
       (process.env.TWILIO_BASE_URL_FALLBACK || "").trim() ||
       "https://foundzie-v2.vercel.app";
     return b.replace(/\/+$/, "");
+  }
+
+  async function hydrateLocationLabelIfPossible() {
+    try {
+      if (custom.locLabel && custom.locLabel.trim()) return;
+
+      const lat = custom.locLat;
+      const lng = custom.locLng;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+      const base = getVercelBase();
+      const url = `${base}/api/location/reverse?lat=${encodeURIComponent(String(lat))}&lng=${encodeURIComponent(String(lng))}`;
+
+      const r = await fetch(url, { method: "GET" });
+      if (!r.ok) return;
+
+      const j = await r.json().catch(() => ({}));
+      const label = typeof j?.item?.label === "string" ? j.item.label.trim() : "";
+      if (label) custom.locLabel = label;
+    } catch {
+      // non-blocking
+    }
+  }
+
+  function buildLocationLineForPrompt() {
+    const lat = custom.locLat;
+    const lng = custom.locLng;
+    const acc = custom.locAcc;
+    const updatedAt = (custom.locUpdatedAt || "").trim();
+    const label = (custom.locLabel || "").trim();
+
+    if (label) {
+      return `User location: ${label}${acc != null ? ` (accuracy ${acc}m)` : ""}${updatedAt ? `, updatedAt=${updatedAt}` : ""}.`;
+    }
+
+    if (lat != null && lng != null) {
+      return `User location: lat=${lat}, lng=${lng}${acc != null ? ` (accuracy ${acc}m)` : ""}${updatedAt ? `, updatedAt=${updatedAt}` : ""}.`;
+    }
+
+    return "";
   }
 
   function toolKey(name, args) {
@@ -482,7 +541,9 @@ wss.on("connection", (twilioWs, req) => {
     if (custom.role === "callee") return { ok: false, blocked: "role_callee_tools_disabled" };
 
     const phoneRaw = String(args?.phone || "").trim();
-    const messages = Array.isArray(args?.messages) ? args.messages.map((m) => String(m || "").trim()).filter(Boolean) : [];
+    const messages = Array.isArray(args?.messages)
+      ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
+      : [];
     const legacyMessage = String(args?.message || "").trim();
     const message = messages.length ? messages.join(" ") : legacyMessage;
 
@@ -509,7 +570,7 @@ wss.on("connection", (twilioWs, req) => {
       message,
       messages: messages.length ? messages : undefined,
       calleeType: (args?.calleeType || "personal").toString(),
-      confirm: true, // IMPORTANT: bridge executes only after confirmation prompt step
+      confirm: true, // executes only after confirmation prompt step
       roomId: (args?.roomId || custom.roomId || "").toString() || "current",
       callSid: (args?.callSid || custom.callSid || "").toString() || "current",
     };
@@ -548,7 +609,11 @@ wss.on("connection", (twilioWs, req) => {
     if (!pendingTool.phone || !pendingTool.messageText) return;
 
     pendingTool.executed = true;
-    console.log("[tool] executing pending tool", { reason, phone: pendingTool.phone, message: pendingTool.messageText.slice(0, 120) });
+    console.log("[tool] executing pending tool", {
+      reason,
+      phone: pendingTool.phone,
+      message: pendingTool.messageText.slice(0, 120),
+    });
 
     const result = await runToolCall("call_third_party", {
       phone: pendingTool.phone,
@@ -559,23 +624,27 @@ wss.on("connection", (twilioWs, req) => {
       callSid: custom.callSid || "current",
     });
 
-    // Tell caller “calling now” (don’t block tool execution if response is busy)
-    const ok = createResponse(result?.ok ? `Say: "Okay—I'm calling now."` : `Say: "Sorry—something went wrong placing the call."`);
+    const ok = createResponse(
+      result?.ok ? `Say: "Okay—I'm calling now."` : `Say: "Sorry—something went wrong placing the call."`
+    );
     if (!ok) safeForceSpeak("post_tool_execute");
 
     pendingTool = null;
   }
 
   function buildLegacySessionUpdatePayload() {
+    const locLine = buildLocationLineForPrompt();
+
     const baseInstructionsCaller =
       "You are Foundzie, a lightning-fast personal concierge on a LIVE phone call. " +
-  "Speak natural, warm, confident English. Sound human, not robotic. " +
-  "Keep replies short: 1–2 sentences. Ask at most ONE follow-up question. " +
-  "Do NOT repeat greetings or re-introduce yourself after the call is connected. " +
-  "Do NOT say 'Hey this is Foundzie' unless the user asks who you are. " +
-  "IMPORTANT: Wait silently until the user speaks first if the call has just connected. " +
-  "If the user asks to call/message someone, treat them as the SAME action: place a phone call and deliver the message. " +
-  "For personal/multi-message delivery: keep message verbatim and ask for confirmation.";
+      "Speak natural, warm, confident English. Sound human, not robotic. " +
+      "Keep replies short: 1–2 sentences. Ask at most ONE follow-up question. " +
+      "Do NOT repeat greetings or re-introduce yourself after the call is connected. " +
+      "Do NOT say 'Hey this is Foundzie' unless the user asks who you are. " +
+      "IMPORTANT: Wait silently until the user speaks first if the call has just connected. " +
+      "If the user asks to call/message someone, treat them as the SAME action: place a phone call and deliver the message. " +
+      "For personal/multi-message delivery: keep message verbatim and ask for confirmation. " +
+      (locLine ? `\n\n${locLine}` : "");
 
     const baseInstructionsCallee =
       "You are Foundzie calling the RECIPIENT on a REAL phone call. " +
@@ -619,7 +688,9 @@ wss.on("connection", (twilioWs, req) => {
     };
   }
 
-  function sendSessionUpdate(ws) {
+  async function sendSessionUpdate(ws) {
+    // ✅ Ensure we try to compute a label before session.update
+    await hydrateLocationLabelIfPossible();
     const payload = buildLegacySessionUpdatePayload();
     return wsSend(ws, { type: "session.update", session: payload });
   }
@@ -693,7 +764,8 @@ wss.on("connection", (twilioWs, req) => {
         role: custom.role || "caller",
       });
 
-      sendSessionUpdate(ws);
+      // fire and forget
+      sendSessionUpdate(ws).catch(() => {});
     });
 
     ws.on("message", async (data) => {
@@ -765,11 +837,9 @@ wss.on("connection", (twilioWs, req) => {
 
       // Speech stopped -> respond (debounced)
       if (msg.type === "input_audio_buffer.speech_stopped") {
-        // If we are awaiting confirmation and the user spoke, execute immediately.
         if (custom.role === "caller" && pendingTool && !pendingTool.executed && EXECUTE_ON_USER_CONFIRM_SPEECH) {
           console.log("[tool] user spoke after confirm prompt", { at: nowIso(), phone: pendingTool.phone });
           await executePendingTool("user_speech_after_confirm_prompt");
-          // Do not return; allow normal turn flow too.
         }
 
         if (responseInFlight) return;
@@ -802,7 +872,7 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // Tool calling: we DO NOT depend on tool confirm anymore, but we still accept tool calls.
+      // Tool calling
       if (msg.type === "response.function_call_arguments.delta") {
         if (custom.role === "callee") return;
         const call_id = msg.call_id || msg.callId || msg.id;
@@ -843,7 +913,6 @@ wss.on("connection", (twilioWs, req) => {
         const norm = normalizeToE164Maybe(phoneRaw);
         const normalizedPhone = norm.ok ? norm.e164 : phoneRaw;
 
-        // Set pending confirmation once, using the tool’s proposed content.
         if (!pendingTool) {
           pendingTool = {
             phone: normalizedPhone,
@@ -864,7 +933,6 @@ wss.on("connection", (twilioWs, req) => {
           return;
         }
 
-        // If we already have a pending tool, do NOT replace it with rephrases.
         return;
       }
     });
@@ -938,6 +1006,11 @@ wss.on("connection", (twilioWs, req) => {
         String(msg.start?.caller || "").trim() ||
         String(msg.start?.callerNumber || "").trim();
 
+      const locLat = toNumMaybe(cp.locLat ?? cp.loclat ?? cp.LocLat ?? cp.LOCLAT);
+      const locLng = toNumMaybe(cp.locLng ?? cp.loclng ?? cp.LocLng ?? cp.LOCLNG);
+      const locAcc = toNumMaybe(cp.locAcc ?? cp.locacc ?? cp.LocAcc ?? cp.LOCACC);
+      const locUpdatedAt = String(cp.locUpdatedAt ?? cp.locupdatedat ?? cp.LocUpdatedAt ?? cp.LOCUPDATEDAT ?? "").trim();
+
       custom = {
         base: String(cp.base || cp.BASE || "").trim(),
         roomId: String(cp.roomId || cp.roomid || "").trim(),
@@ -949,7 +1022,17 @@ wss.on("connection", (twilioWs, req) => {
         task: String(cp.task || "").trim(),
         sessionId: String(cp.sessionId || cp.sid || "").trim(),
         callerCallSid: String(cp.callerCallSid || "").trim(),
+
+        // ✅ M20
+        locLat,
+        locLng,
+        locAcc,
+        locUpdatedAt,
+        locLabel: "",
       };
+
+      // best-effort: hydrate a human label
+      await hydrateLocationLabelIfPossible();
 
       console.log("[twilio] start", {
         streamSid,
@@ -958,6 +1041,13 @@ wss.on("connection", (twilioWs, req) => {
         roomId: custom.roomId || null,
         role: custom.role || null,
         sessionId: custom.sessionId || null,
+
+        // ✅ M20
+        locLat: custom.locLat,
+        locLng: custom.locLng,
+        locAcc: custom.locAcc,
+        locUpdatedAt: custom.locUpdatedAt || null,
+        locLabel: custom.locLabel || null,
       });
 
       if (openaiReady) {

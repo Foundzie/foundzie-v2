@@ -17,20 +17,22 @@ function getApiKey() {
 }
 
 function pickVoice() {
-  // ✅ unify WebRTC voice with Fly bridge default ("marin")
-  // You can still override via env REALTIME_VOICE if you want.
+  // Keep ONE voice across WebRTC + Twilio bridge
+  // Bridge defaults to marin, so WebRTC must match.
   return process.env.REALTIME_VOICE?.trim() || "marin";
 }
 
 function pickModel() {
-  // keep consistent with bridge unless overridden
   return process.env.REALTIME_MODEL?.trim() || "gpt-realtime";
 }
 
 function looksLikeSdp(text: string) {
   const t = (text || "").trim();
   if (t.length < 10) return false;
-  return t.includes("v=0") && (t.includes("o=") || t.includes("s=") || t.includes("t="));
+  return (
+    t.includes("v=0") &&
+    (t.includes("o=") || t.includes("s=") || t.includes("t="))
+  );
 }
 
 export async function GET() {
@@ -49,14 +51,16 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const apiKey = getApiKey();
-  if (!apiKey) return json({ ok: false, message: "Missing OPENAI_API_KEY on server." }, 500);
+  if (!apiKey)
+    return json({ ok: false, message: "Missing OPENAI_API_KEY on server." }, 500);
 
   const sdpOffer = await req.text().catch(() => "");
   if (!looksLikeSdp(sdpOffer)) {
     return json(
       {
         ok: false,
-        message: "Missing/invalid SDP offer body. Make sure you POST raw offer.sdp.",
+        message:
+          "Missing/invalid SDP offer body. Make sure you POST raw offer.sdp.",
       },
       400
     );
@@ -107,6 +111,9 @@ export async function POST(req: NextRequest) {
     return new NextResponse(text, { status: 200, headers });
   } catch (err) {
     console.error("[/api/realtime/session] error:", err);
-    return json({ ok: false, message: "Server error creating realtime session." }, 500);
+    return json(
+      { ok: false, message: "Server error creating realtime session." },
+      500
+    );
   }
 }

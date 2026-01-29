@@ -10,7 +10,10 @@ export async function GET(req: Request) {
   const lng = Number(url.searchParams.get("lng"));
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return NextResponse.json({ ok: false, message: "Invalid lat/lng" }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, message: "Invalid lat/lng" },
+      { status: 400 }
+    );
   }
 
   const u = new URL("https://nominatim.openstreetmap.org/reverse");
@@ -23,7 +26,6 @@ export async function GET(req: Request) {
   try {
     const r = await fetch(u.toString(), {
       headers: {
-        // OSM requires a UA; keep same pattern you used in places/store.ts
         "User-Agent": "FoundzieDev/1.0 (foundzie@example.com)",
         "Accept-Language": "en",
       },
@@ -31,7 +33,10 @@ export async function GET(req: Request) {
     });
 
     if (!r.ok) {
-      return NextResponse.json({ ok: false, message: "Reverse geocode failed" }, { status: 502 });
+      return NextResponse.json(
+        { ok: false, message: "Reverse geocode failed" },
+        { status: 502 }
+      );
     }
 
     const j: any = await r.json().catch(() => ({}));
@@ -44,18 +49,18 @@ export async function GET(req: Request) {
       addr.suburb ||
       addr.neighbourhood ||
       "";
-
     const state = addr.state || addr.region || "";
     const country = addr.country || "";
-    const label = [city, state].filter(Boolean).join(", ") || j?.display_name || "";
+    const label =
+      [city, state].filter(Boolean).join(", ") || j?.display_name || "";
 
     return NextResponse.json({
       ok: true,
       item: {
         label,
-        city,
-        state,
-        country,
+        city: city || null,
+        state: state || null,
+        country: country || null,
         displayName: j?.display_name || null,
       },
     });

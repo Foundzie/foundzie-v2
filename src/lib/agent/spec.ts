@@ -266,7 +266,9 @@ export const coreTools: AgentToolDefinition[] = [
         confirm: { type: "boolean" },
       },
       required: ["phone"],
-
+      // IMPORTANT:
+      // No anyOf/oneOf/allOf/not at top-level.
+      // Runtime already enforces: must include message OR messages.
     },
   },
 ];

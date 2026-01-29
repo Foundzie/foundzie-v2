@@ -14,8 +14,10 @@ export async function GET(req: Request) {
   const q = url.searchParams.get("q") ?? undefined;
   const modeParam = url.searchParams.get("mode") ?? "normal";
 
-  const lat = latParam !== null && latParam !== "" ? Number(latParam) : undefined;
-  const lng = lngParam !== null && lngParam !== "" ? Number(lngParam) : undefined;
+  const lat =
+    latParam !== null && latParam !== "" ? Number(latParam) : undefined;
+  const lng =
+    lngParam !== null && lngParam !== "" ? Number(lngParam) : undefined;
 
   const mode: InteractionMode = modeParam === "child" ? "child" : "normal";
 
@@ -24,13 +26,12 @@ export async function GET(req: Request) {
 
     await recordPlacesSource(result.source);
 
-    // ✅ removed artificial delay; this was hurting UX under timeouts
     return NextResponse.json({
       success: true,
       source: result.source,
       count: result.places.length,
       places: result.places, // compatibility
-      data: result.places,   // backward compatibility
+      data: result.places, // backward compatibility
     });
   } catch (err) {
     console.error("Error in /api/places:", err);

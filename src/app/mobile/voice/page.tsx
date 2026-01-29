@@ -12,9 +12,7 @@ function createVisitorId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return `visitor-${crypto.randomUUID()}`;
   }
-  return `visitor-${Date.now().toString(16)}-${Math.random()
-    .toString(16)
-    .slice(2)}`;
+  return `visitor-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
 }
 
 type VoiceStatus = "none" | "requested" | "active" | "ended" | "failed";
@@ -29,9 +27,7 @@ type EventLogItem = {
 function formatThreadForVoice(items: ChatMessage[], max = 14) {
   const tail = items.slice(Math.max(0, items.length - max));
   return tail
-    .map((m) =>
-      `${m.sender === "user" ? "User" : "Foundzie"}: ${m.text ?? ""}`.trim()
-    )
+    .map((m) => `${m.sender === "user" ? "User" : "Foundzie"}: ${m.text ?? ""}`.trim())
     .filter(Boolean)
     .join("\n");
 }
@@ -65,6 +61,24 @@ function normalizePhoneForUX(phone?: string | null) {
   return String(phone || "").trim();
 }
 
+async function bestEffortSaveLocation(roomId: string, lat: number, lng: number, accuracy?: number) {
+  try {
+    await fetch("/api/location", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        roomId,
+        lat,
+        lng,
+        accuracy: typeof accuracy === "number" ? accuracy : undefined,
+        source: "browser",
+      }),
+    });
+  } catch {
+    // non-blocking
+  }
+}
+
 export default function MobileVoicePage() {
   const [roomId, setRoomId] = useState<string | null>(null);
 
@@ -72,9 +86,9 @@ export default function MobileVoicePage() {
   const [mode, setMode] = useState<Mode>("idle");
 
   // WebRTC UI state
-  const [status, setStatus] = useState<
-    "idle" | "connecting" | "connected" | "ended" | "error"
-  >("idle");
+  const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "ended" | "error">(
+    "idle"
+  );
   const [error, setError] = useState<string | null>(null);
 
   // Twilio fallback state
@@ -133,6 +147,24 @@ export default function MobileVoicePage() {
     }
     setRoomId(id);
   }, []);
+
+  // ✅ M20 bugfix: capture location on Voice page too (so “Where am I?” works even if user never opened Explore/Nearby)
+  useEffect(() => {
+    if (!roomId) return;
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        bestEffortSaveLocation(roomId, pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy).catch(
+          () => {}
+        );
+      },
+      () => {
+        // ignore (permission denied etc.)
+      },
+      { timeout: 6000 }
+    );
+  }, [roomId]);
 
   // Load profile phone once we have roomId (used for Twilio fallback)
   useEffect(() => {
@@ -285,30 +317,34 @@ export default function MobileVoicePage() {
   }
 
   async function fetchLocationLine(rid: string): Promise<string> {
-  try {
-    const res = await fetch(`/api/location?roomId=${encodeURIComponent(rid)}`, { cache: "no-store" });
-    const j = (await res.json().catch(() => ({} as any))) as { ok?: boolean; item?: LastLocation | null };
-    const loc = j?.item;
-    if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng) || !loc.updatedAt) return "";
+    try {
+      const res = await fetch(`/api/location?roomId=${encodeURIComponent(rid)}`, { cache: "no-store" });
+      const j = (await res.json().catch(() => ({} as any))) as {
+        ok?: boolean;
+        item?: LastLocation | null;
+      };
+      const loc = j?.item;
+      if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng) || !loc.updatedAt) return "";
 
-    // reverse geocode to get a human label
-    const rr = await fetch(`/api/location/reverse?lat=${encodeURIComponent(String(loc.lat))}&lng=${encodeURIComponent(String(loc.lng))}`, { cache: "no-store" });
-    const rj = await rr.json().catch(() => ({} as any));
-    const label = typeof rj?.item?.label === "string" ? rj.item.label : "";
+      // reverse geocode to get a human label
+      const rr = await fetch(
+        `/api/location/reverse?lat=${encodeURIComponent(String(loc.lat))}&lng=${encodeURIComponent(String(loc.lng))}`,
+        { cache: "no-store" }
+      );
+      const rj = await rr.json().catch(() => ({} as any));
+      const label = typeof rj?.item?.label === "string" ? rj.item.label : "";
 
-    const acc = loc.accuracy == null ? "n/a" : String(loc.accuracy);
+      const acc = loc.accuracy == null ? "n/a" : String(loc.accuracy);
 
-    if (label) {
-      return `User location: ${label} (accuracy ${acc}m), updatedAt=${loc.updatedAt}`;
+      if (label) {
+        return `User location: ${label} (accuracy ${acc}m), updatedAt=${loc.updatedAt}`;
+      }
+
+      return `User location: lat=${loc.lat}, lng=${loc.lng} (accuracy ${acc}m), updatedAt=${loc.updatedAt}`;
+    } catch {
+      return "";
     }
-
-    // fallback if reverse fails
-    return `User location: lat=${loc.lat}, lng=${loc.lng} (accuracy ${acc}m), updatedAt=${loc.updatedAt}`;
-  } catch {
-    return "";
   }
-}
-
 
   async function bootstrapSessionUpdate() {
     if (!roomId) return;
@@ -376,7 +412,10 @@ export default function MobileVoicePage() {
       },
     });
 
-    logEvent("session.update", locLine ? "WebRTC configured + location injected." : "WebRTC configured (no location yet).");
+    logEvent(
+      "session.update",
+      locLine ? "WebRTC configured + location label injected." : "WebRTC configured (no location yet)."
+    );
   }
 
   function absorbRealtimeEvent(msg: any) {
@@ -391,10 +430,7 @@ export default function MobileVoicePage() {
         ? msg.delta
         : "";
 
-    if (
-      type.includes("input_audio_transcription") &&
-      (type.includes("completed") || type.includes("done"))
-    ) {
+    if (type.includes("input_audio_transcription") && (type.includes("completed") || type.includes("done"))) {
       const t = (text || "").trim();
       if (t) {
         userTextBufRef.current = t;
@@ -411,10 +447,7 @@ export default function MobileVoicePage() {
       return;
     }
 
-    if (
-      type.includes("response.output_audio_transcript") &&
-      (type.includes("done") || type.includes("completed"))
-    ) {
+    if (type.includes("response.output_audio_transcript") && (type.includes("done") || type.includes("completed"))) {
       const t = assistantTranscriptBufRef.current.trim();
       assistantTranscriptBufRef.current = "";
       if (t && t !== lastAssistantCommitRef.current) {
@@ -426,17 +459,25 @@ export default function MobileVoicePage() {
   }
 
   async function stopInternalWebRTC() {
-    try { dcRef.current?.close(); } catch {}
+    try {
+      dcRef.current?.close();
+    } catch {}
     dcRef.current = null;
 
-    try { pcRef.current?.close(); } catch {}
+    try {
+      pcRef.current?.close();
+    } catch {}
     pcRef.current = null;
 
-    try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
+    try {
+      localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    } catch {}
     localStreamRef.current = null;
 
     if (remoteAudioRef.current) {
-      try { remoteAudioRef.current.pause(); } catch {}
+      try {
+        remoteAudioRef.current.pause();
+      } catch {}
       remoteAudioRef.current.srcObject = null;
     }
   }
@@ -744,9 +785,7 @@ export default function MobileVoicePage() {
           </Link>
           <h1 className="text-lg font-semibold">Concierge</h1>
         </div>
-        {roomId ? (
-          <span className="text-[10px] text-slate-500 font-mono">{roomId}</span>
-        ) : null}
+        {roomId ? <span className="text-[10px] text-slate-500 font-mono">{roomId}</span> : null}
       </header>
 
       <section className="px-4 py-4 space-y-3">
@@ -791,9 +830,7 @@ export default function MobileVoicePage() {
 
           {mode === "twilio" && (
             <div className="mt-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
-              <p className="text-xs text-slate-200 font-medium">
-                Twilio fallback is limited to ~5 minutes
-              </p>
+              <p className="text-xs text-slate-200 font-medium">Twilio fallback is limited to ~5 minutes</p>
               <p className="text-[11px] text-slate-400 mt-1">
                 After that, we’ll continue in chat to control costs. (M18 coaching refinement is postponed.)
               </p>
@@ -867,9 +904,7 @@ export default function MobileVoicePage() {
                 Call selected contact
               </button>
 
-              {callContactError && (
-                <p className="text-[11px] text-amber-200">{callContactError}</p>
-              )}
+              {callContactError && <p className="text-[11px] text-amber-200">{callContactError}</p>}
             </div>
           )}
         </div>
@@ -910,18 +945,14 @@ export default function MobileVoicePage() {
                 <li key={`${e.ts}-${idx}`} className="text-xs">
                   <span className="text-slate-500 font-mono mr-2">{e.ts}</span>
                   <span className="text-slate-200">{e.type}</span>
-                  {e.text ? (
-                    <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span>
-                  ) : null}
+                  {e.text ? <span className="text-slate-400"> — {String(e.text).slice(0, 180)}</span> : null}
                 </li>
               ))}
             </ul>
           )}
         </div>
 
-        <div className="text-[11px] text-slate-500">
-          Tip: WebRTC transcripts are saved back into chat via transcripts.
-        </div>
+        <div className="text-[11px] text-slate-500">Tip: WebRTC transcripts are saved back into chat via transcripts.</div>
       </section>
 
       {confirmOpen && (
@@ -945,14 +976,11 @@ export default function MobileVoicePage() {
             </div>
 
             <p className="text-sm text-slate-700">
-              Call{" "}
-              <span className="font-semibold">{selectedContact?.name ?? "this contact"}</span>{" "}
-              at <span className="font-mono">{selectedContact?.phone ?? ""}</span>?
+              Call <span className="font-semibold">{selectedContact?.name ?? "this contact"}</span> at{" "}
+              <span className="font-mono">{selectedContact?.phone ?? ""}</span>?
             </p>
 
-            {callContactError && (
-              <p className="text-[11px] text-amber-600">{callContactError}</p>
-            )}
+            {callContactError && <p className="text-[11px] text-amber-600">{callContactError}</p>}
 
             <div className="flex items-center gap-2 pt-1">
               <button
@@ -973,9 +1001,7 @@ export default function MobileVoicePage() {
               </button>
             </div>
 
-            <p className="text-[11px] text-slate-500">
-              Tip: Save/edit contacts in Profile → Contacts.
-            </p>
+            <p className="text-[11px] text-slate-500">Tip: Save/edit contacts in Profile → Contacts.</p>
           </div>
         </div>
       )}
