@@ -43,10 +43,10 @@ const FORCE_SPEAK_MAX_PER_CALL = Number(process.env.FORCE_SPEAK_MAX_PER_CALL || 
 const GREET_ON_START_DELAY_MS = Number(process.env.GREET_ON_START_DELAY_MS || 250);
 const GREET_FORCE_TIMEOUT_MS = Number(process.env.GREET_FORCE_TIMEOUT_MS || 1200);
 
-// NEW: responseInFlight watchdog (fixes stuck responseInFlight=true)
+// responseInFlight watchdog
 const RESPONSE_INFLIGHT_TIMEOUT_MS = Number(process.env.RESPONSE_INFLIGHT_TIMEOUT_MS || 8000);
 
-// NEW: when user speaks after confirm prompt, execute tool immediately (no model dependency)
+// when user speaks after confirm prompt, execute tool immediately
 const EXECUTE_ON_USER_CONFIRM_SPEECH =
   String(process.env.EXECUTE_ON_USER_CONFIRM_SPEECH || "1").trim() !== "0";
 
@@ -100,23 +100,18 @@ async function upstashSetJSON(key, obj, ttlSeconds) {
   return { ok: r.ok, status: r.status, raw: text.slice(0, 500) };
 }
 
-// --- Realtime audio delta shapes vary by version.
 function extractAudioDelta(msg) {
   if (!msg || typeof msg !== "object") return null;
 
   if (
     (msg.type === "response.audio.delta" || msg.type === "response.output_audio.delta") &&
     msg.delta
-  ) {
-    return msg.delta;
-  }
+  ) return msg.delta;
 
   if (
     (msg.type === "response.audio.delta" || msg.type === "response.output_audio.delta") &&
     msg.audio?.delta
-  ) {
-    return msg.audio.delta;
-  }
+  ) return msg.audio.delta;
 
   if (msg.type === "output_audio.delta" && msg.delta) return msg.delta;
   if (msg.type === "output_audio.delta" && msg.output_audio?.delta) return msg.output_audio.delta;
@@ -167,11 +162,8 @@ function normalizeToE164Maybe(phoneRaw) {
   const digits = raw.replace(/[^\d]/g, "");
 
   if (!raw) return { ok: false, e164: "", reason: "empty" };
-
-  // Already E.164
   if (/^\+\d{8,15}$/.test(raw)) return { ok: true, e164: raw, reason: "already_e164" };
 
-  // US assumptions
   if (digits.length === 10) return { ok: true, e164: `+1${digits}`, reason: "assumed_us_country_code" };
   if (digits.length === 11 && digits.startsWith("1")) return { ok: true, e164: `+${digits}`, reason: "digits_11_us" };
 
@@ -198,7 +190,6 @@ const server = http.createServer((req, res) => {
   res.end("not found");
 });
 
-// IMPORTANT: Twilio Stream URL must include this path:
 const wss = new WebSocketServer({ server, path: "/twilio/stream" });
 
 wss.on("connection", (twilioWs, req) => {
@@ -212,44 +203,37 @@ wss.on("connection", (twilioWs, req) => {
     callSid: "",
     from: "",
     source: "",
-    role: "caller", // caller | callee
-    calleeType: "personal", // personal | business
+    role: "caller",
+    calleeType: "personal",
     task: "",
     sessionId: "",
     callerCallSid: "",
 
-    // ✅ M20: location passthrough from Twilio customParameters
     locLat: null,
     locLng: null,
     locAcc: null,
     locUpdatedAt: "",
-    locLabel: "", // best-effort human label
+    locLabel: "",
   };
 
-  // OpenAI socket + state
   let openaiWs = null;
   let openaiConnecting = false;
   let openaiReconnects = 0;
   let openaiReady = false;
 
-  // STRICT response gate
   let responseInFlight = false;
   let lastResponseCreateAtMs = 0;
   let responseInFlightTimer = null;
 
-  // Per-response output counters
   let respOutboundAudioFrames = 0;
   let respOutboundTextPieces = 0;
 
-  // Call counters
   let inboundMediaFrames = 0;
   let outboundAudioFramesTotal = 0;
 
-  // Speech tracking
   let mediaFramesSinceLastResponse = 0;
   let pendingResponseTimer = null;
 
-  // Greeting controls
   let greeted = false;
   let audioWatchdogTimer = null;
   let greetOnStartTimer = null;
@@ -258,17 +242,13 @@ wss.on("connection", (twilioWs, req) => {
   let forceSpeakCount = 0;
   let queuedForceSpeakReason = null;
 
-  // Tool buffers
   const toolArgBuffers = new Map();
   const toolCooldownMap = new Map();
   const seenToolKeys = new Set();
   const handledToolCalls = new Set();
 
-  // Confirmation gate state
   let pendingTool = null;
-  // { phone, messageText, askedAtMs, executed }
 
-  // M16 callee tracking
   let calleeFlowStarted = false;
   let calleeReplyCaptured = false;
   let calleeAssistantText = "";
@@ -312,7 +292,7 @@ wss.on("connection", (twilioWs, req) => {
       model: REALTIME_MODEL,
       voice: REALTIME_VOICE,
 
-      // ✅ M20
+      base: custom.base || null,
       locLat: custom.locLat,
       locLng: custom.locLng,
       locAcc: custom.locAcc,
@@ -346,16 +326,22 @@ wss.on("connection", (twilioWs, req) => {
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
 
       const base = getVercelBase();
-      const url = `${base}/api/location/reverse?lat=${encodeURIComponent(String(lat))}&lng=${encodeURIComponent(String(lng))}`;
+      const url = `${base}/api/location/reverse?lat=${encodeURIComponent(String(lat))}&lng=${encodeURIComponent(
+        String(lng)
+      )}`;
 
       const r = await fetch(url, { method: "GET" });
-      if (!r.ok) return;
+      if (!r.ok) {
+        console.log("[bridge] reverse geocode failed", { status: r.status, url });
+        return;
+      }
 
       const j = await r.json().catch(() => ({}));
       const label = typeof j?.item?.label === "string" ? j.item.label.trim() : "";
       if (label) custom.locLabel = label;
-    } catch {
-      // non-blocking
+      else console.log("[bridge] reverse geocode ok but no label", { url, preview: JSON.stringify(j).slice(0, 250) });
+    } catch (e) {
+      console.log("[bridge] reverse geocode exception", { error: String(e?.message || e) });
     }
   }
 
@@ -369,11 +355,9 @@ wss.on("connection", (twilioWs, req) => {
     if (label) {
       return `User location: ${label}${acc != null ? ` (accuracy ${acc}m)` : ""}${updatedAt ? `, updatedAt=${updatedAt}` : ""}.`;
     }
-
     if (lat != null && lng != null) {
       return `User location: lat=${lat}, lng=${lng}${acc != null ? ` (accuracy ${acc}m)` : ""}${updatedAt ? `, updatedAt=${updatedAt}` : ""}.`;
     }
-
     return "";
   }
 
@@ -541,9 +525,7 @@ wss.on("connection", (twilioWs, req) => {
     if (custom.role === "callee") return { ok: false, blocked: "role_callee_tools_disabled" };
 
     const phoneRaw = String(args?.phone || "").trim();
-    const messages = Array.isArray(args?.messages)
-      ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
-      : [];
+    const messages = Array.isArray(args?.messages) ? args.messages.map((m) => String(m || "").trim()).filter(Boolean) : [];
     const legacyMessage = String(args?.message || "").trim();
     const message = messages.length ? messages.join(" ") : legacyMessage;
 
@@ -570,7 +552,7 @@ wss.on("connection", (twilioWs, req) => {
       message,
       messages: messages.length ? messages : undefined,
       calleeType: (args?.calleeType || "personal").toString(),
-      confirm: true, // executes only after confirmation prompt step
+      confirm: true,
       roomId: (args?.roomId || custom.roomId || "").toString() || "current",
       callSid: (args?.callSid || custom.callSid || "").toString() || "current",
     };
@@ -609,11 +591,7 @@ wss.on("connection", (twilioWs, req) => {
     if (!pendingTool.phone || !pendingTool.messageText) return;
 
     pendingTool.executed = true;
-    console.log("[tool] executing pending tool", {
-      reason,
-      phone: pendingTool.phone,
-      message: pendingTool.messageText.slice(0, 120),
-    });
+    console.log("[tool] executing pending tool", { reason, phone: pendingTool.phone, message: pendingTool.messageText.slice(0, 120) });
 
     const result = await runToolCall("call_third_party", {
       phone: pendingTool.phone,
@@ -624,9 +602,7 @@ wss.on("connection", (twilioWs, req) => {
       callSid: custom.callSid || "current",
     });
 
-    const ok = createResponse(
-      result?.ok ? `Say: "Okay—I'm calling now."` : `Say: "Sorry—something went wrong placing the call."`
-    );
+    const ok = createResponse(result?.ok ? `Say: "Okay—I'm calling now."` : `Say: "Sorry—something went wrong placing the call."`);
     if (!ok) safeForceSpeak("post_tool_execute");
 
     pendingTool = null;
@@ -688,11 +664,21 @@ wss.on("connection", (twilioWs, req) => {
     };
   }
 
-  async function sendSessionUpdate(ws) {
-    // ✅ Ensure we try to compute a label before session.update
+  async function sendSessionUpdate(ws, reason) {
     await hydrateLocationLabelIfPossible();
     const payload = buildLegacySessionUpdatePayload();
-    return wsSend(ws, { type: "session.update", session: payload });
+    const ok = wsSend(ws, { type: "session.update", session: payload });
+    console.log("[bridge] session.update sent", {
+      ok,
+      reason,
+      role: custom.role,
+      streamSid,
+      roomId: custom.roomId || null,
+      base: custom.base || null,
+      locLabel: custom.locLabel || null,
+      locLat: custom.locLat,
+      locLng: custom.locLng,
+    });
   }
 
   function maybeStartCalleeFlow() {
@@ -764,8 +750,7 @@ wss.on("connection", (twilioWs, req) => {
         role: custom.role || "caller",
       });
 
-      // fire and forget
-      sendSessionUpdate(ws).catch(() => {});
+      sendSessionUpdate(ws, "openai_ws_open").catch(() => {});
     });
 
     ws.on("message", async (data) => {
@@ -785,6 +770,7 @@ wss.on("connection", (twilioWs, req) => {
       if (msg.type === "session.updated") {
         openaiReady = true;
         console.log("[openai] session.updated -> ready", { role: custom.role, streamSid });
+
         if (custom.role === "callee") maybeStartCalleeFlow();
         else scheduleCallerGreeting("session.updated");
         return;
@@ -835,7 +821,6 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // Speech stopped -> respond (debounced)
       if (msg.type === "input_audio_buffer.speech_stopped") {
         if (custom.role === "caller" && pendingTool && !pendingTool.executed && EXECUTE_ON_USER_CONFIRM_SPEECH) {
           console.log("[tool] user spoke after confirm prompt", { at: nowIso(), phone: pendingTool.phone });
@@ -872,7 +857,6 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // Tool calling
       if (msg.type === "response.function_call_arguments.delta") {
         if (custom.role === "callee") return;
         const call_id = msg.call_id || msg.callId || msg.id;
@@ -897,11 +881,7 @@ wss.on("connection", (twilioWs, req) => {
         toolArgBuffers.delete(call_id);
 
         let args = {};
-        try {
-          args = buf ? JSON.parse(buf) : {};
-        } catch {
-          args = {};
-        }
+        try { args = buf ? JSON.parse(buf) : {}; } catch { args = {}; }
 
         const phoneRaw = String(args?.phone || "").trim();
         const messages = Array.isArray(args?.messages) ? args.messages.map((m) => String(m || "").trim()).filter(Boolean) : [];
@@ -978,18 +958,13 @@ wss.on("connection", (twilioWs, req) => {
   connectOpenAi();
 
   const pingInterval = setInterval(() => {
-    try {
-      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
-    } catch {}
+    try { if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping(); } catch {}
   }, 15000);
 
   const openAiPingInterval = setInterval(() => {
-    try {
-      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.ping();
-    } catch {}
+    try { if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.ping(); } catch {}
   }, 20000);
 
-  // Twilio inbound
   twilioWs.on("message", async (data) => {
     const msg = safeJsonParse(data.toString());
     if (!msg) return;
@@ -1023,7 +998,6 @@ wss.on("connection", (twilioWs, req) => {
         sessionId: String(cp.sessionId || cp.sid || "").trim(),
         callerCallSid: String(cp.callerCallSid || "").trim(),
 
-        // ✅ M20
         locLat,
         locLng,
         locAcc,
@@ -1031,7 +1005,6 @@ wss.on("connection", (twilioWs, req) => {
         locLabel: "",
       };
 
-      // best-effort: hydrate a human label
       await hydrateLocationLabelIfPossible();
 
       console.log("[twilio] start", {
@@ -1041,8 +1014,7 @@ wss.on("connection", (twilioWs, req) => {
         roomId: custom.roomId || null,
         role: custom.role || null,
         sessionId: custom.sessionId || null,
-
-        // ✅ M20
+        base: custom.base || null,
         locLat: custom.locLat,
         locLng: custom.locLng,
         locAcc: custom.locAcc,
@@ -1050,12 +1022,18 @@ wss.on("connection", (twilioWs, req) => {
         locLabel: custom.locLabel || null,
       });
 
+      // ✅ CRITICAL FIX: resend session.update now that we finally know roomId/base/location
+      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+        await sendSessionUpdate(openaiWs, "twilio_start_resync");
+      }
+
       if (openaiReady) {
         if (custom.role === "callee") maybeStartCalleeFlow();
         else scheduleCallerGreeting("twilio.start");
       } else {
         scheduleCallerGreeting("twilio.start_waiting_for_openai");
       }
+
       return;
     }
 
