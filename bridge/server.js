@@ -51,7 +51,9 @@ const EXECUTE_ON_USER_CONFIRM_SPEECH =
   String(process.env.EXECUTE_ON_USER_CONFIRM_SPEECH || "1").trim() !== "0";
 
 // Upstash Redis REST (for writing M16 outcome from Fly)
-const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim().replace(/\/+$/, "");
+const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "")
+  .trim()
+  .replace(/\/+$/, "");
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 const M16_OUTCOME_TTL_SECONDS = Number(process.env.M16_OUTCOME_TTL_SECONDS || 60 * 60 * 6); // 6h
 
@@ -73,7 +75,8 @@ function wsSend(ws, obj) {
   try {
     ws.send(JSON.stringify(obj));
     return true;
-  } catch {
+  } catch (e) {
+    console.log("[bridge] wsSend exception", { error: String(e?.message || e) });
     return false;
   }
 }
@@ -170,9 +173,22 @@ function normalizeToE164Maybe(phoneRaw) {
   return { ok: false, e164: "", reason: `invalid_format digits=${digits.length}` };
 }
 
+// ✅ FIX: do NOT convert "" -> 0
 function toNumMaybe(x) {
-  const n = Number(String(x ?? "").trim());
+  const s = String(x ?? "").trim();
+  if (!s) return null; // critical
+  const n = Number(s);
   return Number.isFinite(n) ? n : null;
+}
+
+function isValidLatLng(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  // guard “0,0” nonsense
+  if (lat === 0 && lng === 0) return false;
+  // basic bounds
+  if (lat < -90 || lat > 90) return false;
+  if (lng < -180 || lng > 180) return false;
+  return true;
 }
 
 const server = http.createServer((req, res) => {
@@ -219,6 +235,8 @@ wss.on("connection", (twilioWs, req) => {
   let openaiWs = null;
   let openaiConnecting = false;
   let openaiReconnects = 0;
+
+  // We will still track when OpenAI explicitly confirms readiness:
   let openaiReady = false;
 
   let responseInFlight = false;
@@ -241,6 +259,9 @@ wss.on("connection", (twilioWs, req) => {
 
   let forceSpeakCount = 0;
   let queuedForceSpeakReason = null;
+
+  // NEW: “no-session.updated” watchdog to prevent silence
+  let sessionUpdatedWatchdog = null;
 
   const toolArgBuffers = new Map();
   const toolCooldownMap = new Map();
@@ -277,6 +298,7 @@ wss.on("connection", (twilioWs, req) => {
     greetOnStartTimer = clearTimer(greetOnStartTimer);
     greetForceTimer = clearTimer(greetForceTimer);
     responseInFlightTimer = clearTimer(responseInFlightTimer);
+    sessionUpdatedWatchdog = clearTimer(sessionUpdatedWatchdog);
 
     clearInterval(pingInterval);
     clearInterval(openAiPingInterval);
@@ -298,6 +320,7 @@ wss.on("connection", (twilioWs, req) => {
       locAcc: custom.locAcc,
       locUpdatedAt: custom.locUpdatedAt || null,
       locLabel: custom.locLabel || null,
+      openaiReady,
     });
 
     try {
@@ -323,7 +346,8 @@ wss.on("connection", (twilioWs, req) => {
 
       const lat = custom.locLat;
       const lng = custom.locLng;
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+      if (!isValidLatLng(lat, lng)) return;
 
       const base = getVercelBase();
       const url = `${base}/api/location/reverse?lat=${encodeURIComponent(String(lat))}&lng=${encodeURIComponent(
@@ -355,14 +379,10 @@ wss.on("connection", (twilioWs, req) => {
     if (label) {
       return `User location: ${label}${acc != null ? ` (accuracy ${acc}m)` : ""}${updatedAt ? `, updatedAt=${updatedAt}` : ""}.`;
     }
-    if (lat != null && lng != null) {
+    if (isValidLatLng(lat, lng)) {
       return `User location: lat=${lat}, lng=${lng}${acc != null ? ` (accuracy ${acc}m)` : ""}${updatedAt ? `, updatedAt=${updatedAt}` : ""}.`;
     }
     return "";
-  }
-
-  function toolKey(name, args) {
-    return `${name}::${JSON.stringify(args || {})}`;
   }
 
   function fingerprintToolCall(name, args = {}) {
@@ -392,7 +412,7 @@ wss.on("connection", (twilioWs, req) => {
   }
 
   function canCreateResponseNow() {
-    if (!openaiReady || !openaiWs) return false;
+    if (!openaiWs) return false;
     if (openaiWs.readyState !== WebSocket.OPEN) return false;
     if (responseInFlight) return false;
     const now = Date.now();
@@ -403,7 +423,6 @@ wss.on("connection", (twilioWs, req) => {
   function explainCreateBlock() {
     const now = Date.now();
     return {
-      openaiReady,
       hasOpenaiWs: !!openaiWs,
       openaiState: openaiWs ? openaiWs.readyState : null,
       responseInFlight,
@@ -412,6 +431,7 @@ wss.on("connection", (twilioWs, req) => {
       streamSid,
       role: custom.role,
       at: nowIso(),
+      openaiReady,
     };
   }
 
@@ -452,7 +472,11 @@ wss.on("connection", (twilioWs, req) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
     return wsSend(openaiWs, {
       type: "conversation.item.create",
-      item: { type: "message", role: "user", content: [{ type: "input_text", text: String(text || "") }] },
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: String(text || "") }],
+      },
     });
   }
 
@@ -460,14 +484,13 @@ wss.on("connection", (twilioWs, req) => {
     audioWatchdogTimer = clearTimer(audioWatchdogTimer);
     audioWatchdogTimer = setTimeout(() => {
       if (closed) return;
-      if (!openaiReady) return;
+      // If we still haven't produced audio, force speak
       if (respOutboundAudioFrames > 0) return;
       safeForceSpeak(`audio_watchdog:${label}`);
     }, 1700);
   }
 
   function safeForceSpeak(reason) {
-    if (!openaiReady || !openaiWs) return;
     if (forceSpeakCount >= FORCE_SPEAK_MAX_PER_CALL) return;
 
     if (responseInFlight) {
@@ -501,7 +524,6 @@ wss.on("connection", (twilioWs, req) => {
     greetOnStartTimer = setTimeout(() => {
       if (closed) return;
       if (greeted) return;
-      if (!openaiReady) return;
 
       greeted = true;
       console.log("[bridge] greeting triggered", { reason, at: nowIso() });
@@ -514,7 +536,6 @@ wss.on("connection", (twilioWs, req) => {
     greetForceTimer = clearTimer(greetForceTimer);
     greetForceTimer = setTimeout(() => {
       if (closed) return;
-      if (!openaiReady) return;
       if (respOutboundAudioFrames > 0) return;
       safeForceSpeak("greet_force_timer");
     }, GREET_FORCE_TIMEOUT_MS);
@@ -525,7 +546,9 @@ wss.on("connection", (twilioWs, req) => {
     if (custom.role === "callee") return { ok: false, blocked: "role_callee_tools_disabled" };
 
     const phoneRaw = String(args?.phone || "").trim();
-    const messages = Array.isArray(args?.messages) ? args.messages.map((m) => String(m || "").trim()).filter(Boolean) : [];
+    const messages = Array.isArray(args?.messages)
+      ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
+      : [];
     const legacyMessage = String(args?.message || "").trim();
     const message = messages.length ? messages.join(" ") : legacyMessage;
 
@@ -538,11 +561,6 @@ wss.on("connection", (twilioWs, req) => {
 
     const cd = toolIsCoolingDown(name, { ...args, phone, message });
     if (cd.blocked) return { ok: false, blocked: "cooldown", fingerprint: cd.fp, remainingMs: cd.remainingMs };
-
-    const k = toolKey(name, { ...args, phone, message });
-    if (seenToolKeys.has(k)) return { ok: false, blocked: "duplicate" };
-    seenToolKeys.add(k);
-    setTimeout(() => seenToolKeys.delete(k), 12000);
 
     const base = getVercelBase();
     const url = `${base}/api/tools/call_third_party`;
@@ -591,7 +609,7 @@ wss.on("connection", (twilioWs, req) => {
     if (!pendingTool.phone || !pendingTool.messageText) return;
 
     pendingTool.executed = true;
-    console.log("[tool] executing pending tool", { reason, phone: pendingTool.phone, message: pendingTool.messageText.slice(0, 120) });
+    console.log("[tool] executing pending tool", { reason, phone: pendingTool.phone });
 
     const result = await runToolCall("call_third_party", {
       phone: pendingTool.phone,
@@ -602,7 +620,9 @@ wss.on("connection", (twilioWs, req) => {
       callSid: custom.callSid || "current",
     });
 
-    const ok = createResponse(result?.ok ? `Say: "Okay—I'm calling now."` : `Say: "Sorry—something went wrong placing the call."`);
+    const ok = createResponse(
+      result?.ok ? `Say: "Okay—I'm calling now."` : `Say: "Sorry—something went wrong placing the call."`
+    );
     if (!ok) safeForceSpeak("post_tool_execute");
 
     pendingTool = null;
@@ -617,7 +637,6 @@ wss.on("connection", (twilioWs, req) => {
       "Keep replies short: 1–2 sentences. Ask at most ONE follow-up question. " +
       "Do NOT repeat greetings or re-introduce yourself after the call is connected. " +
       "Do NOT say 'Hey this is Foundzie' unless the user asks who you are. " +
-      "IMPORTANT: Wait silently until the user speaks first if the call has just connected. " +
       "If the user asks to call/message someone, treat them as the SAME action: place a phone call and deliver the message. " +
       "For personal/multi-message delivery: keep message verbatim and ask for confirmation. " +
       (locLine ? `\n\n${locLine}` : "");
@@ -664,13 +683,13 @@ wss.on("connection", (twilioWs, req) => {
     };
   }
 
-  async function sendSessionUpdate(ws, reason) {
-    await hydrateLocationLabelIfPossible();
+  function sendSessionUpdate(ws, reason) {
     const payload = buildLegacySessionUpdatePayload();
     const ok = wsSend(ws, { type: "session.update", session: payload });
     console.log("[bridge] session.update sent", {
       ok,
       reason,
+      openaiState: ws ? ws.readyState : null,
       role: custom.role,
       streamSid,
       roomId: custom.roomId || null,
@@ -679,63 +698,8 @@ wss.on("connection", (twilioWs, req) => {
       locLat: custom.locLat,
       locLng: custom.locLng,
     });
-  }
 
-  function maybeStartCalleeFlow() {
-    if (custom.role !== "callee") return;
-    if (calleeFlowStarted) return;
-    if (!openaiReady) return;
-    if (!streamSid) return;
-
-    calleeFlowStarted = true;
-    const task = (custom.task || "").trim().slice(0, 700);
-
-    const ok = createResponse(
-      `Speak naturally in English. You are calling the recipient. ` +
-        `Deliver this task ONCE exactly as written: "${task}". ` +
-        `Then ask: "Do you have a quick reply?"`
-    );
-
-    if (!ok) safeForceSpeak("callee_start_blocked");
-    armAudioWatchdog("callee_start");
-  }
-
-  async function writeM16Outcome(kind, data) {
-    const sessionId = (custom.sessionId || "").trim();
-    if (!sessionId) return;
-
-    const key = `foundzie:m16:callee:${sessionId}:v1`;
-    const payload = {
-      sessionId,
-      kind,
-      role: "callee",
-      callSid: custom.callSid || null,
-      roomId: custom.roomId || null,
-      from: custom.from || null,
-      callerCallSid: custom.callerCallSid || null,
-      calleeType: custom.calleeType || null,
-      task: (custom.task || "").slice(0, 900) || null,
-      assistantText: calleeAssistantText.slice(0, 2500) || null,
-      ...data,
-      updatedAt: nowIso(),
-    };
-
-    const r = await upstashSetJSON(key, payload, M16_OUTCOME_TTL_SECONDS).catch((e) => ({
-      ok: false,
-      error: String(e?.message || e),
-    }));
-
-    calleeOutcomeWritten = !!r?.ok;
-    console.log("[m16] outcome write", { ok: !!r?.ok, status: r?.status, key, sessionId });
-  }
-
-  function tryParseReplyFromAssistantText(text) {
-    const t = String(text || "");
-    const m1 = t.match(/reply\s*[:\-]\s*([^\n.]{1,120})/i);
-    if (m1 && m1[1]) return m1[1].trim();
-    const m2 = t.match(/they (?:said|replied)\s*[:\-]?\s*([^\n.]{1,120})/i);
-    if (m2 && m2[1]) return m2[1].trim();
-    return "";
+    return ok;
   }
 
   function attachOpenAiHandlers(ws) {
@@ -750,7 +714,17 @@ wss.on("connection", (twilioWs, req) => {
         role: custom.role || "caller",
       });
 
-      sendSessionUpdate(ws, "openai_ws_open").catch(() => {});
+      // ✅ Send minimal update immediately (no awaiting reverse)
+      sendSessionUpdate(ws, "openai_ws_open");
+
+      // ✅ Watchdog: if we never get session.updated, we still greet
+      sessionUpdatedWatchdog = clearTimer(sessionUpdatedWatchdog);
+      sessionUpdatedWatchdog = setTimeout(() => {
+        if (closed) return;
+        if (respOutboundAudioFrames > 0) return;
+        console.log("[bridge] session.updated never arrived -> forcing greeting");
+        safeForceSpeak("no_session_updated_watchdog");
+      }, 1800);
     });
 
     ws.on("message", async (data) => {
@@ -771,8 +745,8 @@ wss.on("connection", (twilioWs, req) => {
         openaiReady = true;
         console.log("[openai] session.updated -> ready", { role: custom.role, streamSid });
 
-        if (custom.role === "callee") maybeStartCalleeFlow();
-        else scheduleCallerGreeting("session.updated");
+        // Once ready, greet
+        scheduleCallerGreeting("session.updated");
         return;
       }
 
@@ -788,11 +762,11 @@ wss.on("connection", (twilioWs, req) => {
       if (textDelta) {
         respOutboundTextPieces += 1;
         const piece = String(textDelta);
+        if (DEBUG_OPENAI_TEXT) console.log("[text] delta:", piece.slice(0, 200));
         if (custom.role === "callee") {
           calleeAssistantText += piece;
           if (calleeAssistantText.length > 4000) calleeAssistantText = calleeAssistantText.slice(-4000);
         }
-        if (DEBUG_OPENAI_TEXT) console.log("[text] delta:", piece.slice(0, 200));
       }
 
       if (msg.type === "response.created" || msg.type === "response.started") {
@@ -802,14 +776,6 @@ wss.on("connection", (twilioWs, req) => {
 
       if (msg.type === "response.done" || msg.type === "response.completed" || msg.type === "response.stopped") {
         clearInFlight("response.done");
-
-        if (custom.role === "callee" && calleeReplyCaptured) {
-          const reply = tryParseReplyFromAssistantText(calleeAssistantText);
-          await writeM16Outcome("callee_complete", { reply: reply || null, doneAt: nowIso() });
-          shutdown("m16_callee_complete");
-          return;
-        }
-
         mediaFramesSinceLastResponse = 0;
         pendingResponseTimer = clearTimer(pendingResponseTimer);
 
@@ -835,11 +801,6 @@ wss.on("connection", (twilioWs, req) => {
         pendingResponseTimer = clearTimer(pendingResponseTimer);
         pendingResponseTimer = setTimeout(() => {
           if (closed) return;
-          if (!openaiReady) return;
-          if (responseInFlight) return;
-
-          const minReq = custom.role === "callee" ? 1 : MIN_MEDIA_FRAMES;
-          if (mediaFramesSinceLastResponse < minReq) return;
 
           wsSend(openaiWs, { type: "input_audio_buffer.commit" });
 
@@ -894,18 +855,7 @@ wss.on("connection", (twilioWs, req) => {
         const normalizedPhone = norm.ok ? norm.e164 : phoneRaw;
 
         if (!pendingTool) {
-          pendingTool = {
-            phone: normalizedPhone,
-            messageText: msgText,
-            askedAtMs: Date.now(),
-            executed: false,
-          };
-
-          console.log("[tool] pending confirmation set", {
-            phone: normalizedPhone,
-            messagePreview: msgText.slice(0, 120),
-          });
-
+          pendingTool = { phone: normalizedPhone, messageText: msgText, askedAtMs: Date.now(), executed: false };
           createUserMessage(`Confirm YES to send this exact message: "${msgText}".`);
           const ok = createResponse(`Ask ONE short question: "Confirm YES to send: '${msgText}' ?" Do not change the message.`);
           if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_confirm_gate";
@@ -984,7 +934,9 @@ wss.on("connection", (twilioWs, req) => {
       const locLat = toNumMaybe(cp.locLat ?? cp.loclat ?? cp.LocLat ?? cp.LOCLAT);
       const locLng = toNumMaybe(cp.locLng ?? cp.loclng ?? cp.LocLng ?? cp.LOCLNG);
       const locAcc = toNumMaybe(cp.locAcc ?? cp.locacc ?? cp.LocAcc ?? cp.LOCACC);
-      const locUpdatedAt = String(cp.locUpdatedAt ?? cp.locupdatedat ?? cp.LocUpdatedAt ?? cp.LOCUPDATEDAT ?? "").trim();
+      const locUpdatedAt = String(
+        cp.locUpdatedAt ?? cp.locupdatedat ?? cp.LocUpdatedAt ?? cp.LOCUPDATEDAT ?? ""
+      ).trim();
 
       custom = {
         base: String(cp.base || cp.BASE || "").trim(),
@@ -1022,18 +974,12 @@ wss.on("connection", (twilioWs, req) => {
         locLabel: custom.locLabel || null,
       });
 
-      // ✅ CRITICAL FIX: resend session.update now that we finally know roomId/base/location
+      // resync update after we know params
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-        await sendSessionUpdate(openaiWs, "twilio_start_resync");
+        sendSessionUpdate(openaiWs, "twilio_start_resync");
       }
 
-      if (openaiReady) {
-        if (custom.role === "callee") maybeStartCalleeFlow();
-        else scheduleCallerGreeting("twilio.start");
-      } else {
-        scheduleCallerGreeting("twilio.start_waiting_for_openai");
-      }
-
+      scheduleCallerGreeting("twilio.start");
       return;
     }
 
@@ -1042,25 +988,17 @@ wss.on("connection", (twilioWs, req) => {
       if (!payload) return;
 
       inboundMediaFrames += 1;
-      if (!openaiReady) return;
 
-      mediaFramesSinceLastResponse += 1;
-      wsSend(openaiWs, { type: "input_audio_buffer.append", audio: payload });
+      // ✅ IMPORTANT: do NOT block audio append on openaiReady
+      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+        mediaFramesSinceLastResponse += 1;
+        wsSend(openaiWs, { type: "input_audio_buffer.append", audio: payload });
+      }
       return;
     }
 
     if (msg.event === "stop") {
       console.log("[twilio] stop", { role: custom.role, sessionId: custom.sessionId || null });
-
-      if (custom.role === "callee" && !calleeOutcomeWritten) {
-        const reply = tryParseReplyFromAssistantText(calleeAssistantText);
-        await writeM16Outcome("twilio_stop", {
-          reply: reply || null,
-          stopAt: nowIso(),
-          note: "Stream stopped before response.done; wrote best-effort outcome.",
-        });
-      }
-
       shutdown("twilio_stop");
     }
   });
