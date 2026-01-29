@@ -57,6 +57,11 @@ const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "")
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 const M16_OUTCOME_TTL_SECONDS = Number(process.env.M16_OUTCOME_TTL_SECONDS || 60 * 60 * 6); // 6h
 
+// ✅ NEW: commit safety window (prevents stale speech_stopped committing old/empty buffer)
+const COMMIT_RECENT_APPEND_MAX_MS = Number(process.env.COMMIT_RECENT_APPEND_MAX_MS || 900);
+// ✅ NEW: cooldown after commit_empty so we don’t spam commits
+const COMMIT_EMPTY_COOLDOWN_MS = Number(process.env.COMMIT_EMPTY_COOLDOWN_MS || 1500);
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -277,14 +282,24 @@ wss.on("connection", (twilioWs, req) => {
   let calleeAssistantText = "";
   let calleeOutcomeWritten = false;
 
-  // ✅ COMMIT EMPTY FIX V3 (OpenAI-event aware)
+  // ✅ COMMIT EMPTY FIX (robust, preserves your VAD logic but adds hard gates)
+  let awaitingSpeechStart = true;
   let sawSpeechStartedSinceCommit = false;
+
+  // Count ONLY successful audio appends AFTER speech_started
   let speechFramesSinceStarted = 0;
 
-  // Only allow commit if we appended audio successfully after speech_started
-  let awaitingSpeechStart = true;
+  // Track last successful append time after speech_started (hard gate)
+  let lastSpeechAppendAtMs = 0;
 
+  // Prevent multiple commits while one is in flight
+  let commitInFlight = false;
+
+  // Rate limit commits
   let lastCommitAtMs = 0;
+
+  // Cooldown after commit_empty from OpenAI
+  let commitCooldownUntilMs = 0;
 
   let closed = false;
 
@@ -333,9 +348,12 @@ wss.on("connection", (twilioWs, req) => {
       openaiReady,
 
       // commit/vad
+      awaitingSpeechStart,
       sawSpeechStartedSinceCommit,
       speechFramesSinceStarted,
-      awaitingSpeechStart,
+      lastSpeechAppendAtMs: lastSpeechAppendAtMs ? new Date(lastSpeechAppendAtMs).toISOString() : null,
+      commitInFlight,
+      commitCooldownUntilMs: commitCooldownUntilMs ? new Date(commitCooldownUntilMs).toISOString() : null,
     });
 
     try {
@@ -571,98 +589,6 @@ wss.on("connection", (twilioWs, req) => {
     }, GREET_FORCE_TIMEOUT_MS);
   }
 
-  async function runToolCall(name, args) {
-    if (name !== "call_third_party") return { ok: false, message: `Unknown tool: ${name}` };
-    if (custom.role === "callee") return { ok: false, blocked: "role_callee_tools_disabled" };
-
-    const phoneRaw = String(args?.phone || "").trim();
-    const messages = Array.isArray(args?.messages)
-      ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
-      : [];
-    const legacyMessage = String(args?.message || "").trim();
-    const message = messages.length ? messages.join(" ") : legacyMessage;
-
-    if (!phoneRaw || !message) return { ok: false, blocked: "missing_args" };
-
-    const norm = normalizeToE164Maybe(phoneRaw);
-    if (!norm.ok) return { ok: false, blocked: "invalid_phone", phoneRaw, reason: norm.reason };
-
-    const phone = norm.e164;
-
-    const cd = toolIsCoolingDown(name, { ...args, phone, message });
-    if (cd.blocked) return { ok: false, blocked: "cooldown", fingerprint: cd.fp, remainingMs: cd.remainingMs };
-
-    const k = toolKey(name, { ...args, phone, message });
-    if (seenToolKeys.has(k)) return { ok: false, blocked: "duplicate" };
-    seenToolKeys.add(k);
-    setTimeout(() => seenToolKeys.delete(k), 12000);
-
-    const base = getVercelBase();
-    const url = `${base}/api/tools/call_third_party`;
-
-    const payload = {
-      phone,
-      message,
-      messages: messages.length ? messages : undefined,
-      calleeType: (args?.calleeType || "personal").toString(),
-      confirm: true,
-      roomId: (args?.roomId || custom.roomId || "").toString() || "current",
-      callSid: (args?.callSid || custom.callSid || "").toString() || "current",
-    };
-
-    console.log("[tool] calling backend", { url, payload });
-
-    try {
-      const r = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const text = await r.text().catch(() => "");
-      let data = null;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = { ok: r.ok, status: r.status, raw: text.slice(0, 1200) };
-      }
-
-      console.log("[tool] backend response", {
-        ok: r.ok,
-        status: r.status,
-        preview: (typeof data === "object" ? JSON.stringify(data) : String(data)).slice(0, 400),
-      });
-
-      return { ok: r.ok, status: r.status, data };
-    } catch (e) {
-      return { ok: false, error: String(e?.message || e) };
-    }
-  }
-
-  async function executePendingTool(reason) {
-    if (!pendingTool || pendingTool.executed) return;
-    if (!pendingTool.phone || !pendingTool.messageText) return;
-
-    pendingTool.executed = true;
-    console.log("[tool] executing pending tool", { reason, phone: pendingTool.phone });
-
-    const result = await runToolCall("call_third_party", {
-      phone: pendingTool.phone,
-      message: pendingTool.messageText,
-      calleeType: "personal",
-      confirm: true,
-      roomId: custom.roomId || "current",
-      callSid: custom.callSid || "current",
-    });
-
-    const ok = createResponse(
-      result?.ok ? `Say: "Okay—I'm calling now."` : `Say: "Sorry—something went wrong placing the call."`
-    );
-    if (!ok) safeForceSpeak("post_tool_execute");
-
-    pendingTool = null;
-  }
-
   function buildLegacySessionUpdatePayload() {
     const locLine = buildLocationLineForPrompt();
 
@@ -731,8 +657,6 @@ wss.on("connection", (twilioWs, req) => {
       roomId: custom.roomId || null,
       base: custom.base || null,
       locLabel: custom.locLabel || null,
-      locLat: custom.locLat,
-      locLng: custom.locLng,
     });
 
     return ok;
@@ -770,15 +694,20 @@ wss.on("connection", (twilioWs, req) => {
         if (!String(t).includes("input_audio_buffer.append")) console.log("[openai:event]", t);
       }
 
-      // ✅ If OpenAI says commit_empty, hard-reset our gating so it can't spam
       if (msg.type === "error") {
         const code = msg?.error?.code;
         if (code === "input_audio_buffer_commit_empty") {
-          console.log("[bridge] openai commit_empty -> resetting commit gate");
+          console.log("[bridge] openai commit_empty -> cooldown + reset commit gating");
+          commitCooldownUntilMs = Date.now() + COMMIT_EMPTY_COOLDOWN_MS;
+          commitInFlight = false;
+
+          // reset VAD gates so we require a fresh speech_started
           awaitingSpeechStart = true;
           sawSpeechStartedSinceCommit = false;
           speechFramesSinceStarted = 0;
+          lastSpeechAppendAtMs = 0;
         }
+
         console.error("[openai] error:", JSON.stringify(msg, null, 2));
         return;
       }
@@ -790,23 +719,39 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // ✅ OpenAI VAD start/stop signals are the most trustworthy gating
+      // ✅ OpenAI VAD start/stop signals (we keep them)
       if (msg.type === "input_audio_buffer.speech_started") {
         awaitingSpeechStart = false;
         sawSpeechStartedSinceCommit = true;
         speechFramesSinceStarted = 0;
+        lastSpeechAppendAtMs = 0;
         return;
       }
 
       if (msg.type === "input_audio_buffer.speech_stopped") {
         if (responseInFlight) return;
 
+        // ✅ hard block repeated commits while one is in-flight
+        if (commitInFlight) {
+          console.log("[bridge] skip commit (commit in flight)", { streamSid });
+          return;
+        }
+
         pendingResponseTimer = clearTimer(pendingResponseTimer);
         pendingResponseTimer = setTimeout(() => {
           if (closed) return;
           if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
 
-          // ✅ HARD BLOCK: no speech_started => do NOT commit
+          const now = Date.now();
+          if (now < commitCooldownUntilMs) {
+            console.log("[bridge] skip commit (cooldown active)", {
+              streamSid,
+              msLeft: commitCooldownUntilMs - now,
+            });
+            return;
+          }
+
+          // ✅ MUST have had a speech_started
           if (awaitingSpeechStart || !sawSpeechStartedSinceCommit) {
             console.log("[bridge] skip commit (no speech_started)", {
               streamSid,
@@ -816,36 +761,57 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          // ✅ Must have enough audio during the speech segment
-          if (speechFramesSinceStarted < MIN_MEDIA_FRAMES) {
-            console.log("[bridge] skip commit (speech buffer too small)", {
-              speechFramesSinceStarted,
-              MIN_MEDIA_FRAMES,
+          // ✅ MUST have recent successful append after speech_started
+          if (!lastSpeechAppendAtMs || now - lastSpeechAppendAtMs > COMMIT_RECENT_APPEND_MAX_MS) {
+            console.log("[bridge] skip commit (no recent speech append)", {
               streamSid,
+              msSinceLastSpeechAppend: lastSpeechAppendAtMs ? now - lastSpeechAppendAtMs : null,
+              speechFramesSinceStarted,
             });
-            // reset gating and wait for next real speech segment
+
+            // reset and wait for next real speech segment
             awaitingSpeechStart = true;
             sawSpeechStartedSinceCommit = false;
             speechFramesSinceStarted = 0;
+            lastSpeechAppendAtMs = 0;
             return;
           }
 
-          // ✅ rate limit commit to avoid double-fires
-          const now = Date.now();
-          if (now - lastCommitAtMs < 150) {
-            console.log("[bridge] skip commit (rate limited)", { deltaMs: now - lastCommitAtMs, streamSid });
+          // ✅ MUST have enough frames during the speech segment
+          const minReq = custom.role === "callee" ? 1 : MIN_MEDIA_FRAMES;
+          if (speechFramesSinceStarted < minReq) {
+            console.log("[bridge] skip commit (speech buffer too small)", {
+              streamSid,
+              speechFramesSinceStarted,
+              minReq,
+            });
+
+            // reset and wait for next real speech segment
+            awaitingSpeechStart = true;
+            sawSpeechStartedSinceCommit = false;
+            speechFramesSinceStarted = 0;
+            lastSpeechAppendAtMs = 0;
+            return;
+          }
+
+          // ✅ commit rate limit (avoid double-fire)
+          if (now - lastCommitAtMs < 200) {
+            console.log("[bridge] skip commit (rate limited)", { streamSid, deltaMs: now - lastCommitAtMs });
             return;
           }
           lastCommitAtMs = now;
 
           const didCommit = wsSend(openaiWs, { type: "input_audio_buffer.commit" });
+          console.log("[bridge] commit sent", { didCommit, streamSid });
 
-          // After commit, require a new speech_started before any future commit
+          // ✅ lock commits until response.done or commit_empty error
+          commitInFlight = true;
+
+          // ✅ after commit, require a fresh speech_started
           awaitingSpeechStart = true;
           sawSpeechStartedSinceCommit = false;
           speechFramesSinceStarted = 0;
-
-          console.log("[bridge] commit sent", { didCommit, streamSid });
+          lastSpeechAppendAtMs = 0;
 
           const ok = createResponse("Reply briefly and warmly in ENGLISH (1–2 sentences). Ask ONE question if needed.");
           if (ok) armAudioWatchdog("post_speech");
@@ -884,6 +850,10 @@ wss.on("connection", (twilioWs, req) => {
         msg.type === "response.stopped"
       ) {
         clearInFlight("response.done");
+
+        // ✅ release commit lock after model finished responding
+        commitInFlight = false;
+
         if (queuedForceSpeakReason) {
           const reason = queuedForceSpeakReason;
           queuedForceSpeakReason = null;
@@ -1042,10 +1012,6 @@ wss.on("connection", (twilioWs, req) => {
         role: custom.role || null,
         sessionId: custom.sessionId || null,
         base: custom.base || null,
-        locLat: custom.locLat,
-        locLng: custom.locLng,
-        locAcc: custom.locAcc,
-        locUpdatedAt: custom.locUpdatedAt || null,
         locLabel: custom.locLabel || null,
       });
 
@@ -1053,7 +1019,10 @@ wss.on("connection", (twilioWs, req) => {
       awaitingSpeechStart = true;
       sawSpeechStartedSinceCommit = false;
       speechFramesSinceStarted = 0;
+      lastSpeechAppendAtMs = 0;
+      commitInFlight = false;
       lastCommitAtMs = 0;
+      commitCooldownUntilMs = 0;
 
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         sendSessionUpdate(openaiWs, "twilio_start_resync");
@@ -1072,12 +1041,10 @@ wss.on("connection", (twilioWs, req) => {
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         const ok = wsSend(openaiWs, { type: "input_audio_buffer.append", audio: payload });
 
-        // Count only if append actually sent.
-        if (ok) {
-          // If OpenAI already said speech_started, count frames for commit threshold
-          if (!awaitingSpeechStart) {
-            speechFramesSinceStarted += 1;
-          }
+        // ✅ Count ONLY if append succeeded, and only after speech_started is active
+        if (ok && !awaitingSpeechStart && String(payload).length > 0) {
+          speechFramesSinceStarted += 1;
+          lastSpeechAppendAtMs = Date.now();
         }
       }
       return;
@@ -1085,6 +1052,30 @@ wss.on("connection", (twilioWs, req) => {
 
     if (msg.event === "stop") {
       console.log("[twilio] stop", { role: custom.role, sessionId: custom.sessionId || null });
+
+      // Keep your M16 best-effort write (as before)
+      if (custom.role === "callee" && !calleeOutcomeWritten) {
+        await upstashSetJSON(
+          `foundzie:m16:callee:${String(custom.sessionId || "").trim()}:v1`,
+          {
+            sessionId: String(custom.sessionId || "").trim(),
+            kind: "twilio_stop",
+            role: "callee",
+            callSid: custom.callSid || null,
+            roomId: custom.roomId || null,
+            from: custom.from || null,
+            callerCallSid: custom.callerCallSid || null,
+            calleeType: custom.calleeType || null,
+            task: (custom.task || "").slice(0, 900) || null,
+            assistantText: calleeAssistantText.slice(0, 2500) || null,
+            reply: null,
+            stopAt: nowIso(),
+            updatedAt: nowIso(),
+          },
+          M16_OUTCOME_TTL_SECONDS
+        ).catch(() => {});
+        calleeOutcomeWritten = true;
+      }
 
       shutdown("twilio_stop");
     }
