@@ -183,9 +183,7 @@ function toNumMaybe(x) {
 
 function isValidLatLng(lat, lng) {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
-  // guard “0,0” nonsense
   if (lat === 0 && lng === 0) return false;
-  // basic bounds
   if (lat < -90 || lat > 90) return false;
   if (lng < -180 || lng > 180) return false;
   return true;
@@ -236,7 +234,7 @@ wss.on("connection", (twilioWs, req) => {
   let openaiConnecting = false;
   let openaiReconnects = 0;
 
-  // We will still track when OpenAI explicitly confirms readiness:
+  // track when OpenAI explicitly confirms readiness:
   let openaiReady = false;
 
   let responseInFlight = false;
@@ -249,7 +247,9 @@ wss.on("connection", (twilioWs, req) => {
   let inboundMediaFrames = 0;
   let outboundAudioFramesTotal = 0;
 
-  let mediaFramesSinceLastResponse = 0;
+  // ✅ NEW: appended frames since last commit (prevents commit-empty)
+  let appendedAudioFramesSinceCommit = 0;
+
   let pendingResponseTimer = null;
 
   let greeted = false;
@@ -260,7 +260,6 @@ wss.on("connection", (twilioWs, req) => {
   let forceSpeakCount = 0;
   let queuedForceSpeakReason = null;
 
-  // NEW: “no-session.updated” watchdog to prevent silence
   let sessionUpdatedWatchdog = null;
 
   const toolArgBuffers = new Map();
@@ -355,15 +354,33 @@ wss.on("connection", (twilioWs, req) => {
       )}`;
 
       const r = await fetch(url, { method: "GET" });
+      const text = await r.text().catch(() => "");
+
       if (!r.ok) {
-        console.log("[bridge] reverse geocode failed", { status: r.status, url });
+        console.log("[bridge] reverse geocode failed", {
+          status: r.status,
+          url,
+          preview: text.slice(0, 250),
+        });
         return;
       }
 
-      const j = await r.json().catch(() => ({}));
+      let j = {};
+      try {
+        j = text ? JSON.parse(text) : {};
+      } catch {
+        console.log("[bridge] reverse geocode json parse failed", { url, preview: text.slice(0, 250) });
+        return;
+      }
+
       const label = typeof j?.item?.label === "string" ? j.item.label.trim() : "";
       if (label) custom.locLabel = label;
-      else console.log("[bridge] reverse geocode ok but no label", { url, preview: JSON.stringify(j).slice(0, 250) });
+      else {
+        console.log("[bridge] reverse geocode ok but no label", {
+          url,
+          preview: JSON.stringify(j).slice(0, 250),
+        });
+      }
     } catch (e) {
       console.log("[bridge] reverse geocode exception", { error: String(e?.message || e) });
     }
@@ -377,10 +394,14 @@ wss.on("connection", (twilioWs, req) => {
     const label = (custom.locLabel || "").trim();
 
     if (label) {
-      return `User location: ${label}${acc != null ? ` (accuracy ${acc}m)` : ""}${updatedAt ? `, updatedAt=${updatedAt}` : ""}.`;
+      return `User location: ${label}${acc != null ? ` (accuracy ${acc}m)` : ""}${
+        updatedAt ? `, updatedAt=${updatedAt}` : ""
+      }.`;
     }
     if (isValidLatLng(lat, lng)) {
-      return `User location: lat=${lat}, lng=${lng}${acc != null ? ` (accuracy ${acc}m)` : ""}${updatedAt ? `, updatedAt=${updatedAt}` : ""}.`;
+      return `User location: lat=${lat}, lng=${lng}${acc != null ? ` (accuracy ${acc}m)` : ""}${
+        updatedAt ? `, updatedAt=${updatedAt}` : ""
+      }.`;
     }
     return "";
   }
@@ -484,7 +505,6 @@ wss.on("connection", (twilioWs, req) => {
     audioWatchdogTimer = clearTimer(audioWatchdogTimer);
     audioWatchdogTimer = setTimeout(() => {
       if (closed) return;
-      // If we still haven't produced audio, force speak
       if (respOutboundAudioFrames > 0) return;
       safeForceSpeak(`audio_watchdog:${label}`);
     }, 1700);
@@ -639,6 +659,7 @@ wss.on("connection", (twilioWs, req) => {
       "Do NOT say 'Hey this is Foundzie' unless the user asks who you are. " +
       "If the user asks to call/message someone, treat them as the SAME action: place a phone call and deliver the message. " +
       "For personal/multi-message delivery: keep message verbatim and ask for confirmation. " +
+      "If you do not have a city label, say 'near your last known coordinates' and ask the user to confirm their city. " +
       (locLine ? `\n\n${locLine}` : "");
 
     const baseInstructionsCallee =
@@ -686,6 +707,7 @@ wss.on("connection", (twilioWs, req) => {
   function sendSessionUpdate(ws, reason) {
     const payload = buildLegacySessionUpdatePayload();
     const ok = wsSend(ws, { type: "session.update", session: payload });
+
     console.log("[bridge] session.update sent", {
       ok,
       reason,
@@ -714,10 +736,8 @@ wss.on("connection", (twilioWs, req) => {
         role: custom.role || "caller",
       });
 
-      // ✅ Send minimal update immediately (no awaiting reverse)
       sendSessionUpdate(ws, "openai_ws_open");
 
-      // ✅ Watchdog: if we never get session.updated, we still greet
       sessionUpdatedWatchdog = clearTimer(sessionUpdatedWatchdog);
       sessionUpdatedWatchdog = setTimeout(() => {
         if (closed) return;
@@ -744,8 +764,6 @@ wss.on("connection", (twilioWs, req) => {
       if (msg.type === "session.updated") {
         openaiReady = true;
         console.log("[openai] session.updated -> ready", { role: custom.role, streamSid });
-
-        // Once ready, greet
         scheduleCallerGreeting("session.updated");
         return;
       }
@@ -774,9 +792,13 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      if (msg.type === "response.done" || msg.type === "response.completed" || msg.type === "response.stopped") {
+      if (
+        msg.type === "response.done" ||
+        msg.type === "response.completed" ||
+        msg.type === "response.stopped"
+      ) {
         clearInFlight("response.done");
-        mediaFramesSinceLastResponse = 0;
+        appendedAudioFramesSinceCommit = 0; // ✅ reset
         pendingResponseTimer = clearTimer(pendingResponseTimer);
 
         if (queuedForceSpeakReason) {
@@ -795,23 +817,35 @@ wss.on("connection", (twilioWs, req) => {
 
         if (responseInFlight) return;
 
-        const minFramesRequired = custom.role === "callee" ? 1 : MIN_MEDIA_FRAMES;
-        if (mediaFramesSinceLastResponse < minFramesRequired) return;
-
         pendingResponseTimer = clearTimer(pendingResponseTimer);
         pendingResponseTimer = setTimeout(() => {
           if (closed) return;
+
+          // ✅ CRITICAL FIX: never commit an empty buffer
+          if (appendedAudioFramesSinceCommit < MIN_MEDIA_FRAMES) {
+            console.log("[bridge] skip commit (buffer too small)", {
+              appendedAudioFramesSinceCommit,
+              MIN_MEDIA_FRAMES,
+              streamSid,
+              role: custom.role,
+            });
+            return;
+          }
 
           wsSend(openaiWs, { type: "input_audio_buffer.commit" });
 
           if (custom.role === "callee") {
             calleeReplyCaptured = true;
-            const ok = createResponse(`Say: "Thanks — I’ll pass that along. Goodbye." Also add a short "Reply: ..." in text.`);
+            const ok = createResponse(
+              `Say: "Thanks — I’ll pass that along. Goodbye." Also add a short "Reply: ..." in text.`
+            );
             if (ok) armAudioWatchdog("callee_post_reply");
             return;
           }
 
-          const ok = createResponse("Reply briefly and warmly in ENGLISH (1–2 sentences). Ask ONE question if needed.");
+          const ok = createResponse(
+            "Reply briefly and warmly in ENGLISH (1–2 sentences). Ask ONE question if needed."
+          );
           if (ok) armAudioWatchdog("post_speech");
         }, SPEECH_STOP_DEBOUNCE_MS);
 
@@ -845,7 +879,9 @@ wss.on("connection", (twilioWs, req) => {
         try { args = buf ? JSON.parse(buf) : {}; } catch { args = {}; }
 
         const phoneRaw = String(args?.phone || "").trim();
-        const messages = Array.isArray(args?.messages) ? args.messages.map((m) => String(m || "").trim()).filter(Boolean) : [];
+        const messages = Array.isArray(args?.messages)
+          ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
+          : [];
         const legacyMessage = String(args?.message || "").trim();
         const msgText = messages.length ? messages.join(" ") : legacyMessage;
 
@@ -857,7 +893,9 @@ wss.on("connection", (twilioWs, req) => {
         if (!pendingTool) {
           pendingTool = { phone: normalizedPhone, messageText: msgText, askedAtMs: Date.now(), executed: false };
           createUserMessage(`Confirm YES to send this exact message: "${msgText}".`);
-          const ok = createResponse(`Ask ONE short question: "Confirm YES to send: '${msgText}' ?" Do not change the message.`);
+          const ok = createResponse(
+            `Ask ONE short question: "Confirm YES to send: '${msgText}' ?" Do not change the message.`
+          );
           if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_confirm_gate";
           armAudioWatchdog("tool_confirm_gate");
           return;
@@ -991,7 +1029,7 @@ wss.on("connection", (twilioWs, req) => {
 
       // ✅ IMPORTANT: do NOT block audio append on openaiReady
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-        mediaFramesSinceLastResponse += 1;
+        appendedAudioFramesSinceCommit += 1; // ✅ CRITICAL
         wsSend(openaiWs, { type: "input_audio_buffer.append", audio: payload });
       }
       return;
