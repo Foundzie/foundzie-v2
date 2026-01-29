@@ -266,7 +266,7 @@ export const coreTools: AgentToolDefinition[] = [
         confirm: { type: "boolean" },
       },
       required: ["phone"],
-      anyOf: [{ required: ["message"] }, { required: ["messages"] }],
+
     },
   },
 ];

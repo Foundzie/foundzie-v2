@@ -17,12 +17,13 @@ function getApiKey() {
 }
 
 function pickVoice() {
-  // Valid Realtime voices per OpenAI docs
-  // alloy, ash, ballad, coral, echo, sage, shimmer, verse
-  return process.env.REALTIME_VOICE?.trim() || "alloy";
+  // ✅ unify WebRTC voice with Fly bridge default ("marin")
+  // You can still override via env REALTIME_VOICE if you want.
+  return process.env.REALTIME_VOICE?.trim() || "marin";
 }
 
 function pickModel() {
+  // keep consistent with bridge unless overridden
   return process.env.REALTIME_MODEL?.trim() || "gpt-realtime";
 }
 
@@ -98,7 +99,6 @@ export async function POST(req: NextRequest) {
     const location = r.headers.get("Location") || "";
     const callId = location ? location.split("/").pop() : "";
 
-    // ✅ Fix TS build error: never put undefined into headers
     const headers = new Headers();
     headers.set("Content-Type", "application/sdp");
     headers.set("Cache-Control", "no-store");

@@ -285,17 +285,30 @@ export default function MobileVoicePage() {
   }
 
   async function fetchLocationLine(rid: string): Promise<string> {
-    try {
-      const res = await fetch(`/api/location?roomId=${encodeURIComponent(rid)}`, { cache: "no-store" });
-      const j = (await res.json().catch(() => ({} as any))) as { ok?: boolean; item?: LastLocation | null };
-      const loc = j?.item;
-      if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng) || !loc.updatedAt) return "";
-      const acc = loc.accuracy == null ? "n/a" : String(loc.accuracy);
-      return `User location: lat=${loc.lat}, lng=${loc.lng} (accuracy ${acc}m), updatedAt=${loc.updatedAt}`;
-    } catch {
-      return "";
+  try {
+    const res = await fetch(`/api/location?roomId=${encodeURIComponent(rid)}`, { cache: "no-store" });
+    const j = (await res.json().catch(() => ({} as any))) as { ok?: boolean; item?: LastLocation | null };
+    const loc = j?.item;
+    if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng) || !loc.updatedAt) return "";
+
+    // reverse geocode to get a human label
+    const rr = await fetch(`/api/location/reverse?lat=${encodeURIComponent(String(loc.lat))}&lng=${encodeURIComponent(String(loc.lng))}`, { cache: "no-store" });
+    const rj = await rr.json().catch(() => ({} as any));
+    const label = typeof rj?.item?.label === "string" ? rj.item.label : "";
+
+    const acc = loc.accuracy == null ? "n/a" : String(loc.accuracy);
+
+    if (label) {
+      return `User location: ${label} (accuracy ${acc}m), updatedAt=${loc.updatedAt}`;
     }
+
+    // fallback if reverse fails
+    return `User location: lat=${loc.lat}, lng=${loc.lng} (accuracy ${acc}m), updatedAt=${loc.updatedAt}`;
+  } catch {
+    return "";
   }
+}
+
 
   async function bootstrapSessionUpdate() {
     if (!roomId) return;
