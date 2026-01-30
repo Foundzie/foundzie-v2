@@ -57,9 +57,9 @@ const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "")
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 const M16_OUTCOME_TTL_SECONDS = Number(process.env.M16_OUTCOME_TTL_SECONDS || 60 * 60 * 6); // 6h
 
-// ✅ NEW: commit safety window (prevents stale speech_stopped committing old/empty buffer)
+// ✅ commit safety window (prevents stale speech_stopped committing old/empty buffer)
 const COMMIT_RECENT_APPEND_MAX_MS = Number(process.env.COMMIT_RECENT_APPEND_MAX_MS || 900);
-// ✅ NEW: cooldown after commit_empty so we don’t spam commits
+// ✅ cooldown after commit_empty so we don’t spam commits
 const COMMIT_EMPTY_COOLDOWN_MS = Number(process.env.COMMIT_EMPTY_COOLDOWN_MS || 1500);
 
 function nowIso() {
@@ -354,6 +354,7 @@ wss.on("connection", (twilioWs, req) => {
       lastSpeechAppendAtMs: lastSpeechAppendAtMs ? new Date(lastSpeechAppendAtMs).toISOString() : null,
       commitInFlight,
       commitCooldownUntilMs: commitCooldownUntilMs ? new Date(commitCooldownUntilMs).toISOString() : null,
+      responseInFlight,
     });
 
     try {
@@ -481,6 +482,12 @@ wss.on("connection", (twilioWs, req) => {
       role: custom.role,
       at: nowIso(),
       openaiReady,
+      commitInFlight,
+      commitCooldownUntilMs,
+      awaitingSpeechStart,
+      sawSpeechStartedSinceCommit,
+      speechFramesSinceStarted,
+      lastSpeechAppendAtMs,
     };
   }
 
@@ -698,6 +705,11 @@ wss.on("connection", (twilioWs, req) => {
         const code = msg?.error?.code;
         if (code === "input_audio_buffer_commit_empty") {
           console.log("[bridge] openai commit_empty -> cooldown + reset commit gating");
+
+          // ✅ CHANGE 3: clear BOTH commit gating and response gating
+          clearInFlight("commit_empty");
+          pendingResponseTimer = clearTimer(pendingResponseTimer);
+
           commitCooldownUntilMs = Date.now() + COMMIT_EMPTY_COOLDOWN_MS;
           commitInFlight = false;
 
@@ -719,7 +731,7 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // ✅ OpenAI VAD start/stop signals (we keep them)
+      // ✅ OpenAI VAD start/stop signals (kept)
       if (msg.type === "input_audio_buffer.speech_started") {
         awaitingSpeechStart = false;
         sawSpeechStartedSinceCommit = true;
@@ -731,7 +743,7 @@ wss.on("connection", (twilioWs, req) => {
       if (msg.type === "input_audio_buffer.speech_stopped") {
         if (responseInFlight) return;
 
-        // ✅ hard block repeated commits while one is in-flight
+        // hard block repeated commits while one is in-flight
         if (commitInFlight) {
           console.log("[bridge] skip commit (commit in flight)", { streamSid });
           return;
@@ -743,6 +755,13 @@ wss.on("connection", (twilioWs, req) => {
           if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
 
           const now = Date.now();
+
+          // ✅ CHANGE 1: DO NOT commit unless we can create a response NOW
+          if (!canCreateResponseNow()) {
+            console.log("[bridge] skip commit (cannot create response now)", explainCreateBlock());
+            return;
+          }
+
           if (now < commitCooldownUntilMs) {
             console.log("[bridge] skip commit (cooldown active)", {
               streamSid,
@@ -751,7 +770,7 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          // ✅ MUST have had a speech_started
+          // MUST have had a speech_started
           if (awaitingSpeechStart || !sawSpeechStartedSinceCommit) {
             console.log("[bridge] skip commit (no speech_started)", {
               streamSid,
@@ -761,7 +780,7 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          // ✅ MUST have recent successful append after speech_started
+          // MUST have recent successful append after speech_started
           if (!lastSpeechAppendAtMs || now - lastSpeechAppendAtMs > COMMIT_RECENT_APPEND_MAX_MS) {
             console.log("[bridge] skip commit (no recent speech append)", {
               streamSid,
@@ -777,7 +796,7 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          // ✅ MUST have enough frames during the speech segment
+          // MUST have enough frames during the speech segment
           const minReq = custom.role === "callee" ? 1 : MIN_MEDIA_FRAMES;
           if (speechFramesSinceStarted < minReq) {
             console.log("[bridge] skip commit (speech buffer too small)", {
@@ -794,20 +813,27 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          // ✅ commit rate limit (avoid double-fire)
+          // rate limit (avoid double-fire)
           if (now - lastCommitAtMs < 200) {
             console.log("[bridge] skip commit (rate limited)", { streamSid, deltaMs: now - lastCommitAtMs });
             return;
           }
           lastCommitAtMs = now;
 
+          // ✅ CHANGE 2: set commitInFlight BEFORE sending commit
+          commitInFlight = true;
           const didCommit = wsSend(openaiWs, { type: "input_audio_buffer.commit" });
+
+          if (!didCommit) {
+            // if commit send failed, immediately unlock and do NOT continue
+            commitInFlight = false;
+            console.log("[bridge] commit send failed -> unlock", { streamSid });
+            return;
+          }
+
           console.log("[bridge] commit sent", { didCommit, streamSid });
 
-          // ✅ lock commits until response.done or commit_empty error
-          commitInFlight = true;
-
-          // ✅ after commit, require a fresh speech_started
+          // after commit, require a fresh speech_started
           awaitingSpeechStart = true;
           sawSpeechStartedSinceCommit = false;
           speechFramesSinceStarted = 0;
@@ -851,7 +877,7 @@ wss.on("connection", (twilioWs, req) => {
       ) {
         clearInFlight("response.done");
 
-        // ✅ release commit lock after model finished responding
+        // release commit lock after model finished responding
         commitInFlight = false;
 
         if (queuedForceSpeakReason) {
@@ -862,7 +888,7 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // tool calling handling unchanged
+      // tool calling handling unchanged (kept for your system)
       if (msg.type === "response.function_call_arguments.delta") {
         if (custom.role === "callee") return;
         const call_id = msg.call_id || msg.callId || msg.id;
@@ -1024,6 +1050,8 @@ wss.on("connection", (twilioWs, req) => {
       lastCommitAtMs = 0;
       commitCooldownUntilMs = 0;
 
+      pendingResponseTimer = clearTimer(pendingResponseTimer);
+
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         sendSessionUpdate(openaiWs, "twilio_start_resync");
       }
@@ -1041,7 +1069,7 @@ wss.on("connection", (twilioWs, req) => {
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         const ok = wsSend(openaiWs, { type: "input_audio_buffer.append", audio: payload });
 
-        // ✅ Count ONLY if append succeeded, and only after speech_started is active
+        // Count ONLY if append succeeded, and only after speech_started is active
         if (ok && !awaitingSpeechStart && String(payload).length > 0) {
           speechFramesSinceStarted += 1;
           lastSpeechAppendAtMs = Date.now();
