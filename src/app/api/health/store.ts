@@ -20,13 +20,25 @@ export type PlacesFallbackEvent = {
   note?: string;
 };
 
+// ✅ NEW: Sponsored/monetization events (M21)
+export type SponsoredEvent = {
+  at: string;
+  campaignId?: string;
+  note?: string;
+};
+
+export type SponsoredHealth = {
+  pushesSent: number;
+  lastPushAt: string | null;
+  recent: SponsoredEvent[];
+};
+
 export type AgentHealth = {
   totalRuns: number;
   recentErrors: number;
   lastErrorAt: string | null;
   recentEvents: AgentEvent[];
 
-  // NEW (M15 funds/usage)
   openaiRequests: number;
   openaiPromptTokens: number;
   openaiCompletionTokens: number;
@@ -43,8 +55,7 @@ export type CallsHealth = {
   lastSkipAt: string | null;
   recentIssues: CallIssue[];
 
-  // NEW (M15 funds/usage)
-  twilioTerminal: Record<string, number>; // completed/busy/no-answer/failed/canceled
+  twilioTerminal: Record<string, number>;
   twilioTotalDurationSec: number;
   twilioEstimatedCostUsd: number;
   lastTwilioStatusAt: string | null;
@@ -58,9 +69,8 @@ export type PlacesHealth = {
   lastFallbackAt: string | null;
   recentFallbacks: PlacesFallbackEvent[];
 
-  // NEW (M15 usage)
   googleCallsToday: number;
-  googleCallsDate: string; // YYYY-MM-DD
+  googleCallsDate: string;
 };
 
 export type KvHealth = {
@@ -73,6 +83,9 @@ export type HealthSnapshot = {
   calls: CallsHealth;
   places: PlacesHealth;
   kv: KvHealth;
+
+  // ✅ NEW
+  sponsored: SponsoredHealth;
 };
 
 /* ------------------------------------------------------------------ */
@@ -124,6 +137,11 @@ function defaultSnapshot(): HealthSnapshot {
       mode: "unknown",
       lastCheckedAt: null,
     },
+    sponsored: {
+      pushesSent: 0,
+      lastPushAt: null,
+      recent: [],
+    },
   };
 }
 
@@ -136,7 +154,6 @@ async function load(): Promise<HealthSnapshot> {
   const fromKv = (await kvGetJSON<HealthSnapshot>(HEALTH_KEY)) ?? null;
   if (!fromKv) return defaultSnapshot();
 
-  // Defensive merge (supports older shapes)
   const base = defaultSnapshot();
 
   return {
@@ -146,6 +163,7 @@ async function load(): Promise<HealthSnapshot> {
     calls: { ...base.calls, ...(fromKv as any).calls },
     places: { ...base.places, ...(fromKv as any).places },
     kv: { ...base.kv, ...(fromKv as any).kv },
+    sponsored: { ...base.sponsored, ...(fromKv as any).sponsored },
   };
 }
 
@@ -159,22 +177,16 @@ async function save(snapshot: HealthSnapshot): Promise<void> {
 
 export async function getHealthSnapshot(): Promise<HealthSnapshot> {
   const snap = await load();
-  // update KV mode opportunistically
   try {
     const url = (process.env.UPSTASH_REDIS_REST_URL || "").trim();
     const token = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
     snap.kv.mode = url && token ? "upstash" : "memory";
     snap.kv.lastCheckedAt = new Date().toISOString();
     await save(snap);
-  } catch {
-    // ignore
-  }
+  } catch {}
   return snap;
 }
 
-/**
- * Existing: called by agent runtime and/or /api/agent route
- */
 export async function recordAgentCall(ok: boolean, error?: unknown) {
   const snap = await load();
   snap.agent.totalRuns += 1;
@@ -199,22 +211,11 @@ export async function recordAgentCall(ok: boolean, error?: unknown) {
   await save(snap);
 }
 
-/**
- * Compatibility alias (older code sometimes used this)
- */
 export async function recordAgentRun(input?: { hadError?: boolean; note?: string }) {
   const hadError = input?.hadError === true;
   await recordAgentCall(!hadError, input?.note);
 }
 
-/**
- * NEW: record OpenAI usage for M15 funds/costs.
- *
- * NOTE: We cannot guarantee exact pricing; this is an estimate.
- * You can override pricing with env vars:
- *  - FOUNDZIE_OPENAI_COST_PER_1K_INPUT_TOKENS_USD
- *  - FOUNDZIE_OPENAI_COST_PER_1K_OUTPUT_TOKENS_USD
- */
 export async function recordOpenAiUsage(input: {
   promptTokens?: number;
   completionTokens?: number;
@@ -237,18 +238,13 @@ export async function recordOpenAiUsage(input: {
   const outRate = Number(process.env.FOUNDZIE_OPENAI_COST_PER_1K_OUTPUT_TOKENS_USD || "0");
 
   if (Number.isFinite(inRate) && Number.isFinite(outRate) && (inRate > 0 || outRate > 0)) {
-    const est =
-      (p / 1000) * inRate +
-      (c / 1000) * outRate;
+    const est = (p / 1000) * inRate + (c / 1000) * outRate;
     snap.agent.openaiEstimatedCostUsd += est;
   }
 
   await save(snap);
 }
 
-/**
- * Existing: called by /api/calls/outbound/route.ts
- */
 export async function recordOutboundCall(opts: {
   hadError: boolean;
   twilioStatus: "started" | "skipped" | null;
@@ -279,10 +275,6 @@ export async function recordOutboundCall(opts: {
   await save(snap);
 }
 
-/**
- * NEW: record Twilio status callback results (duration + optional price)
- * Called by /api/twilio/status
- */
 export async function recordTwilioStatusCallback(input: {
   status: string;
   durationSec?: number;
@@ -293,20 +285,13 @@ export async function recordTwilioStatusCallback(input: {
   const now = new Date().toISOString();
 
   const status = String(input.status || "").toLowerCase();
-  if (status) {
-    snap.calls.twilioTerminal[status] = (snap.calls.twilioTerminal[status] || 0) + 1;
-  }
+  if (status) snap.calls.twilioTerminal[status] = (snap.calls.twilioTerminal[status] || 0) + 1;
 
   const dur = Number(input.durationSec || 0);
-  if (Number.isFinite(dur) && dur > 0) {
-    snap.calls.twilioTotalDurationSec += dur;
-  }
+  if (Number.isFinite(dur) && dur > 0) snap.calls.twilioTotalDurationSec += dur;
 
   const price = Number(input.priceUsd || 0);
-  if (Number.isFinite(price) && price !== 0) {
-    // Twilio often returns negative prices (cost to you). We store absolute as “cost”.
-    snap.calls.twilioEstimatedCostUsd += Math.abs(price);
-  }
+  if (Number.isFinite(price) && price !== 0) snap.calls.twilioEstimatedCostUsd += Math.abs(price);
 
   snap.calls.lastTwilioStatusAt = now;
 
@@ -323,17 +308,11 @@ export async function recordTwilioStatusCallback(input: {
   await save(snap);
 }
 
-/**
- * ✅ recordPlacesRequest supports BOTH:
- *   - recordPlacesRequest() -> counts request only
- *   - recordPlacesRequest("google"|"osm"|"local") -> counts + source metrics
- */
 export async function recordPlacesRequest(source?: "google" | "osm" | "local") {
   const snap = await load();
   const now = new Date().toISOString();
   const today = now.slice(0, 10);
 
-  // rollover daily counter
   if (snap.places.googleCallsDate !== today) {
     snap.places.googleCallsDate = today;
     snap.places.googleCallsToday = 0;
@@ -357,9 +336,6 @@ export async function recordPlacesRequest(source?: "google" | "osm" | "local") {
   await recordPlacesFallback(source, `Fallback to ${source.toUpperCase()}`);
 }
 
-/**
- * Records fallback counts + timestamps + recent list
- */
 export async function recordPlacesFallback(kind: "osm" | "local", note?: string) {
   const snap = await load();
   const now = new Date().toISOString();
@@ -377,9 +353,22 @@ export async function recordPlacesFallback(kind: "osm" | "local", note?: string)
   await save(snap);
 }
 
-/**
- * Compatibility alias
- */
 export async function recordPlacesSource(source: "google" | "osm" | "local") {
   await recordPlacesRequest(source);
+}
+
+/* ------------------------------------------------------------------ */
+/*  ✅ NEW: M21 sponsored push counters                                */
+/* ------------------------------------------------------------------ */
+export async function recordSponsoredPush(input?: { campaignId?: string; note?: string }) {
+  const snap = await load();
+  const now = new Date().toISOString();
+  snap.sponsored.pushesSent += 1;
+  snap.sponsored.lastPushAt = now;
+  snap.sponsored.recent = pushBounded(snap.sponsored.recent, {
+    at: now,
+    campaignId: input?.campaignId,
+    note: input?.note,
+  });
+  await save(snap);
 }
