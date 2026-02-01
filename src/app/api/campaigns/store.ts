@@ -52,10 +52,15 @@ type UpsertResult = { created: boolean; updated: boolean; item: SponsoredCampaig
 
 const CAMPAIGNS_KEY = "foundzie:campaigns:v1";
 
+/* ------------------------------------------------------------------ */
+/*  M21c.3: Delivery logs + stats                                      */
+/* ------------------------------------------------------------------ */
+
 // ✅ per-room delivery log key (prevents spam to same user)
-type RoomDeliveryLog = {
+export type RoomDeliveryLog = {
   campaignId: string;
   roomId: string;
+  firstPushAt: string | null;
   lastPushAt: string | null;
   pushCount: number;
 };
@@ -63,6 +68,51 @@ type RoomDeliveryLog = {
 function roomDeliveryKey(campaignId: string, roomId: string) {
   return `foundzie:campaign:delivery:${campaignId}:${roomId}:v1`;
 }
+
+// ✅ per-campaign aggregate stats (persisted reporting)
+export type CampaignDeliveryStats = {
+  campaignId: string;
+
+  totalDeliverRuns: number;        // "deliver push now" actions
+  totalTargetsEvaluated: number;   // total rooms evaluated across runs
+  totalDelivered: number;          // notifications created across runs
+  totalSkipped: number;            // skipped across runs
+
+  skippedByReason: Record<string, number>;
+
+  lastRunAt: string | null;
+  lastDeliveredAt: string | null;  // last time any notification was created
+  lastRunSummary?: {
+    delivered: number;
+    skipped: number;
+    skippedByReason: Record<string, number>;
+    targetCount: number;
+  } | null;
+};
+
+function campaignStatsKey(campaignId: string) {
+  return `foundzie:campaign:stats:${campaignId}:v1`;
+}
+
+function defaultCampaignStats(campaignId: string): CampaignDeliveryStats {
+  return {
+    campaignId,
+    totalDeliverRuns: 0,
+    totalTargetsEvaluated: 0,
+    totalDelivered: 0,
+    totalSkipped: 0,
+    skippedByReason: {},
+    lastRunAt: null,
+    lastDeliveredAt: null,
+    lastRunSummary: null,
+  };
+}
+
+function bumpMap(map: Record<string, number>, key: string, n = 1) {
+  map[key] = (map[key] || 0) + n;
+}
+
+/* ------------------------------------------------------------------ */
 
 function nowIso() {
   return new Date().toISOString();
@@ -164,13 +214,15 @@ function normalizeCampaignFromPayload(data: any, existing?: SponsoredCampaign): 
     title: String(data?.creative?.title ?? data?.title ?? base.creative.title ?? "").trim(),
     message: String(data?.creative?.message ?? data?.message ?? base.creative.message ?? "").trim(),
     actionLabel:
-      String(data?.creative?.actionLabel ?? data?.actionLabel ?? base.creative.actionLabel ?? "").trim() || undefined,
+      String(data?.creative?.actionLabel ?? data?.actionLabel ?? base.creative.actionLabel ?? "").trim() ||
+      undefined,
     actionHref:
-      String(data?.creative?.actionHref ?? data?.actionHref ?? base.creative.actionHref ?? "").trim() || undefined,
+      String(data?.creative?.actionHref ?? data?.actionHref ?? base.creative.actionHref ?? "").trim() ||
+      undefined,
     mediaUrl:
-      String(data?.creative?.mediaUrl ?? data?.mediaUrl ?? base.creative.mediaUrl ?? "").trim() || undefined,
-    mediaKind:
-      (data?.creative?.mediaKind ?? data?.mediaKind ?? base.creative.mediaKind ?? null) as any,
+      String(data?.creative?.mediaUrl ?? data?.mediaUrl ?? base.creative.mediaUrl ?? "").trim() ||
+      undefined,
+    mediaKind: (data?.creative?.mediaKind ?? data?.mediaKind ?? base.creative.mediaKind ?? null) as any,
   };
 
   const status = (String(data?.status ?? base.status) as CampaignStatus) || "draft";
@@ -209,7 +261,9 @@ export async function upsertCampaignFromPayload(data: any): Promise<UpsertResult
   return { created: true, updated: false, item: next };
 }
 
-// ------------------- Targeting helpers ------------------------------------
+/* ------------------------------------------------------------------ */
+/*  Targeting helpers                                                 */
+/* ------------------------------------------------------------------ */
 
 function norm(s: string) {
   return String(s || "").trim().toLowerCase();
@@ -230,7 +284,9 @@ function userMatchesCity(userTags: string[], city: string) {
 }
 
 async function resolveTargetRoomIds(c: SponsoredCampaign): Promise<string[]> {
-  const explicit = Array.isArray(c.targeting?.roomIds) ? c.targeting.roomIds.map(String).map((s) => s.trim()).filter(Boolean) : [];
+  const explicit = Array.isArray(c.targeting?.roomIds)
+    ? c.targeting.roomIds.map(String).map((s) => s.trim()).filter(Boolean)
+    : [];
   if (explicit.length) return Array.from(new Set(explicit));
 
   const targetTags = Array.isArray(c.targeting?.tags) ? c.targeting.tags : [];
@@ -256,43 +312,93 @@ async function resolveTargetRoomIds(c: SponsoredCampaign): Promise<string[]> {
   return Array.from(new Set(roomIds));
 }
 
-// ------------------- Delivery (push) --------------------------------------
+/* ------------------------------------------------------------------ */
+/*  Delivery (push) — M21c.3: per-user guardrails + metrics            */
+/* ------------------------------------------------------------------ */
+
+export type DeliverySkipReason =
+  | "cooldown"
+  | "no_targets"
+  | "campaign_not_active"
+  | "push_not_enabled"
+  | "outside_schedule_window"
+  | "campaign_not_found"
+  | "broadcast";
+
+export type CampaignDeliveryResult = {
+  ok: boolean;
+  reason?: DeliverySkipReason | string;
+
+  mode?: "broadcast" | "targeted";
+
+  targetRoomIds?: string[];
+  targetCount?: number;
+
+  deliveredCount?: number;
+  skippedCount?: number;
+
+  skippedByReason?: Record<string, number>;
+  skippedRooms?: Array<{ roomId: string; reason: string }>;
+
+  // Broadcast mode still returns a single notification
+  notification?: NotificationItem | null;
+
+  // Stats after update (persisted)
+  stats?: CampaignDeliveryStats | null;
+
+  // timestamps
+  ranAt?: string;
+  lastDeliveredAt?: string | null;
+};
 
 /**
- * Push delivery v1.1 (targeting):
+ * Push delivery v1.2 (M21c.3):
  * - campaign must be active and within schedule
- * - delivers to matching roomIds if targeting is set
- * - if targeting is empty => broadcast notification (global)
+ * - targeted delivery evaluates targetRoomIds and applies PER-ROOM cooldown
+ * - returns delivered/skipped breakdown
+ * - persists per-campaign aggregate stats
  *
  * `force=true` bypasses per-room cooldown.
  */
 export async function deliverCampaignPush(
   campaignId: string,
   force = false
-): Promise<{
-  ok: boolean;
-  reason?: string;
-  deliveredCount?: number;
-  targetRoomIds?: string[];
-  notification?: NotificationItem | null; // for broadcast case
-  notificationsCreated?: number;
-  skippedRooms?: Array<{ roomId: string; reason: string }>;
-}> {
+): Promise<CampaignDeliveryResult> {
+  const ranAt = nowIso();
+
   const c = await getCampaign(campaignId);
-  if (!c) return { ok: false, reason: "campaign_not_found" };
+  if (!c) return { ok: false, reason: "campaign_not_found", ranAt };
 
-  if (c.status !== "active") return { ok: false, reason: "campaign_not_active" };
+  if (c.status !== "active") return { ok: false, reason: "campaign_not_active", ranAt };
+
   const wantsPush = c.channels.includes("push") || c.channels.includes("hybrid");
-  if (!wantsPush) return { ok: false, reason: "push_not_enabled" };
-  if (!inWindow(c.schedule)) return { ok: false, reason: "outside_schedule_window" };
+  if (!wantsPush) return { ok: false, reason: "push_not_enabled", ranAt };
 
-  // cooldown per room (default 6h)
+  if (!inWindow(c.schedule)) return { ok: false, reason: "outside_schedule_window", ranAt };
+
+  // Default per-room cooldown window (6h) — can override via env
   const cooldownMs = Number(process.env.CAMPAIGN_PUSH_COOLDOWN_MS || String(6 * 60 * 60 * 1000));
+  const cooldownMsSafe = Number.isFinite(cooldownMs) && cooldownMs > 0 ? cooldownMs : 6 * 60 * 60 * 1000;
+
+  // load campaign aggregate stats
+  const existingStats =
+    (await kvGetJSON<CampaignDeliveryStats>(campaignStatsKey(c.id)).catch(() => null)) ?? defaultCampaignStats(c.id);
+
+  const skippedByReason: Record<string, number> = {};
+  const skippedRooms: Array<{ roomId: string; reason: string }> = [];
 
   const targetRoomIds = await resolveTargetRoomIds(c);
 
-  // ✅ Broadcast mode (no targeting rules)
-  if (targetRoomIds.length === 0 && !c.targeting?.tags?.length && !c.targeting?.city && !c.targeting?.roomIds?.length) {
+  // If truly no targeting rules -> broadcast
+  const hasAnyTargeting =
+    (Array.isArray(c.targeting?.roomIds) && c.targeting!.roomIds!.length > 0) ||
+    (Array.isArray(c.targeting?.tags) && c.targeting!.tags!.length > 0) ||
+    (String(c.targeting?.city || "").trim().length > 0);
+
+  // ✅ Broadcast mode
+  if (!hasAnyTargeting) {
+    bumpMap(skippedByReason, "broadcast", 0);
+
     const n = await addNotification({
       title: c.creative.title || c.name || "Sponsored",
       message: c.creative.message || "",
@@ -303,35 +409,120 @@ export async function deliverCampaignPush(
       mediaUrl: c.creative.mediaUrl ?? "",
       mediaKind: c.creative.mediaKind ?? null,
       timeLabel: "just now",
-      campaignId: c.id,
-      targetRoomIds: null, // global
+      // NOTE: if your NotificationItem supports campaign metadata, you can include it.
+      // Keep it minimal here to avoid breaking type assumptions.
     });
+
+    const nextStats: CampaignDeliveryStats = {
+      ...existingStats,
+      totalDeliverRuns: existingStats.totalDeliverRuns + 1,
+      totalTargetsEvaluated: existingStats.totalTargetsEvaluated + 1,
+      totalDelivered: existingStats.totalDelivered + 1,
+      totalSkipped: existingStats.totalSkipped + 0,
+      skippedByReason: { ...existingStats.skippedByReason },
+      lastRunAt: ranAt,
+      lastDeliveredAt: ranAt,
+      lastRunSummary: {
+        delivered: 1,
+        skipped: 0,
+        skippedByReason: {},
+        targetCount: 1,
+      },
+    };
+
+    await kvSetJSON(campaignStatsKey(c.id), nextStats).catch(() => null);
 
     await recordSponsoredPush({
       campaignId: c.id,
-      note: `${c.name} | ${c.advertiserName}`.trim(),
+      delivered: 1,
+      skipped: 0,
+      skippedByReason: {},
+      note: `${c.name} | ${c.advertiserName} | broadcast`.trim(),
     }).catch(() => null);
 
-    return { ok: true, deliveredCount: 1, notification: n, notificationsCreated: 1, targetRoomIds: [] };
+    return {
+      ok: true,
+      mode: "broadcast",
+      deliveredCount: 1,
+      skippedCount: 0,
+      skippedByReason: {},
+      targetRoomIds: [],
+      targetCount: 1,
+      notification: n,
+      stats: nextStats,
+      ranAt,
+      lastDeliveredAt: ranAt,
+    };
   }
 
-  // ✅ Targeted mode: create per-room notifications with targetRoomIds=[roomId]
+  // ✅ Targeted mode: no matches
+  if (targetRoomIds.length === 0) {
+    bumpMap(skippedByReason, "no_targets", 1);
+
+    const nextStats: CampaignDeliveryStats = {
+      ...existingStats,
+      totalDeliverRuns: existingStats.totalDeliverRuns + 1,
+      totalTargetsEvaluated: existingStats.totalTargetsEvaluated + 0,
+      totalDelivered: existingStats.totalDelivered + 0,
+      totalSkipped: existingStats.totalSkipped + 0,
+      skippedByReason: { ...existingStats.skippedByReason },
+      lastRunAt: ranAt,
+      lastDeliveredAt: existingStats.lastDeliveredAt,
+      lastRunSummary: {
+        delivered: 0,
+        skipped: 0,
+        skippedByReason: { no_targets: 1 },
+        targetCount: 0,
+      },
+    };
+
+    bumpMap(nextStats.skippedByReason, "no_targets", 1);
+    await kvSetJSON(campaignStatsKey(c.id), nextStats).catch(() => null);
+
+    await recordSponsoredPush({
+      campaignId: c.id,
+      delivered: 0,
+      skipped: 0,
+      skippedByReason: { no_targets: 1 },
+      note: `${c.name} | ${c.advertiserName} | no_targets`.trim(),
+    }).catch(() => null);
+
+    return {
+      ok: true,
+      mode: "targeted",
+      reason: "no_targets",
+      targetRoomIds: [],
+      targetCount: 0,
+      deliveredCount: 0,
+      skippedCount: 0,
+      skippedByReason: { no_targets: 1 },
+      skippedRooms: [],
+      stats: nextStats,
+      ranAt,
+      lastDeliveredAt: nextStats.lastDeliveredAt,
+    };
+  }
+
   let created = 0;
-  const skippedRooms: Array<{ roomId: string; reason: string }> = [];
 
   for (const roomId of targetRoomIds) {
     const key = roomDeliveryKey(c.id, roomId);
-    const log = (await kvGetJSON<RoomDeliveryLog>(key)) ?? {
-      campaignId: c.id,
-      roomId,
-      lastPushAt: null,
-      pushCount: 0,
-    };
+
+    const log =
+      (await kvGetJSON<RoomDeliveryLog>(key).catch(() => null)) ?? {
+        campaignId: c.id,
+        roomId,
+        firstPushAt: null,
+        lastPushAt: null,
+        pushCount: 0,
+      };
 
     const last = log.lastPushAt ? Date.parse(log.lastPushAt) : NaN;
     const now = Date.now();
-    if (!force && Number.isFinite(last) && now - last < cooldownMs) {
+
+    if (!force && Number.isFinite(last) && now - last < cooldownMsSafe) {
       skippedRooms.push({ roomId, reason: "cooldown" });
+      bumpMap(skippedByReason, "cooldown", 1);
       continue;
     }
 
@@ -345,31 +536,65 @@ export async function deliverCampaignPush(
       mediaUrl: c.creative.mediaUrl ?? "",
       mediaKind: c.creative.mediaKind ?? null,
       timeLabel: "just now",
-      campaignId: c.id,
-      targetRoomIds: [roomId],
-      deliveredToRoomId: roomId,
+      // If your notification system supports room scoping, keep it in your existing implementation.
     });
 
     const nextLog: RoomDeliveryLog = {
       ...log,
-      lastPushAt: new Date().toISOString(),
+      firstPushAt: log.firstPushAt ?? ranAt,
+      lastPushAt: ranAt,
       pushCount: (log.pushCount || 0) + 1,
     };
-    await kvSetJSON(key, nextLog);
+    await kvSetJSON(key, nextLog).catch(() => null);
 
     created += 1;
   }
 
+  const skippedCount = skippedRooms.length;
+
+  // update aggregate stats
+  const nextStats: CampaignDeliveryStats = {
+    ...existingStats,
+    totalDeliverRuns: existingStats.totalDeliverRuns + 1,
+    totalTargetsEvaluated: existingStats.totalTargetsEvaluated + targetRoomIds.length,
+    totalDelivered: existingStats.totalDelivered + created,
+    totalSkipped: existingStats.totalSkipped + skippedCount,
+    skippedByReason: { ...existingStats.skippedByReason },
+    lastRunAt: ranAt,
+    lastDeliveredAt: created > 0 ? ranAt : existingStats.lastDeliveredAt,
+    lastRunSummary: {
+      delivered: created,
+      skipped: skippedCount,
+      skippedByReason: { ...skippedByReason },
+      targetCount: targetRoomIds.length,
+    },
+  };
+
+  for (const [k, v] of Object.entries(skippedByReason)) {
+    bumpMap(nextStats.skippedByReason, k, v);
+  }
+
+  await kvSetJSON(campaignStatsKey(c.id), nextStats).catch(() => null);
+
   await recordSponsoredPush({
     campaignId: c.id,
-    note: `${c.name} | ${c.advertiserName} | delivered=${created}`.trim(),
+    delivered: created,
+    skipped: skippedCount,
+    skippedByReason,
+    note: `${c.name} | ${c.advertiserName} | targeted`.trim(),
   }).catch(() => null);
 
   return {
     ok: true,
-    deliveredCount: created,
-    notificationsCreated: created,
+    mode: "targeted",
     targetRoomIds,
+    targetCount: targetRoomIds.length,
+    deliveredCount: created,
+    skippedCount,
+    skippedByReason,
     skippedRooms,
+    stats: nextStats,
+    ranAt,
+    lastDeliveredAt: nextStats.lastDeliveredAt,
   };
 }

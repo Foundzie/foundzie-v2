@@ -64,11 +64,23 @@ export type KvHealth = {
   lastCheckedAt: string | null;
 };
 
+export type SponsoredHealth = {
+  pushRuns: number;                 // number of delivery runs
+  pushDeliveredTotal: number;       // total delivered notifications
+  pushSkippedTotal: number;         // total skipped
+  skippedByReason: Record<string, number>;
+  lastAt: string | null;
+  recentEvents: Array<{ at: string; campaignId: string; delivered: number; skipped: number; note?: string }>;
+};
+
 export type HealthSnapshot = {
   agent: AgentHealth;
   calls: CallsHealth;
   places: PlacesHealth;
   kv: KvHealth;
+
+  // ✅ M21
+  sponsored: SponsoredHealth;
 };
 
 /* ------------------------------------------------------------------ */
@@ -120,6 +132,14 @@ function defaultSnapshot(): HealthSnapshot {
       mode: "unknown",
       lastCheckedAt: null,
     },
+    sponsored: {
+      pushRuns: 0,
+      pushDeliveredTotal: 0,
+      pushSkippedTotal: 0,
+      skippedByReason: {},
+      lastAt: null,
+      recentEvents: [],
+    },
   };
 }
 
@@ -141,6 +161,7 @@ async function load(): Promise<HealthSnapshot> {
     calls: { ...base.calls, ...(fromKv as any).calls },
     places: { ...base.places, ...(fromKv as any).places },
     kv: { ...base.kv, ...(fromKv as any).kv },
+    sponsored: { ...base.sponsored, ...(fromKv as any).sponsored },
   };
 }
 
@@ -343,17 +364,45 @@ export async function recordPlacesSource(source: "google" | "osm" | "local") {
 }
 
 /* ------------------------------------------------------------------ */
-/*  ✅ M21: Sponsored push metric hook                                 */
+/*  ✅ M21: Sponsored push metric hook (M21c.3)                         */
 /* ------------------------------------------------------------------ */
 
-export async function recordSponsoredPush(input: { campaignId: string; note?: string }) {
+export async function recordSponsoredPush(input: {
+  campaignId: string;
+  delivered: number;
+  skipped: number;
+  skippedByReason?: Record<string, number>;
+  note?: string;
+}) {
   const snap = await load();
   const now = new Date().toISOString();
 
-  // We keep it lightweight: record as an agent event so it shows in health recents.
+  snap.sponsored.pushRuns += 1;
+  snap.sponsored.pushDeliveredTotal += Number(input.delivered || 0);
+  snap.sponsored.pushSkippedTotal += Number(input.skipped || 0);
+  snap.sponsored.lastAt = now;
+
+  const byReason = input.skippedByReason || {};
+  for (const [k, v] of Object.entries(byReason)) {
+    const n = Number(v || 0);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    snap.sponsored.skippedByReason[k] = (snap.sponsored.skippedByReason[k] || 0) + n;
+  }
+
+  snap.sponsored.recentEvents = pushBounded(snap.sponsored.recentEvents, {
+    at: now,
+    campaignId: input.campaignId,
+    delivered: Number(input.delivered || 0),
+    skipped: Number(input.skipped || 0),
+    note: input.note,
+  });
+
+  // Keep a short breadcrumb in agent events too (nice for your existing health UI)
   snap.agent.recentEvents = pushBounded(snap.agent.recentEvents, {
     at: now,
-    note: `[sponsored_push] campaign=${input.campaignId}${input.note ? ` | ${input.note}` : ""}`,
+    note: `[sponsored_push] campaign=${input.campaignId} delivered=${input.delivered} skipped=${input.skipped}${
+      input.note ? ` | ${input.note}` : ""
+    }`,
   });
 
   await save(snap);
