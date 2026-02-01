@@ -1,4 +1,3 @@
-// src/app/api/health/store.ts
 import "server-only";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 
@@ -18,19 +17,6 @@ export type PlacesFallbackEvent = {
   at: string;
   kind: "osm" | "local";
   note?: string;
-};
-
-// ✅ NEW: Sponsored/monetization events (M21)
-export type SponsoredEvent = {
-  at: string;
-  campaignId?: string;
-  note?: string;
-};
-
-export type SponsoredHealth = {
-  pushesSent: number;
-  lastPushAt: string | null;
-  recent: SponsoredEvent[];
 };
 
 export type AgentHealth = {
@@ -83,9 +69,6 @@ export type HealthSnapshot = {
   calls: CallsHealth;
   places: PlacesHealth;
   kv: KvHealth;
-
-  // ✅ NEW
-  sponsored: SponsoredHealth;
 };
 
 /* ------------------------------------------------------------------ */
@@ -137,11 +120,6 @@ function defaultSnapshot(): HealthSnapshot {
       mode: "unknown",
       lastCheckedAt: null,
     },
-    sponsored: {
-      pushesSent: 0,
-      lastPushAt: null,
-      recent: [],
-    },
   };
 }
 
@@ -163,7 +141,6 @@ async function load(): Promise<HealthSnapshot> {
     calls: { ...base.calls, ...(fromKv as any).calls },
     places: { ...base.places, ...(fromKv as any).places },
     kv: { ...base.kv, ...(fromKv as any).kv },
-    sponsored: { ...base.sponsored, ...(fromKv as any).sponsored },
   };
 }
 
@@ -183,7 +160,9 @@ export async function getHealthSnapshot(): Promise<HealthSnapshot> {
     snap.kv.mode = url && token ? "upstash" : "memory";
     snap.kv.lastCheckedAt = new Date().toISOString();
     await save(snap);
-  } catch {}
+  } catch {
+    // ignore
+  }
   return snap;
 }
 
@@ -285,13 +264,19 @@ export async function recordTwilioStatusCallback(input: {
   const now = new Date().toISOString();
 
   const status = String(input.status || "").toLowerCase();
-  if (status) snap.calls.twilioTerminal[status] = (snap.calls.twilioTerminal[status] || 0) + 1;
+  if (status) {
+    snap.calls.twilioTerminal[status] = (snap.calls.twilioTerminal[status] || 0) + 1;
+  }
 
   const dur = Number(input.durationSec || 0);
-  if (Number.isFinite(dur) && dur > 0) snap.calls.twilioTotalDurationSec += dur;
+  if (Number.isFinite(dur) && dur > 0) {
+    snap.calls.twilioTotalDurationSec += dur;
+  }
 
   const price = Number(input.priceUsd || 0);
-  if (Number.isFinite(price) && price !== 0) snap.calls.twilioEstimatedCostUsd += Math.abs(price);
+  if (Number.isFinite(price) && price !== 0) {
+    snap.calls.twilioEstimatedCostUsd += Math.abs(price);
+  }
 
   snap.calls.lastTwilioStatusAt = now;
 
@@ -358,17 +343,18 @@ export async function recordPlacesSource(source: "google" | "osm" | "local") {
 }
 
 /* ------------------------------------------------------------------ */
-/*  ✅ NEW: M21 sponsored push counters                                */
+/*  ✅ M21: Sponsored push metric hook                                 */
 /* ------------------------------------------------------------------ */
-export async function recordSponsoredPush(input?: { campaignId?: string; note?: string }) {
+
+export async function recordSponsoredPush(input: { campaignId: string; note?: string }) {
   const snap = await load();
   const now = new Date().toISOString();
-  snap.sponsored.pushesSent += 1;
-  snap.sponsored.lastPushAt = now;
-  snap.sponsored.recent = pushBounded(snap.sponsored.recent, {
+
+  // We keep it lightweight: record as an agent event so it shows in health recents.
+  snap.agent.recentEvents = pushBounded(snap.agent.recentEvents, {
     at: now,
-    campaignId: input?.campaignId,
-    note: input?.note,
+    note: `[sponsored_push] campaign=${input.campaignId}${input.note ? ` | ${input.note}` : ""}`,
   });
+
   await save(snap);
 }

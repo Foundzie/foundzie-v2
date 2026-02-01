@@ -7,14 +7,11 @@ import {
 
 export const dynamic = "force-dynamic";
 
-// GET /api/campaigns -> list all campaigns
 export async function GET() {
   const items = await listCampaigns();
   return NextResponse.json({ ok: true, items });
 }
 
-// POST /api/campaigns -> create/update campaign
-// optional query: ?deliver=1 will deliver push immediately if active
 export async function POST(req: Request) {
   const url = new URL(req.url);
   const deliver = url.searchParams.get("deliver") === "1";
@@ -36,5 +33,3 @@ export async function POST(req: Request) {
     delivery,
   });
 }
-
-// POST /api/campaigns/deliver (not required yet) -> we keep everything in POST ?deliver=1

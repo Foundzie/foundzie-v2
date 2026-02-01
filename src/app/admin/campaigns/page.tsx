@@ -14,7 +14,7 @@ type Campaign = {
   channels: CampaignChannel[];
   updatedAt: string;
   creative: { title: string; message: string; actionHref?: string; mediaUrl?: string };
-  schedule?: { startAt?: string | null; endAt?: string | null };
+  targeting?: { city?: string; tags?: string[]; roomIds?: string[] };
 };
 
 export default function AdminCampaignsPage() {
@@ -43,13 +43,17 @@ export default function AdminCampaignsPage() {
       const res = await fetch(`/api/campaigns?deliver=1&force=1`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }), // upsert finds & returns existing, then deliver
+        body: JSON.stringify({ id }),
       });
       const j = await res.json();
-      if (!j?.delivery?.ok) {
-        alert(`Delivery skipped: ${j?.delivery?.reason || "unknown"}`);
+
+      const d = j?.delivery;
+      if (!d?.ok) {
+        alert(`Delivery skipped: ${d?.reason || "unknown"}`);
       } else {
-        alert("✅ Push delivered (notification created).");
+        const count = Number(d?.deliveredCount || d?.notificationsCreated || 0);
+        const skipped = Array.isArray(d?.skippedRooms) ? d.skippedRooms.length : 0;
+        alert(`✅ Delivered ${count} push notification(s). Skipped ${skipped} (cooldown).`);
       }
     } catch (e) {
       console.error("deliverNow failed", e);
@@ -59,13 +63,25 @@ export default function AdminCampaignsPage() {
     }
   }
 
+  function targetingSummary(c: Campaign) {
+    const city = (c.targeting?.city || "").trim();
+    const tags = Array.isArray(c.targeting?.tags) ? c.targeting!.tags : [];
+    const rooms = Array.isArray(c.targeting?.roomIds) ? c.targeting!.roomIds : [];
+
+    const parts: string[] = [];
+    if (rooms.length) parts.push(`rooms=${rooms.length}`);
+    if (city) parts.push(`city=${city}`);
+    if (tags.length) parts.push(`tags=${tags.join(",")}`);
+    return parts.length ? parts.join(" · ") : "broadcast";
+  }
+
   return (
     <main className="min-h-screen bg-gray-50">
       <header className="w-full bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Campaigns</h1>
           <p className="text-xs text-gray-500">
-            Sponsored Promotions (M21). Push delivery v1 reuses <code>/api/notifications</code>.
+            Sponsored Promotions (M21). Push delivery reuses <code>/api/notifications</code>.
           </p>
         </div>
 
@@ -113,6 +129,11 @@ export default function AdminCampaignsPage() {
                       {c.creative?.title ? `${c.creative.title}: ` : ""}
                       {c.creative?.message || ""}
                     </p>
+
+                    <p className="text-[10px] text-gray-400 mt-1">
+                      Targeting: {targetingSummary(c)}
+                    </p>
+
                     <p className="text-[10px] text-gray-400 mt-1">
                       Updated: {new Date(c.updatedAt).toLocaleString()}
                     </p>

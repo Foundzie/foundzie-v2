@@ -1,19 +1,23 @@
-// src/app/api/notifications/route.ts
 import { NextResponse } from "next/server";
 import {
   listNotifications,
   upsertNotificationFromPayload,
 } from "@/app/api/notifications/store";
 
-// GET all notifications (admin + mobile both use this)
-export async function GET() {
-  const items = await listNotifications();
+export const dynamic = "force-dynamic";
+
+// GET /api/notifications?roomId=...
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const roomId = (url.searchParams.get("roomId") || "").trim();
+
+  const items = await listNotifications({ roomId: roomId || undefined });
   return NextResponse.json(items);
 }
 
 // POST will either create OR update (if id is present)
 export async function POST(req: Request) {
-  const data = await req.json();
+  const data = await req.json().catch(() => ({} as any));
 
   const result = await upsertNotificationFromPayload(data);
 

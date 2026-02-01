@@ -1,7 +1,6 @@
-// src/app/mobile/notifications/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type NotificationType = "system" | "event" | "offer" | "chat";
 
@@ -16,6 +15,11 @@ interface AppNotification {
   actionHref?: string;
   mediaUrl?: string;
   mediaKind?: "image" | "gif" | "other" | null;
+
+  // targeting fields may exist
+  campaignId?: string | null;
+  targetRoomIds?: string[] | null;
+  deliveredToRoomId?: string | null;
 }
 
 const FILTERS: Array<{ id: "all" | NotificationType; label: string }> = [
@@ -30,18 +34,32 @@ function isSpotlight(n: AppNotification) {
   return n.type === "offer" && !!n.mediaUrl;
 }
 
+function getRoomIdFromClient(): string {
+  // best-effort; we don't break if missing
+  try {
+    const keys = ["foundzie_roomId", "roomId", "foundzie_room", "foundzieRoomId"];
+    for (const k of keys) {
+      const v = localStorage.getItem(k);
+      if (v && v.trim()) return v.trim();
+    }
+  } catch {}
+  return "";
+}
+
 export default function MobileNotificationsPage() {
   const [items, setItems] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeFilter, setActiveFilter] =
-    useState<"all" | NotificationType>("all");
+  const [activeFilter, setActiveFilter] = useState<"all" | NotificationType>("all");
   const [selected, setSelected] = useState<AppNotification | null>(null);
+
+  const roomId = useMemo(() => getRoomIdFromClient(), []);
 
   async function load() {
     try {
-      const res = await fetch("/api/notifications", { cache: "no-store" });
+      const url = roomId ? `/api/notifications?roomId=${encodeURIComponent(roomId)}` : "/api/notifications";
+      const res = await fetch(url, { cache: "no-store" });
       const data = await res.json();
-      setItems(data);
+      setItems(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error("Failed to load notifications", err);
     } finally {
@@ -53,6 +71,7 @@ export default function MobileNotificationsPage() {
     load();
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const shown =
@@ -98,6 +117,11 @@ export default function MobileNotificationsPage() {
             <p className="text-xs text-slate-600">
               Latest updates and Spotlight offers near you
             </p>
+            {roomId ? (
+              <p className="text-[10px] text-slate-400">roomId: {roomId}</p>
+            ) : (
+              <p className="text-[10px] text-slate-400">roomId not found (showing global)</p>
+            )}
           </div>
           {unreadCount > 0 && (
             <div className="px-2 py-1 rounded-full bg-pink-500 text-white text-[11px] font-medium">
@@ -107,7 +131,6 @@ export default function MobileNotificationsPage() {
         </div>
       </div>
 
-      {/* filter bar */}
       <div className="px-4 pb-2 flex gap-2 overflow-x-auto no-scrollbar">
         {FILTERS.map((f) => (
           <button
@@ -168,7 +191,6 @@ export default function MobileNotificationsPage() {
         )}
       </ul>
 
-      {/* DETAIL DIALOG */}
       {selected && (
         <div
           className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-30"

@@ -2,16 +2,17 @@ import "server-only";
 import { kvGetJSON, kvSetJSON } from "@/lib/kv/redis";
 import { addNotification, type NotificationItem } from "@/app/api/notifications/store";
 import { recordSponsoredPush } from "@/app/api/health/store";
+import { listUsers } from "@/app/api/users/store";
 
 export type CampaignStatus = "draft" | "active" | "paused" | "ended";
 export type CampaignChannel = "push" | "call" | "hybrid";
 
 export type CampaignTargeting = {
-  // v1: simple targeting (expand later)
-  roomIds?: string[];       // explicit rooms
-  tags?: string[];          // match user.tags (future)
-  city?: string;            // match city tag like city:Westmont (future)
-  radiusKm?: number;        // future
+  // v1
+  roomIds?: string[];
+  tags?: string[];
+  city?: string;
+  radiusKm?: number; // future
 };
 
 export type CampaignCreative = {
@@ -24,8 +25,8 @@ export type CampaignCreative = {
 };
 
 export type CampaignSchedule = {
-  startAt?: string | null;  // ISO
-  endAt?: string | null;    // ISO
+  startAt?: string | null;
+  endAt?: string | null;
 };
 
 export interface SponsoredCampaign {
@@ -51,14 +52,16 @@ type UpsertResult = { created: boolean; updated: boolean; item: SponsoredCampaig
 
 const CAMPAIGNS_KEY = "foundzie:campaigns:v1";
 
-// one-per-campaign delivery log (prevents spam)
-type DeliveryLog = {
+// ✅ per-room delivery log key (prevents spam to same user)
+type RoomDeliveryLog = {
   campaignId: string;
+  roomId: string;
   lastPushAt: string | null;
   pushCount: number;
 };
-function deliveryKey(id: string) {
-  return `foundzie:campaign:delivery:${id}:v1`;
+
+function roomDeliveryKey(campaignId: string, roomId: string) {
+  return `foundzie:campaign:delivery:${campaignId}:${roomId}:v1`;
 }
 
 function nowIso() {
@@ -102,7 +105,6 @@ async function saveAll(items: SponsoredCampaign[]): Promise<void> {
 
 export async function listCampaigns(): Promise<SponsoredCampaign[]> {
   const items = await loadAll();
-  // newest first
   return items.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -130,16 +132,28 @@ function normalizeCampaignFromPayload(data: any, existing?: SponsoredCampaign): 
 
   const schedule: CampaignSchedule = {
     startAt:
-      data?.schedule?.startAt !== undefined ? (data.schedule.startAt || null) : base.schedule?.startAt ?? null,
+      data?.schedule?.startAt !== undefined
+        ? (data.schedule.startAt || null)
+        : base.schedule?.startAt ?? null,
     endAt:
-      data?.schedule?.endAt !== undefined ? (data.schedule.endAt || null) : base.schedule?.endAt ?? null,
+      data?.schedule?.endAt !== undefined
+        ? (data.schedule.endAt || null)
+        : base.schedule?.endAt ?? null,
   };
 
   const targeting: CampaignTargeting = {
     roomIds:
-      data?.targeting?.roomIds !== undefined ? safeStringArray(data.targeting.roomIds) : base.targeting?.roomIds,
-    tags: data?.targeting?.tags !== undefined ? safeStringArray(data.targeting.tags) : base.targeting?.tags,
-    city: data?.targeting?.city !== undefined ? String(data.targeting.city || "").trim() : base.targeting?.city,
+      data?.targeting?.roomIds !== undefined
+        ? safeStringArray(data.targeting.roomIds)
+        : base.targeting?.roomIds,
+    tags:
+      data?.targeting?.tags !== undefined
+        ? safeStringArray(data.targeting.tags)
+        : base.targeting?.tags,
+    city:
+      data?.targeting?.city !== undefined
+        ? String(data.targeting.city || "").trim()
+        : base.targeting?.city,
     radiusKm:
       data?.targeting?.radiusKm !== undefined
         ? Number(data.targeting.radiusKm || 0) || undefined
@@ -149,9 +163,12 @@ function normalizeCampaignFromPayload(data: any, existing?: SponsoredCampaign): 
   const creative: CampaignCreative = {
     title: String(data?.creative?.title ?? data?.title ?? base.creative.title ?? "").trim(),
     message: String(data?.creative?.message ?? data?.message ?? base.creative.message ?? "").trim(),
-    actionLabel: String(data?.creative?.actionLabel ?? data?.actionLabel ?? base.creative.actionLabel ?? "").trim() || undefined,
-    actionHref: String(data?.creative?.actionHref ?? data?.actionHref ?? base.creative.actionHref ?? "").trim() || undefined,
-    mediaUrl: String(data?.creative?.mediaUrl ?? data?.mediaUrl ?? base.creative.mediaUrl ?? "").trim() || undefined,
+    actionLabel:
+      String(data?.creative?.actionLabel ?? data?.actionLabel ?? base.creative.actionLabel ?? "").trim() || undefined,
+    actionHref:
+      String(data?.creative?.actionHref ?? data?.actionHref ?? base.creative.actionHref ?? "").trim() || undefined,
+    mediaUrl:
+      String(data?.creative?.mediaUrl ?? data?.mediaUrl ?? base.creative.mediaUrl ?? "").trim() || undefined,
     mediaKind:
       (data?.creative?.mediaKind ?? data?.mediaKind ?? base.creative.mediaKind ?? null) as any,
   };
@@ -176,9 +193,6 @@ function normalizeCampaignFromPayload(data: any, existing?: SponsoredCampaign): 
 export async function upsertCampaignFromPayload(data: any): Promise<UpsertResult> {
   const all = await loadAll();
 
-  let created = false;
-  let updated = false;
-
   if (data?.id) {
     const idx = all.findIndex((c) => c.id === data.id);
     if (idx !== -1) {
@@ -190,26 +204,79 @@ export async function upsertCampaignFromPayload(data: any): Promise<UpsertResult
   }
 
   const next = normalizeCampaignFromPayload(data, undefined);
-  created = true;
   all.unshift(next);
   await saveAll(all);
-  return { created, updated, item: next };
+  return { created: true, updated: false, item: next };
 }
 
+// ------------------- Targeting helpers ------------------------------------
+
+function norm(s: string) {
+  return String(s || "").trim().toLowerCase();
+}
+
+function userMatchesTags(userTags: string[], targetTags: string[]) {
+  if (!targetTags.length) return true;
+  const set = new Set(userTags.map(norm));
+  return targetTags.some((t) => set.has(norm(t)));
+}
+
+function userMatchesCity(userTags: string[], city: string) {
+  const c = norm(city);
+  if (!c) return true;
+  const set = new Set(userTags.map(norm));
+  // supports tags like "city:Westmont"
+  return set.has(`city:${c}`);
+}
+
+async function resolveTargetRoomIds(c: SponsoredCampaign): Promise<string[]> {
+  const explicit = Array.isArray(c.targeting?.roomIds) ? c.targeting.roomIds.map(String).map((s) => s.trim()).filter(Boolean) : [];
+  if (explicit.length) return Array.from(new Set(explicit));
+
+  const targetTags = Array.isArray(c.targeting?.tags) ? c.targeting.tags : [];
+  const city = String(c.targeting?.city || "").trim();
+
+  // If no targeting rules, treat as broadcast (empty list means "global")
+  if (!targetTags.length && !city) return [];
+
+  const users = await listUsers().catch(() => []);
+  const roomIds: string[] = [];
+
+  for (const u of users as any[]) {
+    const rid = String(u?.roomId || "").trim();
+    if (!rid) continue;
+
+    const tags = Array.isArray(u?.tags) ? u.tags.map(String) : [];
+    const okTags = userMatchesTags(tags, targetTags);
+    const okCity = userMatchesCity(tags, city);
+
+    if (okTags && okCity) roomIds.push(rid);
+  }
+
+  return Array.from(new Set(roomIds));
+}
+
+// ------------------- Delivery (push) --------------------------------------
+
 /**
- * Push delivery v1:
- * - If campaign is active
- * - and includes push OR hybrid
- * - and schedule window passes
- * then emit a NotificationItem into your existing notifications KV list.
+ * Push delivery v1.1 (targeting):
+ * - campaign must be active and within schedule
+ * - delivers to matching roomIds if targeting is set
+ * - if targeting is empty => broadcast notification (global)
  *
- * `force=true` will emit even if already sent recently.
+ * `force=true` bypasses per-room cooldown.
  */
-export async function deliverCampaignPush(campaignId: string, force = false): Promise<{
+export async function deliverCampaignPush(
+  campaignId: string,
+  force = false
+): Promise<{
   ok: boolean;
   reason?: string;
-  notification?: NotificationItem | null;
-  log?: DeliveryLog | null;
+  deliveredCount?: number;
+  targetRoomIds?: string[];
+  notification?: NotificationItem | null; // for broadcast case
+  notificationsCreated?: number;
+  skippedRooms?: Array<{ roomId: string; reason: string }>;
 }> {
   const c = await getCampaign(campaignId);
   if (!c) return { ok: false, reason: "campaign_not_found" };
@@ -219,42 +286,90 @@ export async function deliverCampaignPush(campaignId: string, force = false): Pr
   if (!wantsPush) return { ok: false, reason: "push_not_enabled" };
   if (!inWindow(c.schedule)) return { ok: false, reason: "outside_schedule_window" };
 
-  const log = (await kvGetJSON<DeliveryLog>(deliveryKey(c.id))) ?? {
-    campaignId: c.id,
-    lastPushAt: null,
-    pushCount: 0,
-  };
+  // cooldown per room (default 6h)
+  const cooldownMs = Number(process.env.CAMPAIGN_PUSH_COOLDOWN_MS || String(6 * 60 * 60 * 1000));
 
-  // simple anti-spam: 1 push per 5 minutes unless force
-  const last = log.lastPushAt ? Date.parse(log.lastPushAt) : NaN;
-  const now = Date.now();
-  if (!force && Number.isFinite(last) && now - last < 5 * 60 * 1000) {
-    return { ok: false, reason: "cooldown_5m", log };
+  const targetRoomIds = await resolveTargetRoomIds(c);
+
+  // ✅ Broadcast mode (no targeting rules)
+  if (targetRoomIds.length === 0 && !c.targeting?.tags?.length && !c.targeting?.city && !c.targeting?.roomIds?.length) {
+    const n = await addNotification({
+      title: c.creative.title || c.name || "Sponsored",
+      message: c.creative.message || "",
+      type: "promo",
+      unread: true,
+      actionLabel: c.creative.actionLabel ?? "View",
+      actionHref: c.creative.actionHref ?? "/mobile/explore",
+      mediaUrl: c.creative.mediaUrl ?? "",
+      mediaKind: c.creative.mediaKind ?? null,
+      timeLabel: "just now",
+      campaignId: c.id,
+      targetRoomIds: null, // global
+    });
+
+    await recordSponsoredPush({
+      campaignId: c.id,
+      note: `${c.name} | ${c.advertiserName}`.trim(),
+    }).catch(() => null);
+
+    return { ok: true, deliveredCount: 1, notification: n, notificationsCreated: 1, targetRoomIds: [] };
   }
 
-  const n = await addNotification({
-    title: c.creative.title || c.name || "Sponsored",
-    message: c.creative.message || "",
-    type: "promo",
-    unread: true,
-    actionLabel: c.creative.actionLabel ?? "View",
-    actionHref: c.creative.actionHref ?? "/mobile/explore",
-    mediaUrl: c.creative.mediaUrl ?? "",
-    mediaKind: c.creative.mediaKind ?? null,
-    timeLabel: "just now",
-  });
+  // ✅ Targeted mode: create per-room notifications with targetRoomIds=[roomId]
+  let created = 0;
+  const skippedRooms: Array<{ roomId: string; reason: string }> = [];
 
-  const nextLog: DeliveryLog = {
-    ...log,
-    lastPushAt: new Date().toISOString(),
-    pushCount: (log.pushCount || 0) + 1,
-  };
-  await kvSetJSON(deliveryKey(c.id), nextLog);
+  for (const roomId of targetRoomIds) {
+    const key = roomDeliveryKey(c.id, roomId);
+    const log = (await kvGetJSON<RoomDeliveryLog>(key)) ?? {
+      campaignId: c.id,
+      roomId,
+      lastPushAt: null,
+      pushCount: 0,
+    };
+
+    const last = log.lastPushAt ? Date.parse(log.lastPushAt) : NaN;
+    const now = Date.now();
+    if (!force && Number.isFinite(last) && now - last < cooldownMs) {
+      skippedRooms.push({ roomId, reason: "cooldown" });
+      continue;
+    }
+
+    await addNotification({
+      title: c.creative.title || c.name || "Sponsored",
+      message: c.creative.message || "",
+      type: "promo",
+      unread: true,
+      actionLabel: c.creative.actionLabel ?? "View",
+      actionHref: c.creative.actionHref ?? "/mobile/explore",
+      mediaUrl: c.creative.mediaUrl ?? "",
+      mediaKind: c.creative.mediaKind ?? null,
+      timeLabel: "just now",
+      campaignId: c.id,
+      targetRoomIds: [roomId],
+      deliveredToRoomId: roomId,
+    });
+
+    const nextLog: RoomDeliveryLog = {
+      ...log,
+      lastPushAt: new Date().toISOString(),
+      pushCount: (log.pushCount || 0) + 1,
+    };
+    await kvSetJSON(key, nextLog);
+
+    created += 1;
+  }
 
   await recordSponsoredPush({
     campaignId: c.id,
-    note: `${c.name} | ${c.advertiserName}`.trim(),
+    note: `${c.name} | ${c.advertiserName} | delivered=${created}`.trim(),
   }).catch(() => null);
 
-  return { ok: true, notification: n, log: nextLog };
+  return {
+    ok: true,
+    deliveredCount: created,
+    notificationsCreated: created,
+    targetRoomIds,
+    skippedRooms,
+  };
 }

@@ -23,8 +23,13 @@ export default function AdminNewCampaignPage() {
   const [mediaUrl, setMediaUrl] = useState("");
   const [mediaKind, setMediaKind] = useState<"image" | "gif" | "other" | "">("");
 
-  const [startAt, setStartAt] = useState(""); // ISO input (optional)
+  const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
+
+  // ✅ M21c.2 Targeting fields
+  const [targetCity, setTargetCity] = useState("");
+  const [targetTags, setTargetTags] = useState("");     // comma-separated
+  const [targetRoomIds, setTargetRoomIds] = useState(""); // comma-separated
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -37,6 +42,13 @@ export default function AdminNewCampaignPage() {
       if (channels.call) out.push("call");
     }
     return out.length ? out : ["push"];
+  }
+
+  function splitCsv(s: string): string[] {
+    return (s || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -58,7 +70,11 @@ export default function AdminNewCampaignPage() {
           startAt: startAt || null,
           endAt: endAt || null,
         },
-        targeting: {}, // v1 (we’ll expand targeting in M21b.2)
+        targeting: {
+          city: targetCity.trim() || "",
+          tags: splitCsv(targetTags),
+          roomIds: splitCsv(targetRoomIds),
+        },
         creative: {
           title,
           message,
@@ -85,6 +101,10 @@ export default function AdminNewCampaignPage() {
       setMediaKind("");
       setStartAt("");
       setEndAt("");
+
+      setTargetCity("");
+      setTargetTags("");
+      setTargetRoomIds("");
     } else {
       alert("Could not save campaign.");
     }
@@ -98,7 +118,7 @@ export default function AdminNewCampaignPage() {
         <div>
           <h1 className="text-xl font-semibold text-gray-900">New campaign</h1>
           <p className="text-xs text-gray-500">
-            M21 Sponsored Promotions. Push delivery v1 will emit into <code>/api/notifications</code>.
+            M21 Sponsored Promotions. Push delivery emits into <code>/api/notifications</code>.
           </p>
         </div>
         <Link href="/admin/campaigns" className="text-[10px] text-gray-400 hover:text-gray-600">
@@ -143,7 +163,7 @@ export default function AdminNewCampaignPage() {
               <option value="ended">ended</option>
             </select>
             <p className="text-[10px] text-gray-400 mt-1">
-              If you set <b>active</b> and channel includes <b>push</b>, it will create a notification immediately.
+              If <b>active</b> and channel includes <b>push</b>, it will deliver immediately (respecting targeting).
             </p>
           </div>
 
@@ -173,15 +193,53 @@ export default function AdminNewCampaignPage() {
                   type="checkbox"
                   checked={channels.hybrid}
                   onChange={(e) =>
-                    setChannels((s) => ({
-                      push: e.target.checked ? true : s.push,
-                      call: e.target.checked ? true : s.call,
+                    setChannels(() => ({
+                      push: e.target.checked ? true : channels.push,
+                      call: e.target.checked ? true : channels.call,
                       hybrid: e.target.checked,
                     }))
                   }
                 />
                 Hybrid
               </label>
+            </div>
+          </div>
+
+          {/* ✅ Targeting */}
+          <div className="border border-gray-100 rounded-md p-3 space-y-3">
+            <p className="text-xs font-medium text-gray-700">Targeting v1</p>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Target city (optional)</label>
+              <input
+                value={targetCity}
+                onChange={(e) => setTargetCity(e.target.value)}
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
+                placeholder="Westmont"
+              />
+              <p className="text-[10px] text-gray-400 mt-1">Matches users with tag: <code>city:Westmont</code>.</p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Target tags (optional)</label>
+              <input
+                value={targetTags}
+                onChange={(e) => setTargetTags(e.target.value)}
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
+                placeholder="coffee, donuts, food"
+              />
+              <p className="text-[10px] text-gray-400 mt-1">Comma-separated. Matches user.tags.</p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Target roomIds (optional)</label>
+              <input
+                value={targetRoomIds}
+                onChange={(e) => setTargetRoomIds(e.target.value)}
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
+                placeholder="visitor-abc..., call:CA..., phone:+1..."
+              />
+              <p className="text-[10px] text-gray-400 mt-1">Comma-separated. If set, overrides other targeting.</p>
             </div>
           </div>
 
@@ -214,7 +272,7 @@ export default function AdminNewCampaignPage() {
               <input
                 value={actionLabel}
                 onChange={(e) => setActionLabel(e.target.value)}
-                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
               />
             </div>
             <div>
@@ -222,7 +280,7 @@ export default function AdminNewCampaignPage() {
               <input
                 value={actionHref}
                 onChange={(e) => setActionHref(e.target.value)}
-                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
               />
             </div>
           </div>
@@ -233,7 +291,7 @@ export default function AdminNewCampaignPage() {
               <input
                 value={mediaUrl}
                 onChange={(e) => setMediaUrl(e.target.value)}
-                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
                 placeholder="https://example.com/image.jpg"
               />
             </div>
@@ -243,7 +301,7 @@ export default function AdminNewCampaignPage() {
               <select
                 value={mediaKind}
                 onChange={(e) => setMediaKind(e.target.value as any)}
-                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
               >
                 <option value="">None</option>
                 <option value="image">Image</option>
@@ -270,7 +328,7 @@ export default function AdminNewCampaignPage() {
               />
             </div>
             <p className="text-[10px] text-gray-400 mt-1">
-              v1 uses schedule as a gate (no cron yet). We’ll add real scheduling later.
+              v1 uses schedule as a gate (no cron yet).
             </p>
           </div>
 
