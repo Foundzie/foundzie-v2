@@ -73,20 +73,23 @@ function roomDeliveryKey(campaignId: string, roomId: string) {
 export type CampaignDeliveryStats = {
   campaignId: string;
 
-  totalDeliverRuns: number;        // "deliver push now" actions
-  totalTargetsEvaluated: number;   // total rooms evaluated across runs
+  totalDeliverRuns: number;        // "deliver" actions
+  totalTargetsEvaluated: number;   // rooms evaluated across runs
   totalDelivered: number;          // notifications created across runs
   totalSkipped: number;            // skipped across runs
 
   skippedByReason: Record<string, number>;
 
   lastRunAt: string | null;
-  lastDeliveredAt: string | null;  // last time any notification was created
+  lastDeliveredAt: string | null;
+
   lastRunSummary?: {
     delivered: number;
     skipped: number;
     skippedByReason: Record<string, number>;
     targetCount: number;
+    mode: "broadcast" | "targeted";
+    forced: boolean;
   } | null;
 };
 
@@ -110,6 +113,11 @@ function defaultCampaignStats(campaignId: string): CampaignDeliveryStats {
 
 function bumpMap(map: Record<string, number>, key: string, n = 1) {
   map[key] = (map[key] || 0) + n;
+}
+
+async function getCampaignStats(campaignId: string): Promise<CampaignDeliveryStats> {
+  const s = await kvGetJSON<CampaignDeliveryStats>(campaignStatsKey(campaignId)).catch(() => null);
+  return s ?? defaultCampaignStats(campaignId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -144,6 +152,16 @@ function inWindow(schedule?: CampaignSchedule | null) {
   return true;
 }
 
+function scheduleState(schedule?: CampaignSchedule | null): "scheduled" | "active_window" | "ended_window" {
+  const now = Date.now();
+  const start = schedule?.startAt ? Date.parse(schedule.startAt) : NaN;
+  const end = schedule?.endAt ? Date.parse(schedule.endAt) : NaN;
+
+  if (Number.isFinite(end) && now > end) return "ended_window";
+  if (Number.isFinite(start) && now < start) return "scheduled";
+  return "active_window";
+}
+
 async function loadAll(): Promise<SponsoredCampaign[]> {
   const items = (await kvGetJSON<SponsoredCampaign[]>(CAMPAIGNS_KEY)) ?? [];
   return Array.isArray(items) ? items.slice() : [];
@@ -153,9 +171,22 @@ async function saveAll(items: SponsoredCampaign[]): Promise<void> {
   await kvSetJSON(CAMPAIGNS_KEY, items);
 }
 
-export async function listCampaigns(): Promise<SponsoredCampaign[]> {
+/**
+ * M21c.4: list campaigns WITH stats (read-only advertiser view).
+ * Keeps API fast enough by doing a bounded parallel read of stats.
+ */
+export async function listCampaigns(): Promise<Array<SponsoredCampaign & { stats?: CampaignDeliveryStats }>> {
   const items = await loadAll();
-  return items.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const sorted = items.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+  const withStats = await Promise.all(
+    sorted.slice(0, 200).map(async (c) => {
+      const stats = await getCampaignStats(c.id);
+      return { ...c, stats };
+    })
+  );
+
+  return withStats;
 }
 
 export async function getCampaign(id: string): Promise<SponsoredCampaign | null> {
@@ -214,14 +245,11 @@ function normalizeCampaignFromPayload(data: any, existing?: SponsoredCampaign): 
     title: String(data?.creative?.title ?? data?.title ?? base.creative.title ?? "").trim(),
     message: String(data?.creative?.message ?? data?.message ?? base.creative.message ?? "").trim(),
     actionLabel:
-      String(data?.creative?.actionLabel ?? data?.actionLabel ?? base.creative.actionLabel ?? "").trim() ||
-      undefined,
+      String(data?.creative?.actionLabel ?? data?.actionLabel ?? base.creative.actionLabel ?? "").trim() || undefined,
     actionHref:
-      String(data?.creative?.actionHref ?? data?.actionHref ?? base.creative.actionHref ?? "").trim() ||
-      undefined,
+      String(data?.creative?.actionHref ?? data?.actionHref ?? base.creative.actionHref ?? "").trim() || undefined,
     mediaUrl:
-      String(data?.creative?.mediaUrl ?? data?.mediaUrl ?? base.creative.mediaUrl ?? "").trim() ||
-      undefined,
+      String(data?.creative?.mediaUrl ?? data?.mediaUrl ?? base.creative.mediaUrl ?? "").trim() || undefined,
     mediaKind: (data?.creative?.mediaKind ?? data?.mediaKind ?? base.creative.mediaKind ?? null) as any,
   };
 
@@ -233,7 +261,10 @@ function normalizeCampaignFromPayload(data: any, existing?: SponsoredCampaign): 
     updatedAt: nowIso(),
     name: String(data?.name ?? base.name).trim(),
     advertiserName: String(data?.advertiserName ?? base.advertiserName).trim(),
-    status: status === "draft" || status === "active" || status === "paused" || status === "ended" ? status : "draft",
+    status:
+      status === "draft" || status === "active" || status === "paused" || status === "ended"
+        ? status
+        : "draft",
     channels,
     schedule,
     targeting,
@@ -279,7 +310,6 @@ function userMatchesCity(userTags: string[], city: string) {
   const c = norm(city);
   if (!c) return true;
   const set = new Set(userTags.map(norm));
-  // supports tags like "city:Westmont"
   return set.has(`city:${c}`);
 }
 
@@ -313,23 +343,17 @@ async function resolveTargetRoomIds(c: SponsoredCampaign): Promise<string[]> {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Delivery (push) — M21c.3: per-user guardrails + metrics            */
+/*  Delivery (push) — M21c.4 controls + stats                           */
 /* ------------------------------------------------------------------ */
-
-export type DeliverySkipReason =
-  | "cooldown"
-  | "no_targets"
-  | "campaign_not_active"
-  | "push_not_enabled"
-  | "outside_schedule_window"
-  | "campaign_not_found"
-  | "broadcast";
 
 export type CampaignDeliveryResult = {
   ok: boolean;
-  reason?: DeliverySkipReason | string;
+  reason?: string;
 
   mode?: "broadcast" | "targeted";
+
+  forced?: boolean;
+  scheduleState?: "scheduled" | "active_window" | "ended_window";
 
   targetRoomIds?: string[];
   targetCount?: number;
@@ -340,7 +364,7 @@ export type CampaignDeliveryResult = {
   skippedByReason?: Record<string, number>;
   skippedRooms?: Array<{ roomId: string; reason: string }>;
 
-  // Broadcast mode still returns a single notification
+  // Broadcast mode returns a single notification
   notification?: NotificationItem | null;
 
   // Stats after update (persisted)
@@ -352,18 +376,12 @@ export type CampaignDeliveryResult = {
 };
 
 /**
- * Push delivery v1.2 (M21c.3):
- * - campaign must be active and within schedule
- * - targeted delivery evaluates targetRoomIds and applies PER-ROOM cooldown
- * - returns delivered/skipped breakdown
- * - persists per-campaign aggregate stats
- *
- * `force=true` bypasses per-room cooldown.
+ * M21c.4:
+ * - `force=false` is the default and respects per-room cooldown
+ * - `force=true` bypasses cooldown (admin override)
+ * - returns schedule state so UI can show "Scheduled" / "Ended"
  */
-export async function deliverCampaignPush(
-  campaignId: string,
-  force = false
-): Promise<CampaignDeliveryResult> {
+export async function deliverCampaignPush(campaignId: string, force = false): Promise<CampaignDeliveryResult> {
   const ranAt = nowIso();
 
   const c = await getCampaign(campaignId);
@@ -374,22 +392,21 @@ export async function deliverCampaignPush(
   const wantsPush = c.channels.includes("push") || c.channels.includes("hybrid");
   if (!wantsPush) return { ok: false, reason: "push_not_enabled", ranAt };
 
-  if (!inWindow(c.schedule)) return { ok: false, reason: "outside_schedule_window", ranAt };
+  const sState = scheduleState(c.schedule);
+  if (!inWindow(c.schedule)) {
+    return { ok: false, reason: "outside_schedule_window", ranAt, scheduleState: sState };
+  }
 
-  // Default per-room cooldown window (6h) — can override via env
   const cooldownMs = Number(process.env.CAMPAIGN_PUSH_COOLDOWN_MS || String(6 * 60 * 60 * 1000));
   const cooldownMsSafe = Number.isFinite(cooldownMs) && cooldownMs > 0 ? cooldownMs : 6 * 60 * 60 * 1000;
 
-  // load campaign aggregate stats
-  const existingStats =
-    (await kvGetJSON<CampaignDeliveryStats>(campaignStatsKey(c.id)).catch(() => null)) ?? defaultCampaignStats(c.id);
+  const existingStats = await getCampaignStats(c.id);
 
   const skippedByReason: Record<string, number> = {};
   const skippedRooms: Array<{ roomId: string; reason: string }> = [];
 
   const targetRoomIds = await resolveTargetRoomIds(c);
 
-  // If truly no targeting rules -> broadcast
   const hasAnyTargeting =
     (Array.isArray(c.targeting?.roomIds) && c.targeting!.roomIds!.length > 0) ||
     (Array.isArray(c.targeting?.tags) && c.targeting!.tags!.length > 0) ||
@@ -397,8 +414,6 @@ export async function deliverCampaignPush(
 
   // ✅ Broadcast mode
   if (!hasAnyTargeting) {
-    bumpMap(skippedByReason, "broadcast", 0);
-
     const n = await addNotification({
       title: c.creative.title || c.name || "Sponsored",
       message: c.creative.message || "",
@@ -409,8 +424,6 @@ export async function deliverCampaignPush(
       mediaUrl: c.creative.mediaUrl ?? "",
       mediaKind: c.creative.mediaKind ?? null,
       timeLabel: "just now",
-      // NOTE: if your NotificationItem supports campaign metadata, you can include it.
-      // Keep it minimal here to avoid breaking type assumptions.
     });
 
     const nextStats: CampaignDeliveryStats = {
@@ -418,7 +431,7 @@ export async function deliverCampaignPush(
       totalDeliverRuns: existingStats.totalDeliverRuns + 1,
       totalTargetsEvaluated: existingStats.totalTargetsEvaluated + 1,
       totalDelivered: existingStats.totalDelivered + 1,
-      totalSkipped: existingStats.totalSkipped + 0,
+      totalSkipped: existingStats.totalSkipped,
       skippedByReason: { ...existingStats.skippedByReason },
       lastRunAt: ranAt,
       lastDeliveredAt: ranAt,
@@ -427,6 +440,8 @@ export async function deliverCampaignPush(
         skipped: 0,
         skippedByReason: {},
         targetCount: 1,
+        mode: "broadcast",
+        forced: !!force,
       },
     };
 
@@ -443,6 +458,8 @@ export async function deliverCampaignPush(
     return {
       ok: true,
       mode: "broadcast",
+      forced: !!force,
+      scheduleState: sState,
       deliveredCount: 1,
       skippedCount: 0,
       skippedByReason: {},
@@ -455,16 +472,16 @@ export async function deliverCampaignPush(
     };
   }
 
-  // ✅ Targeted mode: no matches
+  // ✅ Targeted but no matches
   if (targetRoomIds.length === 0) {
     bumpMap(skippedByReason, "no_targets", 1);
 
     const nextStats: CampaignDeliveryStats = {
       ...existingStats,
       totalDeliverRuns: existingStats.totalDeliverRuns + 1,
-      totalTargetsEvaluated: existingStats.totalTargetsEvaluated + 0,
-      totalDelivered: existingStats.totalDelivered + 0,
-      totalSkipped: existingStats.totalSkipped + 0,
+      totalTargetsEvaluated: existingStats.totalTargetsEvaluated,
+      totalDelivered: existingStats.totalDelivered,
+      totalSkipped: existingStats.totalSkipped,
       skippedByReason: { ...existingStats.skippedByReason },
       lastRunAt: ranAt,
       lastDeliveredAt: existingStats.lastDeliveredAt,
@@ -473,10 +490,12 @@ export async function deliverCampaignPush(
         skipped: 0,
         skippedByReason: { no_targets: 1 },
         targetCount: 0,
+        mode: "targeted",
+        forced: !!force,
       },
     };
-
     bumpMap(nextStats.skippedByReason, "no_targets", 1);
+
     await kvSetJSON(campaignStatsKey(c.id), nextStats).catch(() => null);
 
     await recordSponsoredPush({
@@ -490,6 +509,8 @@ export async function deliverCampaignPush(
     return {
       ok: true,
       mode: "targeted",
+      forced: !!force,
+      scheduleState: sState,
       reason: "no_targets",
       targetRoomIds: [],
       targetCount: 0,
@@ -536,7 +557,6 @@ export async function deliverCampaignPush(
       mediaUrl: c.creative.mediaUrl ?? "",
       mediaKind: c.creative.mediaKind ?? null,
       timeLabel: "just now",
-      // If your notification system supports room scoping, keep it in your existing implementation.
     });
 
     const nextLog: RoomDeliveryLog = {
@@ -552,7 +572,6 @@ export async function deliverCampaignPush(
 
   const skippedCount = skippedRooms.length;
 
-  // update aggregate stats
   const nextStats: CampaignDeliveryStats = {
     ...existingStats,
     totalDeliverRuns: existingStats.totalDeliverRuns + 1,
@@ -567,6 +586,8 @@ export async function deliverCampaignPush(
       skipped: skippedCount,
       skippedByReason: { ...skippedByReason },
       targetCount: targetRoomIds.length,
+      mode: "targeted",
+      forced: !!force,
     },
   };
 
@@ -581,12 +602,14 @@ export async function deliverCampaignPush(
     delivered: created,
     skipped: skippedCount,
     skippedByReason,
-    note: `${c.name} | ${c.advertiserName} | targeted`.trim(),
+    note: `${c.name} | ${c.advertiserName} | targeted${force ? " | force" : ""}`.trim(),
   }).catch(() => null);
 
   return {
     ok: true,
     mode: "targeted",
+    forced: !!force,
+    scheduleState: sState,
     targetRoomIds,
     targetCount: targetRoomIds.length,
     deliveredCount: created,

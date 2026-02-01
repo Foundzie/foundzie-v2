@@ -3,7 +3,7 @@ import { listCampaigns, upsertCampaignFromPayload, deliverCampaignPush } from "@
 
 export const dynamic = "force-dynamic";
 
-// GET /api/campaigns -> list all campaigns
+// GET /api/campaigns -> list all campaigns (now includes stats)
 export async function GET() {
   const items = await listCampaigns();
   return NextResponse.json({ ok: true, items });
@@ -11,6 +11,7 @@ export async function GET() {
 
 // POST /api/campaigns -> create/update campaign
 // optional query: ?deliver=1 will deliver push immediately if active
+// optional query: ?force=1 bypasses cooldown (admin override)
 export async function POST(req: Request) {
   const url = new URL(req.url);
   const deliver = url.searchParams.get("deliver") === "1";
