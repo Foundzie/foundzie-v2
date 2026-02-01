@@ -6,30 +6,9 @@ import { useEffect, useMemo, useState } from "react";
 type CampaignStatus = "draft" | "active" | "paused" | "ended";
 type CampaignChannel = "push" | "call" | "hybrid";
 
-type CampaignStats = {
-  campaignId: string;
-  totalDeliverRuns: number;
-  totalTargetsEvaluated: number;
-  totalDelivered: number;
-  totalSkipped: number;
-  skippedByReason: Record<string, number>;
-  lastRunAt: string | null;
-  lastDeliveredAt: string | null;
-  lastRunSummary?: {
-    delivered: number;
-    skipped: number;
-    skippedByReason: Record<string, number>;
-    targetCount: number;
-    mode: "broadcast" | "targeted";
-    forced: boolean;
-  } | null;
-};
-
 type DeliveryResult = {
   ok?: boolean;
   mode?: "broadcast" | "targeted";
-  forced?: boolean;
-  scheduleState?: "scheduled" | "active_window" | "ended_window";
   reason?: string;
 
   ranAt?: string;
@@ -40,7 +19,27 @@ type DeliveryResult = {
   skippedCount?: number;
 
   skippedByReason?: Record<string, number>;
-  stats?: CampaignStats | null;
+  skippedRooms?: Array<{ roomId: string; reason: string }>;
+
+  stats?: any;
+};
+
+type SchedulerSummary = {
+  ok: true;
+  ranAt: string;
+  checked: number;
+  attempted: number;
+  deliveredCampaigns: number;
+  skippedCampaigns: number;
+  results: Array<{
+    campaignId: string;
+    name: string;
+    status: CampaignStatus;
+    reason?: string;
+    delivered?: number;
+    skipped?: number;
+    mode?: "broadcast" | "targeted";
+  }>;
 };
 
 type Campaign = {
@@ -52,46 +51,7 @@ type Campaign = {
   updatedAt: string;
   creative: { title: string; message: string; actionHref?: string; mediaUrl?: string };
   targeting?: { city?: string; tags?: string[]; roomIds?: string[] };
-  schedule?: { startAt?: string | null; endAt?: string | null };
-  stats?: CampaignStats;
 };
-
-function norm(s: any) {
-  return String(s || "").trim();
-}
-
-function fmtIso(iso?: string | null) {
-  if (!iso) return "";
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return iso;
-  return new Date(t).toLocaleString();
-}
-
-function scheduleBadge(c: Campaign) {
-  const startAt = c.schedule?.startAt || null;
-  const endAt = c.schedule?.endAt || null;
-  const now = Date.now();
-
-  const s = startAt ? Date.parse(startAt) : NaN;
-  const e = endAt ? Date.parse(endAt) : NaN;
-
-  if (Number.isFinite(e) && now > e) return { label: "ENDED", style: "bg-gray-100 text-gray-700" };
-  if (Number.isFinite(s) && now < s) return { label: "SCHEDULED", style: "bg-blue-50 text-blue-700" };
-  if (startAt || endAt) return { label: "IN WINDOW", style: "bg-green-50 text-green-700" };
-
-  return { label: "ALWAYS", style: "bg-gray-50 text-gray-700" };
-}
-
-function formatBreakdown(map?: Record<string, number>) {
-  if (!map) return "";
-  const entries = Object.entries(map).filter(([, v]) => Number(v) > 0);
-  if (!entries.length) return "";
-  return entries
-    .sort((a, b) => (b[1] || 0) - (a[1] || 0))
-    .slice(0, 4)
-    .map(([k, v]) => `${k}:${v}`)
-    .join(" · ");
-}
 
 export default function AdminCampaignsPage() {
   const [items, setItems] = useState<Campaign[]>([]);
@@ -99,6 +59,8 @@ export default function AdminCampaignsPage() {
 
   // Store last delivery response per campaign in UI
   const [lastDelivery, setLastDelivery] = useState<Record<string, DeliveryResult>>({});
+  const [schedulerLast, setSchedulerLast] = useState<SchedulerSummary | null>(null);
+  const [schedulerRunning, setSchedulerRunning] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -117,14 +79,18 @@ export default function AdminCampaignsPage() {
     load();
   }, []);
 
-  async function deliver(id: string, opts: { force: boolean }) {
-    const qs = opts.force ? "deliver=1&force=1" : "deliver=1";
+  async function deliver(id: string, force: boolean) {
     try {
-      const res = await fetch(`/api/campaigns?${qs}`, {
+      const qs = new URLSearchParams();
+      qs.set("deliver", "1");
+      if (force) qs.set("force", "1");
+
+      const res = await fetch(`/api/campaigns?${qs.toString()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
       });
+
       const j = await res.json();
       const d = (j?.delivery ?? null) as DeliveryResult | null;
 
@@ -138,13 +104,31 @@ export default function AdminCampaignsPage() {
         setLastDelivery((prev) => ({ ...prev, [id]: d }));
         const deliveredCount = Number(d?.deliveredCount || 0);
         const skippedCount = Number(d?.skippedCount || 0);
-        alert(`✅ Delivered ${deliveredCount}. Skipped ${skippedCount}.${opts.force ? " (FORCED)" : ""}`);
+        alert(`✅ Delivered ${deliveredCount}. Skipped ${skippedCount}.`);
       }
     } catch (e) {
       console.error("deliver failed", e);
       setLastDelivery((prev) => ({ ...prev, [id]: { ok: false, reason: "request_failed" } }));
       alert("Delivery failed (see console).");
     } finally {
+      load();
+    }
+  }
+
+  async function runSchedulerNow() {
+    setSchedulerRunning(true);
+    try {
+      const res = await fetch("/api/campaigns/run", { method: "POST" });
+      const j = (await res.json()) as SchedulerSummary;
+      setSchedulerLast(j);
+      alert(
+        `Scheduler ran.\nChecked: ${j.checked}\nAttempted: ${j.attempted}\nCampaigns delivered: ${j.deliveredCampaigns}\nCampaigns skipped: ${j.skippedCampaigns}`
+      );
+    } catch (e) {
+      console.error("runSchedulerNow failed", e);
+      alert("Scheduler run failed (see console).");
+    } finally {
+      setSchedulerRunning(false);
       load();
     }
   }
@@ -161,6 +145,16 @@ export default function AdminCampaignsPage() {
     return parts.length ? parts.join(" · ") : "broadcast";
   }
 
+  function formatBreakdown(map?: Record<string, number>) {
+    if (!map) return "";
+    const entries = Object.entries(map).filter(([, v]) => Number(v) > 0);
+    if (!entries.length) return "";
+    return entries
+      .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+      .map(([k, v]) => `${k}:${v}`)
+      .join(" · ");
+  }
+
   const rows = useMemo(() => items, [items]);
 
   return (
@@ -173,13 +167,23 @@ export default function AdminCampaignsPage() {
           </p>
         </div>
 
-        <div className="flex gap-3">
+        <div className="flex gap-3 items-center">
+          <button
+            onClick={runSchedulerNow}
+            disabled={schedulerRunning}
+            className="bg-white border border-gray-200 text-gray-700 text-sm px-4 py-2 rounded-md hover:bg-gray-50 disabled:opacity-60"
+            title="Runs scheduled delivery once (respects cooldown)"
+          >
+            {schedulerRunning ? "Running scheduler..." : "Run scheduler now"}
+          </button>
+
           <Link
             href="/admin/notifications"
             className="bg-white border border-gray-200 text-gray-700 text-sm px-4 py-2 rounded-md hover:bg-gray-50"
           >
             Notifications
           </Link>
+
           <Link
             href="/admin/campaigns/new"
             className="bg-purple-600 text-white text-sm px-4 py-2 rounded-md hover:bg-purple-700"
@@ -190,6 +194,17 @@ export default function AdminCampaignsPage() {
       </header>
 
       <section className="px-6 py-6">
+        {schedulerLast && (
+          <div className="mb-4 bg-white border border-gray-200 rounded-lg p-4">
+            <p className="text-sm font-medium text-gray-900">Last scheduler run</p>
+            <p className="text-[11px] text-gray-500 mt-1">
+              Ran: {new Date(schedulerLast.ranAt).toLocaleString()} · Checked: {schedulerLast.checked} · Attempted:{" "}
+              {schedulerLast.attempted} · Delivered campaigns: {schedulerLast.deliveredCampaigns} · Skipped campaigns:{" "}
+              {schedulerLast.skippedCampaigns}
+            </p>
+          </div>
+        )}
+
         <div className="bg-white border border-gray-200 rounded-lg">
           <ul className="divide-y divide-gray-100">
             {loading ? (
@@ -199,34 +214,22 @@ export default function AdminCampaignsPage() {
             ) : (
               rows.map((c) => {
                 const d = lastDelivery[c.id];
-                const stats = c.stats ?? d?.stats ?? null;
-
-                const breakdown = formatBreakdown(d?.skippedByReason || stats?.skippedByReason);
-                const sched = scheduleBadge(c);
-
-                const startAt = norm(c.schedule?.startAt);
-                const endAt = norm(c.schedule?.endAt);
+                const breakdown = formatBreakdown(d?.skippedByReason);
 
                 return (
                   <li key={c.id} className="px-4 py-3">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex items-center gap-2">
                           <p className="text-sm font-medium text-gray-900 truncate">
                             {c.name || "(untitled)"}{" "}
                             <span className="text-gray-400 font-normal">— {c.advertiserName || "Advertiser"}</span>
                           </p>
-
                           <span className="text-[10px] uppercase tracking-wide bg-gray-100 text-gray-600 px-2 py-[2px] rounded">
                             {c.status}
                           </span>
-
                           <span className="text-[10px] uppercase tracking-wide bg-purple-50 text-purple-700 px-2 py-[2px] rounded">
                             {Array.isArray(c.channels) ? c.channels.join("+") : "push"}
-                          </span>
-
-                          <span className={`text-[10px] uppercase tracking-wide px-2 py-[2px] rounded ${sched.style}`}>
-                            {sched.label}
                           </span>
                         </div>
 
@@ -237,47 +240,10 @@ export default function AdminCampaignsPage() {
 
                         <p className="text-[10px] text-gray-400 mt-1">Targeting: {targetingSummary(c)}</p>
 
-                        {(startAt || endAt) && (
-                          <p className="text-[10px] text-gray-400 mt-1">
-                            Schedule:
-                            {startAt ? ` start ${fmtIso(startAt)}` : ""} {endAt ? ` · end ${fmtIso(endAt)}` : ""}
-                          </p>
-                        )}
-
                         <p className="text-[10px] text-gray-400 mt-1">
                           Updated: {new Date(c.updatedAt).toLocaleString()}
                         </p>
 
-                        {/* Advertiser-grade stats (read-only v1) */}
-                        {stats && (
-                          <div className="mt-2 text-[11px] text-gray-700">
-                            <div className="flex flex-wrap gap-2">
-                              <span className="px-2 py-[2px] rounded bg-green-50 text-green-700 border border-green-100">
-                                Total delivered: {Number(stats.totalDelivered || 0)}
-                              </span>
-                              <span className="px-2 py-[2px] rounded bg-yellow-50 text-yellow-800 border border-yellow-100">
-                                Total skipped: {Number(stats.totalSkipped || 0)}
-                              </span>
-                              <span className="px-2 py-[2px] rounded bg-gray-50 text-gray-700 border border-gray-100">
-                                Runs: {Number(stats.totalDeliverRuns || 0)}
-                              </span>
-                              {breakdown && (
-                                <span className="px-2 py-[2px] rounded bg-gray-50 text-gray-700 border border-gray-100">
-                                  Reasons: {breakdown}
-                                </span>
-                              )}
-                            </div>
-
-                            {(stats.lastRunAt || stats.lastDeliveredAt) && (
-                              <div className="mt-1 text-[10px] text-gray-500">
-                                {stats.lastRunAt ? `Last run: ${fmtIso(stats.lastRunAt)}` : ""}
-                                {stats.lastDeliveredAt ? ` · Last delivered: ${fmtIso(stats.lastDeliveredAt)}` : ""}
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Last delivery feedback (most recent click) */}
                         {d && (
                           <div className="mt-2 text-[11px] text-gray-600">
                             <div className="flex flex-wrap gap-2">
@@ -292,40 +258,31 @@ export default function AdminCampaignsPage() {
                                   Targets: {d.targetCount}
                                 </span>
                               )}
-                              {d.forced && (
-                                <span className="px-2 py-[2px] rounded bg-red-50 text-red-700 border border-red-100">
-                                  FORCED
+                              {breakdown && (
+                                <span className="px-2 py-[2px] rounded bg-gray-50 text-gray-700 border border-gray-100">
+                                  Reasons: {breakdown}
                                 </span>
                               )}
                             </div>
-
                             {d.ranAt && (
                               <div className="mt-1 text-[10px] text-gray-400">
-                                Last click run: {fmtIso(d.ranAt)}
+                                Last run: {new Date(d.ranAt).toLocaleString()}
                               </div>
                             )}
                           </div>
                         )}
                       </div>
 
-                      {/* Delivery controls */}
-                      <div className="flex flex-col gap-2 min-w-[220px]">
+                      <div className="flex flex-col items-end gap-2">
                         <button
-                          onClick={() => deliver(c.id, { force: false })}
+                          onClick={() => deliver(c.id, false)}
                           className="text-xs bg-purple-600 text-white px-3 py-2 rounded-md hover:bg-purple-700"
                         >
                           Deliver (respect cooldown)
                         </button>
-
                         <button
-                          onClick={() => {
-                            const ok = confirm(
-                              "Force deliver bypasses cooldown and can spam users.\n\nOnly use this for testing or an admin override.\n\nProceed?"
-                            );
-                            if (!ok) return;
-                            deliver(c.id, { force: true });
-                          }}
-                          className="text-xs bg-white text-purple-700 border border-purple-200 px-3 py-2 rounded-md hover:bg-purple-50"
+                          onClick={() => deliver(c.id, true)}
+                          className="text-xs bg-white border border-gray-200 text-purple-700 px-3 py-2 rounded-md hover:bg-gray-50"
                         >
                           Force deliver (override)
                         </button>
