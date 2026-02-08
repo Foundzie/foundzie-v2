@@ -1,0 +1,44 @@
+{
+  "owner_only": {
+    "ADMIN_TOKEN": {
+      "required_in_production": true,
+      "purpose": "Protect owner-only diagnostics routes (e.g., /api/diag). Sent as Authorization: Bearer <token>.",
+      "never_expose_value": true
+    }
+  },
+  "cron": {
+    "CRON_SECRET": {
+      "required_in_production": true,
+      "purpose": "Protect /api/campaigns/run cron scheduler endpoint.",
+      "never_expose_value": true
+    }
+  },
+  "kv": {
+    "UPSTASH_REDIS_REST_URL": {
+      "required_in_production": false,
+      "purpose": "Enable Upstash Redis storage (KV). If missing, Foundzie falls back to memory."
+    },
+    "UPSTASH_REDIS_REST_TOKEN": {
+      "required_in_production": false,
+      "purpose": "Auth token for Upstash Redis."
+    }
+  },
+  "openai": {
+    "OPENAI_API_KEY": {
+      "required_in_production": false,
+      "purpose": "Enable OpenAI-powered agent responses and tools.",
+      "never_expose_value": true
+    }
+  },
+  "twilio": {
+    "TWILIO_ACCOUNT_SID": { "required_in_production": false, "purpose": "Twilio voice/calls." },
+    "TWILIO_AUTH_TOKEN": { "required_in_production": false, "purpose": "Twilio auth token.", "never_expose_value": true },
+    "TWILIO_PHONE_NUMBER": { "required_in_production": false, "purpose": "Twilio sending number." }
+  },
+  "build_labels": {
+    "NEXT_PUBLIC_FOUNDZIE_VERSION": { "required_in_production": false, "purpose": "Admin build version label." },
+    "NEXT_PUBLIC_FOUNDZIE_MILESTONE": { "required_in_production": false, "purpose": "Admin milestone label." },
+    "NEXT_PUBLIC_FOUNDZIE_BUILD_LABEL": { "required_in_production": false, "purpose": "Admin build label (Vercel/manual)." },
+    "NEXT_PUBLIC_FOUNDZIE_BUILT_AT": { "required_in_production": false, "purpose": "Admin build time string." }
+  }
+}

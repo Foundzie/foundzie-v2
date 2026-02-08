@@ -1,0 +1,16 @@
+{
+  "base": {
+    "local": "http://localhost:3000",
+    "prod": "https://YOUR-PROD-DOMAIN"
+  },
+  "owner_only_endpoints": [
+    { "path": "/api/diag", "method": "GET", "auth": "ADMIN_TOKEN" }
+  ],
+  "public_endpoints": [
+    { "path": "/api/agent", "method": "GET" },
+    { "path": "/api/kv/diag", "method": "GET" }
+  ],
+  "optional_secure_endpoints": [
+    { "path": "/api/campaigns/run", "method": "GET", "auth": "CRON_SECRET", "note": "Only smoke if CRON_SECRET provided" }
+  ]
+}

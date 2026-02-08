@@ -1,0 +1,22 @@
+{
+  "milestones": [
+    { "id": "M21c.6", "name": "Cron automation for campaigns", "status": "done", "evidence": "Vercel cron + secured CRON_SECRET verified; pushes reached mobile" },
+    { "id": "M21.5", "name": "Brain Self-Awareness Foundation", "status": "in_progress", "deliverables": [
+      "/.foundzie/* truth files",
+      "/api/diag (owner-only)",
+      "scripts/smoke.mjs + npm run smoke"
+    ]},
+    { "id": "M21.6", "name": "Brain Console + Voice v1", "status": "planned", "notes": "Reuse existing /admin/agent console as the UI shell" },
+    { "id": "M21.7", "name": "PR-based Autopilot Builder Mode", "status": "planned", "notes": "PR-only, no auto-merge, CI-gated" },
+    { "id": "M21d", "name": "Hybrid delivery: sponsored mention in calls/voice", "status": "planned" },
+    { "id": "M21e", "name": "Advertiser reporting view", "status": "planned" },
+    { "id": "M21f", "name": "Payments (simulated → Stripe)", "status": "planned" }
+  ],
+  "pointers": {
+    "diag_route": "src/app/api/diag/route.ts",
+    "kv_diag_route": "src/app/api/kv/diag/route.ts",
+    "agent_console": "src/app/admin/agent/page.tsx",
+    "agent_api": "src/app/api/agent/route.ts",
+    "health_store": "src/app/api/health/store.ts"
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "app": "Foundzie",
+  "repo": "foundzie-v2",
+  "stack": {
+    "framework": "Next.js App Router",
+    "runtime": "Node",
+    "db": "Upstash Redis (with memory fallback)"
+  },
+  "subsystems": [
+    {
+      "name": "Admin UI",
+      "paths": [
+        "src/app/admin/layout.tsx",
+        "src/app/admin/page.tsx",
+        "src/app/admin/agent/page.tsx",
+        "src/app/admin/health/page.tsx"
+      ]
+    },
+    {
+      "name": "Agent",
+      "paths": [
+        "src/app/api/agent/route.ts",
+        "src/lib/agent/runtime.ts",
+        "src/lib/agent/spec.ts",
+        "src/lib/agent/tools.ts"
+      ]
+    },
+    {
+      "name": "KV / Redis",
+      "paths": [
+        "src/lib/kv/redis.ts",
+        "src/app/api/kv/diag/route.ts"
+      ]
+    },
+    {
+      "name": "Health & Metrics",
+      "paths": [
+        "src/app/api/health/store.ts",
+        "src/app/admin/health/page.tsx"
+      ]
+    },
+    {
+      "name": "Monetization / Campaigns",
+      "paths": [
+        "src/app/api/campaigns/run/route.ts",
+        "src/app/api/campaigns/store.ts",
+        "src/app/admin/campaigns/page.tsx",
+        "src/app/admin/campaigns/new/page.tsx"
+      ],
+      "notes": "Campaign scheduler is protected by CRON_SECRET"
+    },
+    {
+      "name": "Twilio Voice",
+      "paths": [
+        "src/app/api/twilio/voice/route.ts",
+        "src/app/api/twilio/diag/route.ts",
+        "bridge/server.js",
+        "bridge/fly.toml"
+      ]
+    }
+  ]
+}
