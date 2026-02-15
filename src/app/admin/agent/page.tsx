@@ -59,6 +59,11 @@ export default function AdminAgentPage() {
   const [implementedTools, setImplementedTools] = useState<string[]>([]);
   const [showDebug, setShowDebug] = useState(false);
 
+  // ✅ M21.6 Brain Console: diagnostics panel state
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagError, setDiagError] = useState<string | null>(null);
+  const [diagJson, setDiagJson] = useState<any>(null);
+
   // -------- Load users so you can ask "about" someone ----------
 
   useEffect(() => {
@@ -79,6 +84,36 @@ export default function AdminAgentPage() {
 
     loadUsers();
   }, []);
+
+  // -------- M21.6: Load system diagnostics (safe proxy) ----------
+  async function loadDiagnostics() {
+    setDiagError(null);
+    setDiagLoading(true);
+    try {
+      const res = await fetch("/api/admin/diag", { cache: "no-store" });
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(t || `Diag failed (${res.status})`);
+      }
+      const data = await res.json();
+      setDiagJson(data);
+    } catch (e: any) {
+      setDiagError(e?.message || "Failed to load diagnostics.");
+      setDiagJson(null);
+    } finally {
+      setDiagLoading(false);
+    }
+  }
+
+  async function copyDiagnostics() {
+    try {
+      const text = JSON.stringify(diagJson ?? { note: "No diagnostics loaded" }, null, 2);
+      await navigator.clipboard.writeText(text);
+      alert("Diagnostics copied.");
+    } catch {
+      alert("Could not copy (clipboard blocked).");
+    }
+  }
 
   // -------- Handle Ask Foundzie submit ----------
 
@@ -306,8 +341,53 @@ export default function AdminAgentPage() {
           )}
         </div>
 
-        {/* RIGHT: Debug + tools summary */}
+        {/* RIGHT: Brain + Debug + tools summary */}
         <aside className="space-y-4">
+          {/* ✅ NEW: Foundzie Brain panel */}
+          <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs shadow-lg">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-[13px] font-semibold text-slate-100">
+                Foundzie Brain — System Status
+              </h2>
+              <button
+                type="button"
+                onClick={loadDiagnostics}
+                className="text-[11px] text-emerald-300 underline"
+                disabled={diagLoading}
+              >
+                {diagLoading ? "Loading..." : "Load"}
+              </button>
+            </div>
+
+            <p className="text-[11px] text-slate-400">
+              This pulls live diagnostics via <code>/api/admin/diag</code> (owner-only).
+            </p>
+
+            {diagError && (
+              <p className="mt-2 text-[11px] text-red-400">Error: {diagError}</p>
+            )}
+
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={copyDiagnostics}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 text-[11px] text-slate-200"
+                disabled={!diagJson}
+              >
+                Copy diagnostics
+              </button>
+
+              <div className="text-[11px] text-slate-500 self-center">
+                Smoke: <code>npm run smoke</code>
+              </div>
+            </div>
+
+            <pre className="mt-3 text-[10px] text-slate-300 bg-slate-950 rounded-md p-2 max-h-56 overflow-auto whitespace-pre-wrap border border-slate-800">
+              {diagJson ? JSON.stringify(diagJson, null, 2) : "No diagnostics loaded yet."}
+            </pre>
+          </div>
+
+          {/* Existing debug panel */}
           <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs shadow-lg">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-[13px] font-semibold text-slate-100">

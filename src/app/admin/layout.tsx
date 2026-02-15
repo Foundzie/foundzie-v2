@@ -1,19 +1,81 @@
 // src/app/admin/layout.tsx
 import "../globals.css";
 import Link from "next/link";
+import { cookies } from "next/headers";
+import AdminLogin from "./AdminLogin";
 
 export const metadata = {
   title: "Foundzie Admin",
   description: "Control center for Foundzie global concierge system",
 };
 
-export default function AdminLayout({
+const ADMIN_COOKIE = "foundzie_admin";
+
+export default async function AdminLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const cookieStore = await cookies(); // ✅ cookies() is async in your Next version
+  const authed = cookieStore.get(ADMIN_COOKIE)?.value === "1";
+
+  // ✅ If not authed, show a real login screen (token -> httpOnly cookie)
+  if (!authed) {
+    return (
+      <div
+        style={{
+          height: "100vh",
+          overflowY: "auto",
+          overflowX: "hidden",
+          WebkitOverflowScrolling: "touch",
+          background: "#0b1220",
+          color: "#e5e7eb",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "24px",
+        }}
+      >
+        <div
+          style={{
+            width: "100%",
+            maxWidth: 520,
+            background: "rgba(15,23,42,0.9)",
+            border: "1px solid rgba(148,163,184,0.18)",
+            borderRadius: 18,
+            padding: 18,
+            boxShadow: "0 10px 30px rgba(0,0,0,0.4)",
+          }}
+        >
+          <div style={{ marginBottom: 10 }}>
+            <div
+              style={{
+                fontWeight: 900,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "#fb7185",
+                fontSize: 18,
+              }}
+            >
+              Foundzie Admin
+            </div>
+            <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>
+              Owner-only access. Enter your Admin Token to continue.
+            </div>
+          </div>
+
+          <AdminLogin />
+
+          <div style={{ marginTop: 12, fontSize: 11, color: "#64748b" }}>
+            Tip: this token is your <code>ADMIN_TOKEN</code> env var in Vercel.
+            We store auth as a secure HTTP-only cookie.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    // ✅ Make THIS the scroll container so the admin area can always scroll
     <div
       style={{
         height: "100vh",
@@ -24,7 +86,6 @@ export default function AdminLayout({
         color: "#111827",
       }}
     >
-      {/* Top bar */}
       <header
         style={{
           background:
@@ -41,7 +102,6 @@ export default function AdminLayout({
           boxShadow: "0 4px 10px rgba(15,23,42,0.06)",
         }}
       >
-        {/* Left side: logo + subtitle */}
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <div
             style={{
@@ -54,17 +114,11 @@ export default function AdminLayout({
           >
             Foundzie Admin
           </div>
-          <span
-            style={{
-              fontSize: "12px",
-              color: "#6b7280",
-            }}
-          >
+          <span style={{ fontSize: "12px", color: "#6b7280" }}>
             Concierge control center — analytics, chats, calls, trips & SOS
           </span>
         </div>
 
-        {/* Right side: admin chip */}
         <div
           style={{
             display: "flex",
@@ -89,7 +143,6 @@ export default function AdminLayout({
         </div>
       </header>
 
-      {/* Secondary nav bar */}
       <nav
         style={{
           position: "sticky",
@@ -121,7 +174,6 @@ export default function AdminLayout({
         </div>
       </nav>
 
-      {/* Main content */}
       <main
         style={{
           padding: "24px",
