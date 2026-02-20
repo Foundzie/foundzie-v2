@@ -38,9 +38,53 @@ type HistoryItem = {
   debugMode?: string;
 };
 
+type PullItem = {
+  number: number;
+  title: string;
+  state: string;
+  merged: boolean;
+  draft: boolean;
+  updatedAt: string;
+  htmlUrl: string;
+  headSha?: string;
+  headRef?: string;
+  baseRef?: string;
+  user?: string;
+};
+
+type PullDetails = {
+  ok: boolean;
+  pr: {
+    number: number;
+    title: string;
+    htmlUrl: string;
+    state: string;
+    merged: boolean;
+    headSha: string;
+    headRef?: string;
+    baseRef?: string;
+  };
+  checks: Array<{
+    name: string;
+    status: string;
+    conclusion: string | null;
+    detailsUrl?: string;
+    startedAt?: string;
+    completedAt?: string;
+  }>;
+  previewUrl: string | null;
+};
+
 function formatTools(tools?: string[]) {
   if (!tools || tools.length === 0) return "none";
   return tools.join(", ");
+}
+
+function fmtTime(s?: string) {
+  if (!s) return "";
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s;
+  return d.toLocaleString();
 }
 
 export default function AdminAgentPage() {
@@ -64,8 +108,17 @@ export default function AdminAgentPage() {
   const [diagError, setDiagError] = useState<string | null>(null);
   const [diagJson, setDiagJson] = useState<any>(null);
 
-  // -------- Load users so you can ask "about" someone ----------
+  // ✅ M21.7b: GitHub PRs panel state
+  const [prsLoading, setPrsLoading] = useState(false);
+  const [prsError, setPrsError] = useState<string | null>(null);
+  const [prs, setPrs] = useState<PullItem[]>([]);
+  const [selectedPr, setSelectedPr] = useState<number | null>(null);
 
+  const [prDetailsLoading, setPrDetailsLoading] = useState(false);
+  const [prDetailsError, setPrDetailsError] = useState<string | null>(null);
+  const [prDetails, setPrDetails] = useState<PullDetails | null>(null);
+
+  // -------- Load users so you can ask "about" someone ----------
   useEffect(() => {
     async function loadUsers() {
       try {
@@ -81,7 +134,6 @@ export default function AdminAgentPage() {
         setLoadingUsers(false);
       }
     }
-
     loadUsers();
   }, []);
 
@@ -115,8 +167,60 @@ export default function AdminAgentPage() {
     }
   }
 
-  // -------- Handle Ask Foundzie submit ----------
+  // -------- M21.7b: Load PR list ----------
+  async function loadPrs() {
+    setPrsError(null);
+    setPrsLoading(true);
+    try {
+      const res = await fetch("/api/admin/github/pulls", { cache: "no-store" });
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(t || `PR list failed (${res.status})`);
+      }
+      const data = await res.json();
+      const items: PullItem[] = Array.isArray(data.items) ? data.items : [];
+      setPrs(items);
+    } catch (e: any) {
+      setPrsError(e?.message || "Failed to load PRs.");
+      setPrs([]);
+    } finally {
+      setPrsLoading(false);
+    }
+  }
 
+  // -------- M21.7b: Load PR details + checks ----------
+  async function loadPrDetails(prNumber: number) {
+    setSelectedPr(prNumber);
+    setPrDetails(null);
+    setPrDetailsError(null);
+    setPrDetailsLoading(true);
+    try {
+      const res = await fetch(`/api/admin/github/pulls/${prNumber}`, { cache: "no-store" });
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(t || `PR details failed (${res.status})`);
+      }
+      const data = (await res.json()) as PullDetails;
+      setPrDetails(data);
+    } catch (e: any) {
+      setPrDetailsError(e?.message || "Failed to load PR details.");
+      setPrDetails(null);
+    } finally {
+      setPrDetailsLoading(false);
+    }
+  }
+
+  async function copyPrDetails() {
+    try {
+      const text = JSON.stringify(prDetails ?? { note: "No PR details loaded" }, null, 2);
+      await navigator.clipboard.writeText(text);
+      alert("PR details copied.");
+    } catch {
+      alert("Could not copy (clipboard blocked).");
+    }
+  }
+
+  // -------- Handle Ask Foundzie submit ----------
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmed = input.trim();
@@ -150,9 +254,7 @@ export default function AdminAgentPage() {
 
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(
-          `Agent HTTP ${res.status} – ${res.statusText} – ${text}`
-        );
+        throw new Error(`Agent HTTP ${res.status} – ${res.statusText} – ${text}`);
       }
 
       const data = (await res.json()) as AgentReplyPayload;
@@ -176,10 +278,7 @@ export default function AdminAgentPage() {
       setInput("");
     } catch (err: any) {
       console.error("[admin/agent] failed to call /api/agent", err);
-      setError(
-        err?.message ||
-          "Something went wrong talking to Foundzie. Please try again."
-      );
+      setError(err?.message || "Something went wrong talking to Foundzie. Please try again.");
     } finally {
       setSending(false);
     }
@@ -193,8 +292,7 @@ export default function AdminAgentPage() {
             Ask Foundzie (Admin Concierge Brain)
           </h1>
           <p className="text-sm text-slate-400 mt-1">
-            Talk to Foundzie about users, SOS, calls, and notifications — with
-            tools enabled in debug mode.
+            Talk to Foundzie about users, SOS, calls, and notifications — with tools enabled in debug mode.
           </p>
         </div>
 
@@ -217,8 +315,7 @@ export default function AdminAgentPage() {
                   👂 <span className="font-medium">Context</span> (optional)
                 </p>
                 <p className="text-[11px] text-slate-500">
-                  Choose a user or room so Foundzie can answer with more
-                  context. You can leave both empty for general questions.
+                  Choose a user or room so Foundzie can answer with more context. You can leave both empty for general questions.
                 </p>
               </div>
 
@@ -258,8 +355,7 @@ export default function AdminAgentPage() {
               </div>
 
               <div className="flex-1 text-right text-[11px] text-slate-500 mt-1 md:mt-5">
-                Tools mode: <span className="text-emerald-400">debug</span>{" "}
-                (SOS, call log, notifications)
+                Tools mode: <span className="text-emerald-400">debug</span> (SOS, call log, notifications)
               </div>
             </div>
           </div>
@@ -271,15 +367,13 @@ export default function AdminAgentPage() {
                 Start by asking something like:
                 <br />
                 <span className="italic text-slate-300">
-                  “Summarize the latest SOS cases and suggest what I should do
-                  next as concierge.”
+                  “Summarize the latest SOS cases and suggest what I should do next as concierge.”
                 </span>
                 <br />
                 or
                 <br />
                 <span className="italic text-slate-300">
-                  “For this user, propose a friendly follow-up message and log a
-                  call if needed.”
+                  “For this user, propose a friendly follow-up message and log a call if needed.”
                 </span>
               </p>
             )}
@@ -287,9 +381,7 @@ export default function AdminAgentPage() {
             {history.map((item) => (
               <div
                 key={item.id}
-                className={`flex ${
-                  item.role === "admin" ? "justify-end" : "justify-start"
-                }`}
+                className={`flex ${item.role === "admin" ? "justify-end" : "justify-start"}`}
               >
                 <div
                   className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed ${
@@ -341,9 +433,165 @@ export default function AdminAgentPage() {
           )}
         </div>
 
-        {/* RIGHT: Brain + Debug + tools summary */}
+        {/* RIGHT: Brain + PRs + Debug + tools summary */}
         <aside className="space-y-4">
-          {/* ✅ NEW: Foundzie Brain panel */}
+          {/* ✅ M21.7b: Autopilot PRs panel */}
+          <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs shadow-lg">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-[13px] font-semibold text-slate-100">
+                Autopilot — PRs & Checks
+              </h2>
+              <button
+                type="button"
+                onClick={loadPrs}
+                className="text-[11px] text-emerald-300 underline"
+                disabled={prsLoading}
+              >
+                {prsLoading ? "Loading..." : "Load PRs"}
+              </button>
+            </div>
+
+            <p className="text-[11px] text-slate-400">
+              Owner-only GitHub view via <code>/api/admin/github/*</code>. Requires Vercel env: <code>GITHUB_TOKEN</code>, <code>GITHUB_OWNER</code>, <code>GITHUB_REPO</code>.
+            </p>
+
+            {prsError && <p className="mt-2 text-[11px] text-red-400">Error: {prsError}</p>}
+
+            <div className="mt-3 grid gap-2">
+              {prs.length === 0 ? (
+                <div className="text-[11px] text-slate-500">
+                  No PRs loaded yet.
+                </div>
+              ) : (
+                <div className="max-h-44 overflow-auto border border-slate-800 rounded-md bg-slate-950">
+                  {prs.map((p) => (
+                    <button
+                      key={p.number}
+                      type="button"
+                      onClick={() => loadPrDetails(p.number)}
+                      className={`w-full text-left px-3 py-2 border-b border-slate-900 hover:bg-slate-900/60 ${
+                        selectedPr === p.number ? "bg-slate-900/60" : ""
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[11px] text-slate-200 font-semibold truncate">
+                          #{p.number} {p.title}
+                        </div>
+                        <div className="text-[10px] text-slate-500 whitespace-nowrap">
+                          {p.merged ? "merged" : p.state}
+                          {p.draft ? " • draft" : ""}
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        updated: {fmtTime(p.updatedAt)} • {p.user ? `by ${p.user}` : ""}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* PR details */}
+            <div className="mt-3">
+              {prDetailsError && (
+                <p className="text-[11px] text-red-400">Error: {prDetailsError}</p>
+              )}
+
+              {prDetailsLoading && (
+                <p className="text-[11px] text-slate-400">Loading PR checks…</p>
+              )}
+
+              {prDetails?.ok && (
+                <div className="mt-2 border border-slate-800 rounded-md bg-slate-950 p-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-[11px] text-slate-200 font-semibold truncate">
+                        #{prDetails.pr.number} {prDetails.pr.title}
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        state: {prDetails.pr.merged ? "merged" : prDetails.pr.state} • head:{" "}
+                        <code>{prDetails.pr.headRef}</code>
+                      </div>
+                    </div>
+
+                    <a
+                      href={prDetails.pr.htmlUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[11px] text-purple-300 underline whitespace-nowrap"
+                    >
+                      Open PR
+                    </a>
+                  </div>
+
+                  <div className="mt-2 flex gap-2 items-center">
+                    {prDetails.previewUrl ? (
+                      <a
+                        href={prDetails.previewUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[11px] text-emerald-300 underline"
+                      >
+                        Open Preview
+                      </a>
+                    ) : (
+                      <span className="text-[11px] text-slate-500">
+                        Preview URL: not detected yet
+                      </span>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={copyPrDetails}
+                      className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-200"
+                    >
+                      Copy
+                    </button>
+                  </div>
+
+                  <div className="mt-2">
+                    <p className="text-[11px] font-semibold text-slate-300 mb-1">
+                      Checks
+                    </p>
+                    {prDetails.checks.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">No check-runs found.</p>
+                    ) : (
+                      <div className="max-h-40 overflow-auto border border-slate-800 rounded-md">
+                        {prDetails.checks.map((c, idx) => (
+                          <div
+                            key={`${c.name}-${idx}`}
+                            className="px-3 py-2 border-b border-slate-900"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-[11px] text-slate-200 font-semibold truncate">
+                                {c.name}
+                              </div>
+                              <div className="text-[10px] text-slate-500 whitespace-nowrap">
+                                {c.status}
+                                {c.conclusion ? ` • ${c.conclusion}` : ""}
+                              </div>
+                            </div>
+                            {c.detailsUrl && (
+                              <a
+                                href={c.detailsUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[10px] text-slate-400 underline break-all"
+                              >
+                                {c.detailsUrl}
+                              </a>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ✅ Existing: Foundzie Brain panel */}
           <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs shadow-lg">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-[13px] font-semibold text-slate-100">
@@ -478,21 +726,14 @@ export default function AdminAgentPage() {
             </h2>
             <ul className="list-disc list-inside space-y-1">
               <li>
-                Pick a <span className="font-semibold">User</span> to give
-                Foundzie extra context (tags, source, interactionMode).
+                Pick a <span className="font-semibold">User</span> to give Foundzie extra context (tags, source, interactionMode).
               </li>
               <li>
-                Optionally enter a <span className="font-semibold">roomId</span>{" "}
-                if you want it to reason about a specific chat thread.
+                Optionally enter a <span className="font-semibold">roomId</span> if you want it to reason about a specific chat thread.
               </li>
+              <li>Ask in natural language, like you&apos;re talking to a team member.</li>
               <li>
-                Ask in natural language, like you&apos;re talking to a team
-                member.
-              </li>
-              <li>
-                Foundzie will reply in a warm, conversational way — and when
-                needed, it can open SOS cases, log calls, or broadcast
-                notifications using tools.
+                Foundzie will reply in a warm, conversational way — and when needed, it can open SOS cases, log calls, or broadcast notifications using tools.
               </li>
             </ul>
           </div>
