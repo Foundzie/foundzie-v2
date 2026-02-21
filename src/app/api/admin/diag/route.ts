@@ -9,17 +9,18 @@ export async function GET(req: NextRequest) {
     return new NextResponse("Unauthorized", { status: 401 });
   }
 
-  if (!process.env.ADMIN_TOKEN) {
+  const token = process.env.ADMIN_TOKEN?.trim();
+  if (!token) {
     return new NextResponse("ADMIN_TOKEN missing", { status: 500 });
   }
 
-  // Call your existing owner-only diag endpoint using server env token
+  // Call your existing owner-only diag endpoint using the auth style it expects
   const url = new URL("/api/diag", req.nextUrl.origin);
 
   const upstream = await fetch(url.toString(), {
     method: "GET",
     headers: {
-      "x-admin-token": process.env.ADMIN_TOKEN,
+      Authorization: `Bearer ${token}`,
     },
     cache: "no-store",
   });
