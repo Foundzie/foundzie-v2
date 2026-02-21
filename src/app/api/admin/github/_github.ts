@@ -43,9 +43,6 @@ export async function ghFetch(token: string, url: string) {
 }
 
 export function extractPreviewUrlFromChecks(checkRuns: any): string | null {
-  // Best-effort:
-  // - Vercel check-runs often have a details_url pointing to the preview deployment.
-  // - Sometimes the URL is in output.summary/text.
   const runs = Array.isArray(checkRuns?.check_runs) ? checkRuns.check_runs : [];
   const candidates: string[] = [];
 
@@ -59,11 +56,9 @@ export function extractPreviewUrlFromChecks(checkRuns: any): string | null {
 
   const joined = candidates.join("\n");
 
-  // Try to find a vercel.app URL
   const m = joined.match(/https?:\/\/[^\s)"]+vercel\.app[^\s)"]*/i);
   if (m?.[0]) return m[0];
 
-  // Or a Vercel deployment/status URL
   const m2 = joined.match(/https?:\/\/[^\s)"]*vercel\.com[^\s)"]*/i);
   if (m2?.[0]) return m2[0];
 
