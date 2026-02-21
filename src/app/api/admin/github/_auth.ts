@@ -8,7 +8,10 @@ export async function requireAdminCookie() {
   const c = jar.get(COOKIE_NAME)?.value;
 
   if (c !== "1") {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json(
+      { ok: false, error: "Unauthorized" },
+      { status: 401 }
+    );
   }
 
   return null;
