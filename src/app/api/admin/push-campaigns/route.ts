@@ -1,24 +1,31 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from "next/server";
+import { getPushCampaignCounts } from "./store";
 
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+function readTokenFromReq(req: NextRequest) {
+  const auth = req.headers.get("authorization") || "";
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  const x = req.headers.get("x-admin-token")?.trim() || "";
+  const cookie = req.cookies.get("admin_token")?.value?.trim() || "";
+  return bearer || x || cookie || "";
+}
 
-// Mock campaign store data - replace with real data source as needed
-const campaignStore = {
-  activeCampaigns: 5,
-  totalSent: 1234,
-  pendingCampaigns: 2
-};
+function requireOwner(req: NextRequest) {
+  const token = readTokenFromReq(req);
+  const expected =
+    process.env.JARVIS_OWNER_TOKEN ||
+    process.env.ADMIN_TOKEN ||
+    process.env.FOUNDZIE_ADMIN_TOKEN ||
+    "";
 
-export async function GET(request: Request) {
-  const authHeader = request.headers.get('Authorization');
-  if (!authHeader || authHeader !== `Bearer ${ADMIN_TOKEN}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  if (!expected) return { ok: false as const, error: "Owner auth not configured (missing env token)." };
+  if (!token || token !== expected) return { ok: false as const, error: "Unauthorized" };
+  return { ok: true as const };
+}
 
-  // Return current push campaign counts
-  return NextResponse.json({
-    activeCampaigns: campaignStore.activeCampaigns,
-    totalSent: campaignStore.totalSent,
-    pendingCampaigns: campaignStore.pendingCampaigns
-  });
+export async function GET(req: NextRequest) {
+  const auth = requireOwner(req);
+  if (!auth.ok) return NextResponse.json({ ok: false, error: auth.error }, { status: 401 });
+
+  const counts = await getPushCampaignCounts();
+  return NextResponse.json({ ok: true, counts });
 }
