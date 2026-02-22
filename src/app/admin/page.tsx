@@ -11,6 +11,7 @@ import { listEvents } from "@/app/api/sos/store";
 import { listCallLogs } from "@/app/api/calls/store";
 import { listTrips } from "@/app/api/trips/store";
 import { getHealthSnapshot, type HealthSnapshot } from "@/app/api/health/store";
+import { getPushCampaignCounts } from "@/app/api/push/store";
 
 import MaintenanceToggle from "./MaintenanceToggle";
 
@@ -51,6 +52,7 @@ function minutesFromSec(sec?: number | null) {
 export default async function AdminPage() {
   // Fetch live stats + health in parallel
   const [users, rooms, sosEvents, callLogs, trips, rawHealth] =
+    const pushCampaignCounts = await getPushCampaignCounts();
     await Promise.all([
       listUsers(),
       listRooms(),
