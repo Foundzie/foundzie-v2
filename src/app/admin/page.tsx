@@ -13,6 +13,7 @@ import { listTrips } from "@/app/api/trips/store";
 import { getHealthSnapshot, type HealthSnapshot } from "@/app/api/health/store";
 
 import MaintenanceToggle from "./MaintenanceToggle";
+import PushCampaignCounts from "./PushCampaignCounts";
 
 // make TS happy about the shape coming from data files
 type Place = (typeof mockPlaces)[number];
@@ -118,6 +119,7 @@ export default async function AdminPage() {
       <div className="px-6 py-6 flex flex-col gap-6">
         {/* LIVE METRICS ROW */}
         <section>
+  <PushCampaignCounts />
           <h2 className="text-sm font-semibold text-gray-900 mb-3">
             Live overview
           </h2>
