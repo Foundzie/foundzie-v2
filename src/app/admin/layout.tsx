@@ -167,10 +167,13 @@ export default async function AdminLayout({
           <NavPill href="/admin/chat" label="Chat" emphasis />
           <NavPill href="/admin/calls" label="Calls" />
           <NavPill href="/admin/notifications" label="Notifications" />
+          <NavPill href="/admin/campaigns" label="Campaigns" />
+          <NavPill href="/admin/places" label="Places" />
           <NavPill href="/admin/sos" label="SOS" />
           <NavPill href="/admin/trips" label="Trips" />
           <NavPill href="/admin/agent" label="Agent console" />
           <NavPill href="/admin/health" label="Health" />
+          <NavPill href="/admin/maintenance" label="Maintenance" />
         </div>
       </nav>
 
