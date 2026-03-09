@@ -35,15 +35,13 @@ self.addEventListener("fetch", (event) => {
 
       try {
         const fresh = await fetch(req);
-        // Only cache same-origin GETs
         const url = new URL(req.url);
         if (url.origin === self.location.origin) {
           const cache = await caches.open(CACHE_NAME);
           cache.put(req, fresh.clone()).catch(() => {});
         }
         return fresh;
-      } catch (e) {
-        // fallback to home if offline
+      } catch {
         return (await caches.match("/")) || new Response("Offline", { status: 503 });
       }
     })()

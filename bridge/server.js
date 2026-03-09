@@ -46,10 +46,6 @@ const GREET_FORCE_TIMEOUT_MS = Number(process.env.GREET_FORCE_TIMEOUT_MS || 1200
 // responseInFlight watchdog
 const RESPONSE_INFLIGHT_TIMEOUT_MS = Number(process.env.RESPONSE_INFLIGHT_TIMEOUT_MS || 8000);
 
-// when user speaks after confirm prompt, execute tool immediately
-const EXECUTE_ON_USER_CONFIRM_SPEECH =
-  String(process.env.EXECUTE_ON_USER_CONFIRM_SPEECH || "1").trim() !== "0";
-
 // Upstash Redis REST (for writing M16 outcome from Fly)
 const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "")
   .trim()
@@ -173,7 +169,9 @@ function normalizeToE164Maybe(phoneRaw) {
   if (/^\+\d{8,15}$/.test(raw)) return { ok: true, e164: raw, reason: "already_e164" };
 
   if (digits.length === 10) return { ok: true, e164: `+1${digits}`, reason: "assumed_us_country_code" };
-  if (digits.length === 11 && digits.startsWith("1")) return { ok: true, e164: `+${digits}`, reason: "digits_11_us" };
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return { ok: true, e164: `+${digits}`, reason: "digits_11_us" };
+  }
 
   return { ok: false, e164: "", reason: `invalid_format digits=${digits.length}` };
 }
@@ -248,7 +246,6 @@ wss.on("connection", (twilioWs, req) => {
 
   // Per-response output counters
   let respOutboundAudioFrames = 0;
-  let respOutboundTextPieces = 0;
 
   // Call counters
   let inboundMediaFrames = 0;
@@ -271,14 +268,11 @@ wss.on("connection", (twilioWs, req) => {
   // Tool buffers
   const toolArgBuffers = new Map();
   const toolCooldownMap = new Map();
-  const seenToolKeys = new Set();
   const handledToolCalls = new Set();
 
   let pendingTool = null;
 
   // M16 (kept)
-  let calleeFlowStarted = false;
-  let calleeReplyCaptured = false;
   let calleeAssistantText = "";
   let calleeOutcomeWritten = false;
 
@@ -409,7 +403,12 @@ wss.on("connection", (twilioWs, req) => {
 
       const label = typeof j?.item?.label === "string" ? j.item.label.trim() : "";
       if (label) custom.locLabel = label;
-      else console.log("[bridge] reverse geocode ok but no label", { url, preview: JSON.stringify(j).slice(0, 250) });
+      else {
+        console.log("[bridge] reverse geocode ok but no label", {
+          url,
+          preview: JSON.stringify(j).slice(0, 250),
+        });
+      }
     } catch (e) {
       console.log("[bridge] reverse geocode exception", { error: String(e?.message || e) });
     }
@@ -431,10 +430,6 @@ wss.on("connection", (twilioWs, req) => {
     return "";
   }
 
-  function toolKey(name, args) {
-    return `${name}::${JSON.stringify(args || {})}`;
-  }
-
   function fingerprintToolCall(name, args = {}) {
     if (!args || typeof args !== "object") return `${name}:noargs`;
     if (name === "call_third_party") {
@@ -446,19 +441,6 @@ wss.on("connection", (twilioWs, req) => {
     }
     const short = JSON.stringify(args).slice(0, 80);
     return `${name}:${short}`.replace(/[^a-zA-Z0-9:_=.-]/g, "_");
-  }
-
-  function toolIsCoolingDown(name, args) {
-    const fp = fingerprintToolCall(name, args);
-    const now = Date.now();
-    const last = toolCooldownMap.get(fp) || 0;
-    const elapsed = now - last;
-
-    if (elapsed >= 0 && elapsed < TOOL_CALL_COOLDOWN_MS) {
-      return { blocked: true, fp, remainingMs: TOOL_CALL_COOLDOWN_MS - elapsed };
-    }
-    toolCooldownMap.set(fp, now);
-    return { blocked: false, fp, remainingMs: 0 };
   }
 
   function canCreateResponseNow() {
@@ -495,7 +477,6 @@ wss.on("connection", (twilioWs, req) => {
     responseInFlight = true;
     lastResponseCreateAtMs = Date.now();
     respOutboundAudioFrames = 0;
-    respOutboundTextPieces = 0;
 
     responseInFlightTimer = clearTimer(responseInFlightTimer);
     responseInFlightTimer = setTimeout(() => {
@@ -706,14 +687,12 @@ wss.on("connection", (twilioWs, req) => {
         if (code === "input_audio_buffer_commit_empty") {
           console.log("[bridge] openai commit_empty -> cooldown + reset commit gating");
 
-          // ✅ CHANGE 3: clear BOTH commit gating and response gating
           clearInFlight("commit_empty");
           pendingResponseTimer = clearTimer(pendingResponseTimer);
 
           commitCooldownUntilMs = Date.now() + COMMIT_EMPTY_COOLDOWN_MS;
           commitInFlight = false;
 
-          // reset VAD gates so we require a fresh speech_started
           awaitingSpeechStart = true;
           sawSpeechStartedSinceCommit = false;
           speechFramesSinceStarted = 0;
@@ -731,7 +710,6 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // ✅ OpenAI VAD start/stop signals (kept)
       if (msg.type === "input_audio_buffer.speech_started") {
         awaitingSpeechStart = false;
         sawSpeechStartedSinceCommit = true;
@@ -743,7 +721,6 @@ wss.on("connection", (twilioWs, req) => {
       if (msg.type === "input_audio_buffer.speech_stopped") {
         if (responseInFlight) return;
 
-        // hard block repeated commits while one is in-flight
         if (commitInFlight) {
           console.log("[bridge] skip commit (commit in flight)", { streamSid });
           return;
@@ -756,7 +733,6 @@ wss.on("connection", (twilioWs, req) => {
 
           const now = Date.now();
 
-          // ✅ CHANGE 1: DO NOT commit unless we can create a response NOW
           if (!canCreateResponseNow()) {
             console.log("[bridge] skip commit (cannot create response now)", explainCreateBlock());
             return;
@@ -770,7 +746,6 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          // MUST have had a speech_started
           if (awaitingSpeechStart || !sawSpeechStartedSinceCommit) {
             console.log("[bridge] skip commit (no speech_started)", {
               streamSid,
@@ -780,7 +755,6 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          // MUST have recent successful append after speech_started
           if (!lastSpeechAppendAtMs || now - lastSpeechAppendAtMs > COMMIT_RECENT_APPEND_MAX_MS) {
             console.log("[bridge] skip commit (no recent speech append)", {
               streamSid,
@@ -788,7 +762,6 @@ wss.on("connection", (twilioWs, req) => {
               speechFramesSinceStarted,
             });
 
-            // reset and wait for next real speech segment
             awaitingSpeechStart = true;
             sawSpeechStartedSinceCommit = false;
             speechFramesSinceStarted = 0;
@@ -796,7 +769,6 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          // MUST have enough frames during the speech segment
           const minReq = custom.role === "callee" ? 1 : MIN_MEDIA_FRAMES;
           if (speechFramesSinceStarted < minReq) {
             console.log("[bridge] skip commit (speech buffer too small)", {
@@ -805,7 +777,6 @@ wss.on("connection", (twilioWs, req) => {
               minReq,
             });
 
-            // reset and wait for next real speech segment
             awaitingSpeechStart = true;
             sawSpeechStartedSinceCommit = false;
             speechFramesSinceStarted = 0;
@@ -813,19 +784,19 @@ wss.on("connection", (twilioWs, req) => {
             return;
           }
 
-          // rate limit (avoid double-fire)
           if (now - lastCommitAtMs < 200) {
-            console.log("[bridge] skip commit (rate limited)", { streamSid, deltaMs: now - lastCommitAtMs });
+            console.log("[bridge] skip commit (rate limited)", {
+              streamSid,
+              deltaMs: now - lastCommitAtMs,
+            });
             return;
           }
           lastCommitAtMs = now;
 
-          // ✅ CHANGE 2: set commitInFlight BEFORE sending commit
           commitInFlight = true;
           const didCommit = wsSend(openaiWs, { type: "input_audio_buffer.commit" });
 
           if (!didCommit) {
-            // if commit send failed, immediately unlock and do NOT continue
             commitInFlight = false;
             console.log("[bridge] commit send failed -> unlock", { streamSid });
             return;
@@ -833,7 +804,6 @@ wss.on("connection", (twilioWs, req) => {
 
           console.log("[bridge] commit sent", { didCommit, streamSid });
 
-          // after commit, require a fresh speech_started
           awaitingSpeechStart = true;
           sawSpeechStartedSinceCommit = false;
           speechFramesSinceStarted = 0;
@@ -856,12 +826,13 @@ wss.on("connection", (twilioWs, req) => {
 
       const textDelta = extractTextDelta(msg);
       if (textDelta) {
-        respOutboundTextPieces += 1;
         const piece = String(textDelta);
         if (DEBUG_OPENAI_TEXT) console.log("[text] delta:", piece.slice(0, 200));
         if (custom.role === "callee") {
           calleeAssistantText += piece;
-          if (calleeAssistantText.length > 4000) calleeAssistantText = calleeAssistantText.slice(-4000);
+          if (calleeAssistantText.length > 4000) {
+            calleeAssistantText = calleeAssistantText.slice(-4000);
+          }
         }
       }
 
@@ -877,7 +848,6 @@ wss.on("connection", (twilioWs, req) => {
       ) {
         clearInFlight("response.done");
 
-        // release commit lock after model finished responding
         commitInFlight = false;
 
         if (queuedForceSpeakReason) {
@@ -888,7 +858,6 @@ wss.on("connection", (twilioWs, req) => {
         return;
       }
 
-      // tool calling handling unchanged (kept for your system)
       if (msg.type === "response.function_call_arguments.delta") {
         if (custom.role === "callee") return;
         const call_id = msg.call_id || msg.callId || msg.id;
@@ -913,10 +882,16 @@ wss.on("connection", (twilioWs, req) => {
         toolArgBuffers.delete(call_id);
 
         let args = {};
-        try { args = buf ? JSON.parse(buf) : {}; } catch { args = {}; }
+        try {
+          args = buf ? JSON.parse(buf) : {};
+        } catch {
+          args = {};
+        }
 
         const phoneRaw = String(args?.phone || "").trim();
-        const messages = Array.isArray(args?.messages) ? args.messages.map((m) => String(m || "").trim()).filter(Boolean) : [];
+        const messages = Array.isArray(args?.messages)
+          ? args.messages.map((m) => String(m || "").trim()).filter(Boolean)
+          : [];
         const legacyMessage = String(args?.message || "").trim();
         const msgText = messages.length ? messages.join(" ") : legacyMessage;
 
@@ -925,10 +900,32 @@ wss.on("connection", (twilioWs, req) => {
         const norm = normalizeToE164Maybe(phoneRaw);
         const normalizedPhone = norm.ok ? norm.e164 : phoneRaw;
 
+        const fp = fingerprintToolCall(name, args);
+        const now = Date.now();
+        const last = toolCooldownMap.get(fp) || 0;
+        const elapsed = now - last;
+
+        if (elapsed >= 0 && elapsed < TOOL_CALL_COOLDOWN_MS) {
+          console.log("[bridge] tool call blocked by cooldown", {
+            name,
+            fp,
+            remainingMs: TOOL_CALL_COOLDOWN_MS - elapsed,
+          });
+          return;
+        }
+        toolCooldownMap.set(fp, now);
+
         if (!pendingTool) {
-          pendingTool = { phone: normalizedPhone, messageText: msgText, askedAtMs: Date.now(), executed: false };
+          pendingTool = {
+            phone: normalizedPhone,
+            messageText: msgText,
+            askedAtMs: Date.now(),
+            executed: false,
+          };
           createUserMessage(`Confirm YES to send this exact message: "${msgText}".`);
-          const ok = createResponse(`Ask ONE short question: "Confirm YES to send: '${msgText}' ?" Do not change the message.`);
+          const ok = createResponse(
+            `Ask ONE short question: "Confirm YES to send: '${msgText}' ?" Do not change the message.`
+          );
           if (!ok) queuedForceSpeakReason = queuedForceSpeakReason || "tool_confirm_gate";
           armAudioWatchdog("tool_confirm_gate");
           return;
@@ -979,14 +976,17 @@ wss.on("connection", (twilioWs, req) => {
   connectOpenAi();
 
   const pingInterval = setInterval(() => {
-    try { if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping(); } catch {}
+    try {
+      if (twilioWs.readyState === WebSocket.OPEN) twilioWs.ping();
+    } catch {}
   }, 15000);
 
   const openAiPingInterval = setInterval(() => {
-    try { if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.ping(); } catch {}
+    try {
+      if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.ping();
+    } catch {}
   }, 20000);
 
-  // Twilio inbound
   twilioWs.on("message", async (data) => {
     const msg = safeJsonParse(data.toString());
     if (!msg) return;
@@ -1041,7 +1041,6 @@ wss.on("connection", (twilioWs, req) => {
         locLabel: custom.locLabel || null,
       });
 
-      // reset gating at start
       awaitingSpeechStart = true;
       sawSpeechStartedSinceCommit = false;
       speechFramesSinceStarted = 0;
@@ -1069,7 +1068,6 @@ wss.on("connection", (twilioWs, req) => {
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         const ok = wsSend(openaiWs, { type: "input_audio_buffer.append", audio: payload });
 
-        // Count ONLY if append succeeded, and only after speech_started is active
         if (ok && !awaitingSpeechStart && String(payload).length > 0) {
           speechFramesSinceStarted += 1;
           lastSpeechAppendAtMs = Date.now();
@@ -1081,7 +1079,6 @@ wss.on("connection", (twilioWs, req) => {
     if (msg.event === "stop") {
       console.log("[twilio] stop", { role: custom.role, sessionId: custom.sessionId || null });
 
-      // Keep your M16 best-effort write (as before)
       if (custom.role === "callee" && !calleeOutcomeWritten) {
         await upstashSetJSON(
           `foundzie:m16:callee:${String(custom.sessionId || "").trim()}:v1`,

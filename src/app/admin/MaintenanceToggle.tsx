@@ -9,6 +9,15 @@ type MaintenanceState = {
   updatedBy: string | null;
 };
 
+type MaintenanceResponse = {
+  state?: MaintenanceState;
+};
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 export default function MaintenanceToggle() {
   const [state, setState] = useState<MaintenanceState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -25,14 +34,15 @@ export default function MaintenanceToggle() {
           cache: "no-store",
         });
         if (!res.ok) throw new Error("Failed to load maintenance state");
-        const data = await res.json();
+
+        const data = (await res.json()) as MaintenanceResponse;
         if (!cancelled) {
-          setState(data.state);
+          setState(data.state ?? null);
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("[MaintenanceToggle] load error:", err);
         if (!cancelled) {
-          setError(err?.message || "Could not load maintenance state.");
+          setError(getErrorMessage(err, "Could not load maintenance state."));
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -59,11 +69,12 @@ export default function MaintenanceToggle() {
         body: JSON.stringify({ enabled: !enabled }),
       });
       if (!res.ok) throw new Error("Failed to update maintenance state");
-      const data = await res.json();
-      setState(data.state);
-    } catch (err: any) {
+
+      const data = (await res.json()) as MaintenanceResponse;
+      setState(data.state ?? null);
+    } catch (err: unknown) {
       console.error("[MaintenanceToggle] save error:", err);
-      setError(err?.message || "Could not update maintenance state.");
+      setError(getErrorMessage(err, "Could not update maintenance state."));
     } finally {
       setSaving(false);
     }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, FormEvent } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 type AdminUser = {
@@ -84,6 +84,42 @@ type CreatePrResponse =
   | { ok: true; number: number; url: string; branch: string; base: string }
   | { ok: false; error: string; reason?: string; details?: unknown };
 
+type JsonObject = Record<string, unknown>;
+
+type ErrorWithMessage = {
+  message?: string;
+};
+
+type CreatePrPayload = {
+  title: string;
+  description?: string;
+  base: string;
+  branch?: string;
+  commitMessage?: string;
+  files: CreatePrFile[];
+};
+
+type UsersResponse = {
+  items?: unknown;
+};
+
+type PullsResponse = {
+  items?: unknown;
+};
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof (error as ErrorWithMessage).message === "string"
+  ) {
+    return (error as ErrorWithMessage).message as string;
+  }
+  return fallback;
+}
+
 function formatTools(tools?: string[]) {
   if (!tools || tools.length === 0) return "none";
   return tools.join(", ");
@@ -96,7 +132,6 @@ function fmtTime(s?: string) {
   return d.toLocaleString();
 }
 
-// Client-side UX check only (server still enforces the real allowlist)
 function isAllowedPath(p: string) {
   const path = (p || "").trim();
   if (!path) return false;
@@ -132,12 +167,10 @@ export default function AdminAgentPage() {
   const [implementedTools, setImplementedTools] = useState<string[]>([]);
   const [showDebug, setShowDebug] = useState(false);
 
-  // ✅ M21.6 Brain Console: diagnostics panel state
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagError, setDiagError] = useState<string | null>(null);
-  const [diagJson, setDiagJson] = useState<any>(null);
+  const [diagJson, setDiagJson] = useState<JsonObject | null>(null);
 
-  // ✅ M21.7b: GitHub PRs panel state
   const [prsLoading, setPrsLoading] = useState(false);
   const [prsError, setPrsError] = useState<string | null>(null);
   const [prs, setPrs] = useState<PullItem[]>([]);
@@ -147,7 +180,6 @@ export default function AdminAgentPage() {
   const [prDetailsError, setPrDetailsError] = useState<string | null>(null);
   const [prDetails, setPrDetails] = useState<PullDetails | null>(null);
 
-  // ✅ M21.7c.1: Create PR UI state
   const [createTitle, setCreateTitle] = useState("Autopilot: change request");
   const [createDescription, setCreateDescription] = useState(
     "Created by Foundzie Brain (PR-only)."
@@ -156,7 +188,10 @@ export default function AdminAgentPage() {
   const [createBranch, setCreateBranch] = useState("");
   const [createCommitMessage, setCreateCommitMessage] = useState("");
   const [createFiles, setCreateFiles] = useState<CreatePrFile[]>([
-    { path: "src/app/api/diag/README-autopilot.txt", content: "hello from autopilot" },
+    {
+      path: "src/app/api/diag/README-autopilot.txt",
+      content: "hello from autopilot",
+    },
   ]);
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -170,39 +205,47 @@ export default function AdminAgentPage() {
     return createFiles.some((f) => !f.path.trim() || !f.content);
   }, [createFiles]);
 
-  // -------- Load users so you can ask "about" someone ----------
   useEffect(() => {
     async function loadUsers() {
       try {
         setLoadingUsers(true);
         const res = await fetch("/api/users", { cache: "no-store" });
         if (!res.ok) throw new Error("Failed to load users");
-        const data = await res.json();
-        const items: AdminUser[] = Array.isArray(data.items) ? data.items : [];
+
+        const data = (await res.json()) as UsersResponse;
+        const items: AdminUser[] = Array.isArray(data.items)
+          ? (data.items as AdminUser[])
+          : [];
         setUsers(items);
-      } catch (err) {
+      } catch (err: unknown) {
         console.error("[admin/agent] failed to load users", err);
       } finally {
         setLoadingUsers(false);
       }
     }
+
     loadUsers();
   }, []);
 
-  // -------- M21.6: Load system diagnostics (safe proxy) ----------
   async function loadDiagnostics() {
     setDiagError(null);
     setDiagLoading(true);
+
     try {
       const res = await fetch("/api/admin/diag", { cache: "no-store" });
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         throw new Error(t || `Diag failed (${res.status})`);
       }
-      const data = await res.json();
-      setDiagJson(data);
-    } catch (e: any) {
-      setDiagError(e?.message || "Failed to load diagnostics.");
+
+      const data = (await res.json()) as unknown;
+      if (typeof data === "object" && data !== null) {
+        setDiagJson(data as JsonObject);
+      } else {
+        setDiagJson({ value: data });
+      }
+    } catch (e: unknown) {
+      setDiagError(getErrorMessage(e, "Failed to load diagnostics."));
       setDiagJson(null);
     } finally {
       setDiagLoading(false);
@@ -219,43 +262,49 @@ export default function AdminAgentPage() {
     }
   }
 
-  // -------- M21.7b: Load PR list ----------
   async function loadPrs() {
     setPrsError(null);
     setPrsLoading(true);
+
     try {
       const res = await fetch("/api/admin/github/pulls", { cache: "no-store" });
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         throw new Error(t || `PR list failed (${res.status})`);
       }
-      const data = await res.json();
-      const items: PullItem[] = Array.isArray(data.items) ? data.items : [];
+
+      const data = (await res.json()) as PullsResponse;
+      const items: PullItem[] = Array.isArray(data.items)
+        ? (data.items as PullItem[])
+        : [];
       setPrs(items);
-    } catch (e: any) {
-      setPrsError(e?.message || "Failed to load PRs.");
+    } catch (e: unknown) {
+      setPrsError(getErrorMessage(e, "Failed to load PRs."));
       setPrs([]);
     } finally {
       setPrsLoading(false);
     }
   }
 
-  // -------- M21.7b: Load PR details + checks ----------
   async function loadPrDetails(prNumber: number) {
     setSelectedPr(prNumber);
     setPrDetails(null);
     setPrDetailsError(null);
     setPrDetailsLoading(true);
+
     try {
-      const res = await fetch(`/api/admin/github/pulls/${prNumber}`, { cache: "no-store" });
+      const res = await fetch(`/api/admin/github/pulls/${prNumber}`, {
+        cache: "no-store",
+      });
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         throw new Error(t || `PR details failed (${res.status})`);
       }
+
       const data = (await res.json()) as PullDetails;
       setPrDetails(data);
-    } catch (e: any) {
-      setPrDetailsError(e?.message || "Failed to load PR details.");
+    } catch (e: unknown) {
+      setPrDetailsError(getErrorMessage(e, "Failed to load PR details."));
       setPrDetails(null);
     } finally {
       setPrDetailsLoading(false);
@@ -272,7 +321,6 @@ export default function AdminAgentPage() {
     }
   }
 
-  // -------- M21.7c.1: Create PR (UI) ----------
   function addFileRow() {
     setCreateFiles((prev) => [...prev, { path: "src/", content: "" }]);
   }
@@ -293,7 +341,10 @@ export default function AdminAgentPage() {
 
     const title = createTitle.trim();
     const base = createBase.trim() || "main";
-    const files = createFiles.map((f) => ({ path: f.path.trim(), content: f.content ?? "" }));
+    const files = createFiles.map((f) => ({
+      path: f.path.trim(),
+      content: f.content ?? "",
+    }));
 
     if (!title) {
       setCreateError("Title is required.");
@@ -315,13 +366,16 @@ export default function AdminAgentPage() {
     }
 
     setCreateBusy(true);
+
     try {
-      const payload: any = {
+      const payload: CreatePrPayload = {
         title,
-        description: createDescription.trim() || undefined,
         base,
         files,
       };
+
+      const description = createDescription.trim();
+      if (description) payload.description = description;
 
       const branch = createBranch.trim();
       if (branch) payload.branch = branch;
@@ -335,21 +389,20 @@ export default function AdminAgentPage() {
         body: JSON.stringify(payload),
       });
 
-      const json = (await res.json().catch(() => null)) as any;
+      const json = (await res.json().catch(() => null)) as CreatePrResponse | null;
 
       if (!res.ok || !json) {
         const t = await res.text().catch(() => "");
         throw new Error(t || `Create PR failed (${res.status})`);
       }
 
-      setCreateResp(json as CreatePrResponse);
+      setCreateResp(json);
 
-      if ((json as any)?.ok) {
-        // refresh PR list automatically so you see it immediately
+      if (json.ok) {
         await loadPrs();
       }
-    } catch (e: any) {
-      setCreateError(e?.message || "Failed to create PR.");
+    } catch (e: unknown) {
+      setCreateError(getErrorMessage(e, "Failed to create PR."));
     } finally {
       setCreateBusy(false);
     }
@@ -365,7 +418,6 @@ export default function AdminAgentPage() {
     }
   }
 
-  // -------- Handle Ask Foundzie submit ----------
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmed = input.trim();
@@ -382,7 +434,7 @@ export default function AdminAgentPage() {
     setHistory((prev) => [...prev, adminItem]);
 
     try {
-      const body: any = {
+      const body: JsonObject = {
         input: trimmed,
         source: "admin",
         toolsMode: "debug",
@@ -421,9 +473,14 @@ export default function AdminAgentPage() {
       setAvailableTools(data.availableTools ?? []);
       setImplementedTools(data.implementedTools ?? []);
       setInput("");
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[admin/agent] failed to call /api/agent", err);
-      setError(err?.message || "Something went wrong talking to Foundzie. Please try again.");
+      setError(
+        getErrorMessage(
+          err,
+          "Something went wrong talking to Foundzie. Please try again."
+        )
+      );
     } finally {
       setSending(false);
     }
@@ -450,9 +507,7 @@ export default function AdminAgentPage() {
       </header>
 
       <section className="max-w-5xl mx-auto grid gap-6 lg:grid-cols-[2fr,1.4fr]">
-        {/* LEFT: Chat / prompt area */}
         <div className="bg-slate-900/70 border border-slate-800 rounded-2xl flex flex-col min-h-[420px] shadow-lg">
-          {/* Controls */}
           <div className="border-b border-slate-800 px-4 py-3 space-y-3">
             <div className="flex flex-col md:flex-row gap-3 md:items-center justify-between">
               <div className="flex-1">
@@ -505,7 +560,6 @@ export default function AdminAgentPage() {
             </div>
           </div>
 
-          {/* History */}
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 text-sm">
             {history.length === 0 && (
               <p className="text-xs text-slate-500">
@@ -551,7 +605,6 @@ export default function AdminAgentPage() {
             ))}
           </div>
 
-          {/* Input */}
           <form
             onSubmit={handleSubmit}
             className="border-t border-slate-800 px-4 py-3 flex gap-2 items-center bg-slate-900/80 rounded-b-2xl"
@@ -578,9 +631,7 @@ export default function AdminAgentPage() {
           )}
         </div>
 
-        {/* RIGHT: Brain + PRs + Create PR + Debug */}
         <aside className="space-y-4">
-          {/* ✅ M21.7b: Autopilot PRs panel */}
           <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs shadow-lg">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-[13px] font-semibold text-slate-100">
@@ -635,7 +686,6 @@ export default function AdminAgentPage() {
               )}
             </div>
 
-            {/* PR details */}
             <div className="mt-3">
               {prDetailsError && (
                 <p className="text-[11px] text-red-400">Error: {prDetailsError}</p>
@@ -730,7 +780,6 @@ export default function AdminAgentPage() {
             </div>
           </div>
 
-          {/* ✅ M21.7c.1: Create PR UI */}
           <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs shadow-lg">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-[13px] font-semibold text-slate-100">
@@ -887,7 +936,7 @@ export default function AdminAgentPage() {
                     </button>
                   </div>
 
-                  {"ok" in createResp && createResp.ok ? (
+                  {createResp.ok ? (
                     <div className="mt-2 text-[11px] text-slate-300 space-y-1">
                       <div>
                         ✅ PR created:{" "}
@@ -907,8 +956,8 @@ export default function AdminAgentPage() {
                     </div>
                   ) : (
                     <div className="mt-2 text-[11px] text-red-300">
-                      ❌ {(createResp as any).error}
-                      {(createResp as any).reason ? ` — ${(createResp as any).reason}` : ""}
+                      ❌ {createResp.error}
+                      {createResp.reason ? ` — ${createResp.reason}` : ""}
                     </div>
                   )}
 
@@ -920,7 +969,6 @@ export default function AdminAgentPage() {
             </div>
           </div>
 
-          {/* ✅ Existing: Foundzie Brain panel */}
           <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs shadow-lg">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-[13px] font-semibold text-slate-100">
@@ -964,7 +1012,6 @@ export default function AdminAgentPage() {
             </pre>
           </div>
 
-          {/* Existing debug panel */}
           <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs shadow-lg">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-[13px] font-semibold text-slate-100">

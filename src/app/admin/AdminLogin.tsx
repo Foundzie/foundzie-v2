@@ -2,6 +2,11 @@
 
 import { useState } from "react";
 
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 export default function AdminLogin() {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
@@ -28,10 +33,9 @@ export default function AdminLogin() {
         throw new Error(msg || `Login failed (${res.status})`);
       }
 
-      // ✅ cookie set (httpOnly) — reload into admin
       window.location.reload();
-    } catch (e: any) {
-      setErr(e?.message || "Login failed.");
+    } catch (e: unknown) {
+      setErr(getErrorMessage(e, "Login failed."));
     } finally {
       setBusy(false);
     }
